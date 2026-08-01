@@ -10,7 +10,6 @@ import queue
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 
-import pytest
 from websocket import ABNF
 from websocket._exceptions import WebSocketConnectionClosedException
 
@@ -171,7 +170,7 @@ class TestAthenadMethods(OpenpilotTestCase):
     self.params.remove("CarParamsPersistent")
     mocker.patch.object(athenad, "ASIUS", False)
 
-    with pytest.raises(Exception, match="failed to get CarParamsPersistent"):
+    with self.assertRaisesRegex(Exception, "failed to get CarParamsPersistent"):
       dispatcher["startStream"]("offer", True)
 
   def test_list_data_directory(self):
