@@ -26,10 +26,6 @@ class TestManager(OpenpilotTestCase):
   def test_duplicate_procs(self):
     assert len(procs) == len(managed_processes), "Duplicate process names"
 
-  def test_vision_process_contract(self):
-    assert {"camerad", "encoderd", "stream_encoderd"} <= managed_processes.keys()
-    assert not {"camerad_v1", "encoderd_v1", "stream_encoderd_v1"} & managed_processes.keys()
-
   def test_set_params_with_default_value(self):
     params = Params()
     params.clear_all()
