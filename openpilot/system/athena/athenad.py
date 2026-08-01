@@ -49,7 +49,7 @@ from openpilot.system.athena.rpc import (boolean, dict_of, dispatcher, dumps_cal
                                          list_of, loads, number, one_of, regex, struct)
 
 
-ATHENA_HOST = Params().get("AthenaHost", return_default=True)
+ATHENA_HOST = os.getenv('ATHENA_HOST', 'wss://athena.comma.ai')
 HANDLER_THREADS = int(os.getenv('HANDLER_THREADS', "4"))
 LOCAL_PORT_WHITELIST = {22, }  # SSH
 
