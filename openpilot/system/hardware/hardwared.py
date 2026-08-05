@@ -495,7 +495,7 @@ def main():
     threading.Thread(target=hardware_thread, args=(end_event, hw_queue)),
   ]
 
-  if COMMA_HARDWARE:
+  if COMMA_HARDWARE and os.path.exists("/dev/input/by-path/platform-894000.i2c-event"):
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
     threads.append(threading.Thread(target=chestnut_state_thread, args=(end_event,)))
 
