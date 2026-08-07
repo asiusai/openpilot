@@ -211,6 +211,13 @@ class ProcessContainer:
     vipc_server.start_listener()
     VisionIpcClient.available_streams("camerad", block=True)
 
+    # The listener resolves OPENPILOT_PREFIX in its worker thread. Wait while
+    # the prefix context is active so the process cannot race it at startup.
+    ipc_path = f"/tmp/{self.prefix.prefix}_visionipc_camerad"
+    with Timeout(5, error_msg=f"VisionIPC listener did not create {ipc_path}"):
+      while not os.path.exists(ipc_path):
+        time.sleep(0.01)
+
     self.vipc_server = vipc_server
     self.cfg.vision_pubs = [meta.camera_state for meta in streams_metas if meta.camera_state in self.cfg.vision_pubs]
 
