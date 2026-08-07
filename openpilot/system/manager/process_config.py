@@ -92,7 +92,7 @@ procs = [
   PythonProcess("micd", "openpilot.system.micd", iscar),
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
-  PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld_v1" if ASIUS_HARDWARE else "openpilot.selfdrive.modeld.modeld", only_onroad),
+  PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
   PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navigation),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
 
