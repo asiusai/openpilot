@@ -23,7 +23,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AssistNowToken", {PERSISTENT, STRING}},
     {"AthenadPid", {PERSISTENT, INT}},
     {"BluetoothdPid", {PERSISTENT, INT}},
-    {"WebsocketHost", {PERSISTENT, STRING, "wss://athena.asius.ai"}},
+    {"WebsocketHost", {PERSISTENT, STRING, "wss://relay.asius.ai"}},
     {"WebsocketdPid", {PERSISTENT, INT}},
     {"AppAuthorizedKeys", {PERSISTENT, JSON}},
     {"AppPairingUntil", {PERSISTENT, INT}},
