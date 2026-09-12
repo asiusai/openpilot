@@ -1,18 +1,22 @@
 import math
 
+_SENSOR_PITCH = math.radians(90.0 + 28.0)
+_SIN_PITCH = math.sin(_SENSOR_PITCH)
+_COS_PITCH = math.cos(_SENSOR_PITCH)
+
 
 def transform_asius_imu(v: list[float]) -> list[float]:
-  """Rotate comma's LSM6DS3 output convention into the Asius sensor frame.
+  """Align stock LSM6DS3 event coordinates with Asius v0's road camera.
 
-  The Asius v0 PCB is flipped relative to the road camera, whose optical axis
-  is 60 degrees from the PCB plane. locationd's sensor-to-device conversion
-  conjugates this rotation, producing the required -120 degree device-frame
-  pitch correction.
+  Panda v5's IMU is on B.Cu at 0 degrees. The case holds the road-camera
+  optical axis 28 degrees from the Panda plane (62 from its normal).
+  After the driver's raw [y, -x, z] mapping, rotate +118 degrees about sensor
+  Y. locationd's [-z, -y, -x] conversion makes this a -118 degree device-frame
+  pitch correction. Apply the same rotation to acceleration and angular rate.
   """
   x, y, z = v
-  sin_120 = math.sqrt(3.0) / 2.0
   return [
-    -0.5 * x + sin_120 * z,
+    _COS_PITCH * x + _SIN_PITCH * z,
     y,
-    -sin_120 * x - 0.5 * z,
+    -_SIN_PITCH * x + _COS_PITCH * z,
   ]
