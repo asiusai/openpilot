@@ -12,10 +12,13 @@
 
 #ifdef __COMMA_HARDWARE__
 #include "system/loggerd/encoder/v4l_encoder.h"
+#define Encoder V4LEncoder
 #elif defined(__ASIUS_HARDWARE__)
 #include "system/loggerd/encoder/venus_encoder.h"
+#define Encoder VenusEncoder
 #else
 #include "system/loggerd/encoder/ffmpeg_encoder.h"
+#define Encoder FfmpegEncoder
 #endif
 
 ExitHandler do_exit;
@@ -51,7 +54,7 @@ bool sync_encoders(EncoderdState *s, VisionStreamType cam_type, uint32_t frame_i
   }
 }
 
-void encoder_set_bitrate(std::unique_ptr<VideoEncoder> &e) {
+void encoder_set_bitrate(std::unique_ptr<Encoder> &e) {
   static Params params;
   std::string val = params.get("LivestreamEncoderBitrate");
   if (val.empty()) return;
@@ -59,7 +62,7 @@ void encoder_set_bitrate(std::unique_ptr<VideoEncoder> &e) {
   e->set_bitrate(bitrate);
 }
 
-void encoder_request_keyframe(std::unique_ptr<VideoEncoder> &e) {
+void encoder_request_keyframe(std::unique_ptr<Encoder> &e) {
   static Params params;
   if (!params.getBool("LivestreamRequestKeyframe")) return;
   e->request_keyframe();
@@ -68,7 +71,7 @@ void encoder_request_keyframe(std::unique_ptr<VideoEncoder> &e) {
 void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
   util::set_thread_name(cam_info.thread_name);
 
-  std::vector<std::unique_ptr<VideoEncoder>> encoders;
+  std::vector<std::unique_ptr<Encoder>> encoders;
 
   VisionIpcClient vipc_client = VisionIpcClient("camerad", cam_info.stream_type, false);
 
@@ -88,16 +91,13 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
       assert(buf_info.width > 0 && buf_info.height > 0);
 
       for (const auto &encoder_info : cam_info.encoder_infos) {
-#ifdef __COMMA_HARDWARE__
-        auto e = std::make_unique<V4LEncoder>(encoder_info, buf_info.width, buf_info.height);
-#elif defined(__ASIUS_HARDWARE__)
-        auto e = std::make_unique<VenusEncoder>(encoder_info, buf_info.width, buf_info.height,
-                                                buf_info.stride, buf_info.uv_offset);
+#ifdef __ASIUS_HARDWARE__
+        auto &e = encoders.emplace_back(new Encoder(encoder_info, buf_info.width, buf_info.height,
+                                                   buf_info.stride, buf_info.uv_offset));
 #else
-        auto e = std::make_unique<FfmpegEncoder>(encoder_info, buf_info.width, buf_info.height);
+        auto &e = encoders.emplace_back(new Encoder(encoder_info, buf_info.width, buf_info.height));
 #endif
         e->encoder_open();
-        encoders.push_back(std::move(e));
       }
 
       // Only one thumbnail can be generated per camera stream
