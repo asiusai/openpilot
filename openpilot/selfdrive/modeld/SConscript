@@ -10,7 +10,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.helpers import TG_INPUT_DEVICES_PATH, chestnut_present, modeld_pkl_path
 
 
-Import('env', 'arch')
+Import('env', 'arch', 'ASIUS_HARDWARE')
 chunker_file = File("#openpilot/common/file_chunker.py")
 lenv = env.Clone()
 
@@ -32,6 +32,8 @@ else:
   tg_backend = 'METAL' if arch == 'Darwin' else 'CPU'
   # JIT=2 disables graph batching, which produces incorrect outputs after buffers change.
   tg_flags = 'DEV=METAL JIT=2' if arch == 'Darwin' else 'DEV=CPU:LLVM'
+
+driving_tg_flags = tg_flags.replace(' NOLOCALS=1', '') if ASIUS_HARDWARE else tg_flags
 
 tg_devices = { # which device to put jit inputs to at runtime
   'openpilot.selfdrive.modeld.dmonitoringmodeld': {
@@ -72,7 +74,8 @@ frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
 
 for chestnut in [False, True] if CHESTNUT else [False]:
   target_pkl_path = File(modeld_pkl_path(chestnut)).abspath
-  file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
+  # BIG_INTO_SMALL=1 builds the default target from the big model for testing without Chestnut.
+  file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('big_' if os.getenv('BIG_INTO_SMALL') else '', driving_tg_flags)
   driving_onnx_deps = get_existing_chunks(File(f"models/{file_prefix}driving_supercombo.onnx").abspath)
   camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in camera_configs)
   # CPU 7 is isolated with isolcpus on AGNOS, so explicitly pin the compiler to it.

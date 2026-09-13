@@ -148,6 +148,9 @@ class HardwareBase(ABC):
   def get_modem_state(self) -> dict:
     return {}
 
+  def get_ufs_health(self) -> dict:
+    return {}
+
   def initialize_hardware(self):
     pass
 
