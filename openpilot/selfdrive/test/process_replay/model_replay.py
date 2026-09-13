@@ -171,7 +171,6 @@ def model_replay(lr, frs):
   modeld = get_process_config("modeld")
   modeld_msgs = replay_process(modeld, modeld_logs, frs)
   msgs = modeld_msgs
-  chestnut = any(m.modelV2.big for m in modeld_msgs if m.which() == "modelV2")
 
   if not NO_DCAM:
     dmonitoringmodeld = get_process_config("dmonitoringmodeld")
