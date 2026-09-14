@@ -231,8 +231,9 @@ int main(int argc, char* argv[]) {
     ret = util::set_realtime_priority(52);
     assert(ret == 0);
 #ifdef __ASIUS_HARDWARE__
-    // SPI pandad is pinned to core 3 and keeps it substantially busier than USB pandad.
-    ret = util::set_core_affinity({5});
+    // Avoid SPI/pandad on core 3 and controls/cameras/models on cores 4/6/7.
+    // Core 5 provides onroad capacity; core 2 stays online during offroad power save.
+    ret = util::set_core_affinity({2, 5});
 #else
     ret = util::set_core_affinity({3});
 #endif
