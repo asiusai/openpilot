@@ -112,6 +112,23 @@ def test_driver_monitoring_blinks_magenta_while_engaged():
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
 
 
+def test_driver_monitoring_warning_is_ignored_when_disengaged():
+  sm = healthy_sm()
+  sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
+  sm['selfdriveState'].alertType = 'driverDistracted1/warning'
+  sm['selfdriveState'].alertSound.raw = 'promptDistracted'
+  assert ledd.led_state(sm, now=0.) == ledd.BLUE
+
+
+def test_soft_disabling_blinks_red_over_driver_monitoring_warning():
+  sm = healthy_sm()
+  sm['selfdriveState'].active = True
+  sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.softDisabling
+  sm['selfdriveState'].alertType = 'driverDistracted3/warning'
+  assert ledd.led_state(sm, now=0.) == ledd.RED
+  assert ledd.led_state(sm, now=0.5) == ledd.OFF
+
+
 def test_persistent_process_failure_is_solid_red(monkeypatch):
   sm = healthy_sm()
   sm['managerState'].processes = [SimpleNamespace(name='camerad', shouldBeRunning=True, running=False)]
