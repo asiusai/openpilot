@@ -340,32 +340,30 @@ def persistent_error(sm) -> bool:
   return panda_disconnected(sm)
 
 
-def driver_monitoring_warning(sm) -> bool:
-  if sm.seen['selfdriveState'] and sm.alive['selfdriveState']:
-    if sm['selfdriveState'].alertType.split('/')[0] in {
-      'driverDistracted1', 'driverDistracted2', 'driverDistracted3',
-      'driverUnresponsive1', 'driverUnresponsive2', 'driverUnresponsive3', 'tooDistracted',
-    }:
-      return True
-
-  if sm.seen['driverMonitoringState'] and sm.alive['driverMonitoringState']:
-    dm_state = sm['driverMonitoringState']
-    return dm_state.lockout or dm_state.alwaysOnLockout or dm_state.alertLevel != log.DriverMonitoringState.AlertLevel.none
-  return False
-
-
-def engaged_warning(sm) -> bool:
+def engaged_warning(sm) -> LedState | None:
   if not sm.seen['selfdriveState'] or not sm.alive['selfdriveState']:
-    return False
+    return None
 
   selfdrive_state = sm['selfdriveState']
   if not selfdrive_state.active:
-    return False
+    return None
 
-  return (
-    selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling or
-    selfdrive_state.alertSound.raw in WARNING_ALERT_SOUNDS
-  )
+  dm_alert = selfdrive_state.alertType.split('/')[0] in {
+    'driverDistracted1', 'driverDistracted2', 'driverDistracted3',
+    'driverUnresponsive1', 'driverUnresponsive2', 'driverUnresponsive3', 'tooDistracted',
+  }
+  if selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling:
+    return RED
+  if selfdrive_state.alertSound.raw in WARNING_ALERT_SOUNDS and not dm_alert:
+    return RED
+  if dm_alert:
+    return DM_WARNING
+
+  if sm.seen['driverMonitoringState'] and sm.alive['driverMonitoringState']:
+    if sm['driverMonitoringState'].alertLevel != log.DriverMonitoringState.AlertLevel.none:
+      return DM_WARNING
+
+  return None
 
 
 def calibration_state(sm) -> LedState | None:
@@ -426,12 +424,9 @@ def led_state(sm, now: float | None = None) -> LedState:
   selfdrive_available = selfdrive_state_available(sm)
   if selfdrive_available:
     selfdrive_state = sm['selfdriveState']
-    if selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling:
-      return RED
-    if driver_monitoring_warning(sm):
-      return blinking(DM_WARNING, now)
     if selfdrive_state.active:
-      return blinking(RED, now) if engaged_warning(sm) else GREEN
+      warning = engaged_warning(sm)
+      return blinking(warning, now) if warning is not None else GREEN
     if sm['deviceState'].started and (
       not selfdrive_state.engageable or
       selfdrive_state.state == log.SelfdriveState.OpenpilotState.preEnabled
