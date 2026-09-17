@@ -6,7 +6,8 @@ import subprocess
 
 import pytest
 
-from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4
+from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4, read_boxes
+from openpilot.system.loggerd.tests.media_fixture import make_video
 
 
 FFMPEG = shutil.which("ffmpeg")
@@ -74,3 +75,24 @@ def test_cenc_key_is_scoped_to_owner_epoch_and_path() -> None:
   assert first == derive_cenc_key(folder_key, "owner", "epoch", "routes/route--0/fcamera.mp4")
   assert first != derive_cenc_key(folder_key, "owner", "epoch", "routes/route--1/fcamera.mp4")
   assert first != derive_cenc_key(folder_key, "owner", "next", "routes/route--0/fcamera.mp4")
+
+
+def test_cenc_upload_recovers_complete_frames_from_interrupted_recording(tmp_path):
+  source = tmp_path / 'source.mp4'
+  make_video(source, 3)
+  original = source.read_bytes()
+  boxes = read_boxes(original, 0, len(original))
+  moof = [box for box in boxes if box.type == b'moof'][-1]
+  mdat = [box for box in boxes if box.type == b'mdat'][-1]
+  reference = tmp_path / 'reference.mp4'
+  reference.write_bytes(original[:moof.start])
+  truncated = original[:mdat.end - 1]
+  source.write_bytes(truncated)
+  encrypted = tmp_path / 'encrypted.mp4'
+  key = bytes(range(16))
+  manifest = package_cenc_mp4(source, encrypted, key, bytes(reversed(key)))
+  assert manifest['plaintextLength'] == len(truncated)
+  assert manifest['discardedBytes'] == len(truncated) - moof.start
+  assert len(frame_hash(encrypted, key)) == 40
+  assert frame_hash(encrypted, key) == frame_hash(reference)
+  assert source.read_bytes() == truncated

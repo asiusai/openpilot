@@ -75,27 +75,46 @@ class AuxiliaryInfo:
     return sum(map(len, self.boxes(0)))
 
 
-def read_boxes(data: bytes | bytearray, start: int, end: int) -> list[Box]:
+def read_boxes(data: bytes | bytearray, start: int, end: int, *, allow_truncated: bool = False) -> list[Box]:
   boxes: list[Box] = []
   cursor = start
   while cursor < end:
     if end - cursor < 8:
+      if allow_truncated:
+        break
       raise ValueError("truncated MP4 box header")
     size = struct.unpack_from(">I", data, cursor)[0]
     header_size = 8
     if size == 1:
       if end - cursor < 16:
+        if allow_truncated:
+          break
         raise ValueError("truncated extended MP4 box header")
       size = struct.unpack_from(">Q", data, cursor + 8)[0]
       header_size = 16
     elif size == 0:
       size = end - cursor
+    if allow_truncated and size >= header_size and cursor + size > end:
+      break
     if size < header_size or cursor + size > end:
       raise ValueError("invalid MP4 box size")
     boxes.append(Box(cursor, size, bytes(data[cursor + 4:cursor + 8]), header_size))
     cursor += size
-  if cursor != end:
+  if cursor != end and not allow_truncated:
     raise ValueError("unaligned MP4 boxes")
+  return boxes
+
+
+def recording_boxes(data: bytes | bytearray) -> list[Box]:
+  """Keep complete fragments after an interrupted recording, without changing it.
+
+  Only the top-level tail may be incomplete. Nested metadata remains strict, and
+  a moof is usable only with its complete mdat. Never serve partial frame bytes.
+  """
+  boxes = read_boxes(data, 0, len(data), allow_truncated=True)
+  for index, box in enumerate(boxes):
+    if box.type == b"moof" and (index + 1 == len(boxes) or boxes[index + 1].type != b"mdat"):
+      return boxes[:index]
   return boxes
 
 
@@ -107,7 +126,10 @@ def make_box(box_type: bytes, payload: bytes) -> bytes:
 
 
 def child(data: bytes | bytearray, parent: Box, box_type: bytes) -> Box:
-  return next(box for box in read_boxes(data, parent.payload_start, parent.end) if box.type == box_type)
+  box = next((box for box in read_boxes(data, parent.payload_start, parent.end) if box.type == box_type), None)
+  if box is None:
+    raise ValueError(f"MP4 is missing {box_type.decode()} metadata")
+  return box
 
 
 def descendant(data: bytes | bytearray, parent: Box, *types: bytes) -> Box:
@@ -424,7 +446,7 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     raise ValueError("CENC key and KID must be 128 bits")
   source_path = Path(source)
   clear = bytearray(source_path.read_bytes())
-  top_level = read_boxes(clear, 0, len(clear))
+  top_level = recording_boxes(clear)
   moov = next((box for box in top_level if box.type == b"moov"), None)
   first_moof = next((box for box in top_level if box.type == b"moof"), None)
   if moov is None or first_moof is None or moov.start > first_moof.start:
@@ -480,6 +502,7 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     "codec": primary.codec,
     "contentType": f'video/mp4; codecs="{primary.codec}"',
     "plaintextLength": len(clear),
+    **({"discardedBytes": len(clear) - top_level[-1].end} if top_level[-1].end < len(clear) else {}),
     "encryptedLength": len(output),
     "checksumSha256": b64url(hashlib.sha256(output).digest()),
     "fragments": fragments,
