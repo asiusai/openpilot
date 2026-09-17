@@ -442,7 +442,11 @@ class BlePeerEngine:
     cloudlog.event("asius.bluetooth.paired", sender=sender, request_id=request_id)
 
   async def handle_rpc(self, sender: str, body: dict[str, Any]) -> None:
-    response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher)))
+    if body.get("method") in methods.NETWORK_ONLY_METHODS:
+      await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
+                                    "error": {"code": -32000, "message": "Video and route playback require a network connection"}})
+      return
+    response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
     await self.send_body(sender, response)
 
   async def handle_encrypted(self, payload: bytes) -> None:

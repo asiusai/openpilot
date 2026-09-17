@@ -9,7 +9,6 @@ import time
 import uuid
 from typing import Any
 
-import jwt
 import requests
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
@@ -171,11 +170,11 @@ class DataApiClient:
       "path": path,
       "bodyHash": b64url(hashlib.sha256(encoded).digest()),
       "nonce": str(uuid.uuid4()),
-      "iat": now,
-      "nbf": now,
-      "exp": now + 300,
+      "scope": "asius-storage-request-v1",
+      "timestamp": now,
     }
-    token = jwt.encode(claims, self.private_key, algorithm="EdDSA")
+    signature = b64url(self.private_key.sign(canonical_json(claims).encode()))
+    token = b64url(canonical_json(claims | {"signature": signature}).encode())
     headers = {"Authorization": f"Data {token}", **({"Content-Type": "application/json"} if encoded else {})}
     response = self.session.request(method, self.base_url + path, data=encoded or None, headers=headers, timeout=30)
     response.raise_for_status()
