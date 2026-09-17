@@ -384,6 +384,7 @@ class StreamSession:
 class ServerState:
   def __init__(self):
     self.streams: dict[str, StreamSession] = {}
+    self.routes: dict = {}
     self.stream_lock = asyncio.Lock()
     self.teardown: asyncio.TimerHandle | None = None
 
@@ -486,6 +487,9 @@ async def handle_post_notify(state: ServerState, payload: Any) -> tuple[int, byt
 
 
 async def on_shutdown(state: ServerState):
+  for session in list(state.routes.values()):
+    await session.stop()
+  state.routes.clear()
   for session in list(state.streams.values()):
     try:
       ch = session.stream.get_messaging_channel()
@@ -496,6 +500,33 @@ async def on_shutdown(state: ServerState):
   state.streams.clear()
 
 
+async def handle_route_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
+  from openpilot.common.hardware.hw import Paths
+  from openpilot.system.app.websocketd import load_authorized_peers
+  from openpilot.system.webrtc.routes import RouteSession
+  body = json.loads(raw_body)
+  peer = body.get("peer")
+  if not isinstance(peer, str) or peer not in load_authorized_peers():
+    return _json_response({"error": "device access required"}, status=403)
+  sdp = body.get("sdp")
+  if not isinstance(sdp, str) or len(sdp) > 64 * 1024:
+    return _json_response({"error": "invalid offer"}, status=400)
+  async with state.stream_lock:
+    if len(state.routes) >= 4:
+      return _json_response({"error": "too many playback connections"}, status=429)
+    session = RouteSession(sdp, Paths.log_root(), lambda: peer in load_authorized_peers())
+    state.routes[session.identifier] = session
+    try:
+      answer = await asyncio.wait_for(session.get_answer(), timeout=30)
+      session.start()
+      session.run_task.add_done_callback(lambda _: state.routes.pop(session.identifier, None))
+      return _json_response({"sdp": answer.sdp, "type": answer.type})
+    except Exception:
+      state.routes.pop(session.identifier, None)
+      await session.stop()
+      raise
+
+
 class WebrtcdHandler(BaseHTTPRequestHandler):
   protocol_version = "HTTP/1.1"
 
@@ -503,6 +534,7 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
   _routes = {
     "/schema": ("GET", "HEAD"),
     "/stream": ("POST",),
+    "/routes": ("POST",),
     "/notify": ("POST",),
   }
 
@@ -535,6 +567,8 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
         result = self._run(handle_get_schema(self.server.state, services))
       elif parsed.path == "/stream":
         result = self._run(handle_get_stream(self.server.state, self._read_body(), self.headers.get_content_type()))
+      elif parsed.path == "/routes":
+        result = self._run(handle_route_stream(self.server.state, self._read_body()))
       else:  # /notify
         try:
           payload = json.loads(self._read_body())
