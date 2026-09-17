@@ -12,13 +12,15 @@ import threading
 import time
 from pathlib import Path
 from queue import Queue
-from typing import Any, Callable, Protocol, cast
+from typing import Any, Protocol, cast
+from collections.abc import Callable
 
 import requests
 from websocket import ABNF, WebSocket, WebSocketTimeoutException
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
+from openpilot.system.app.clock import ClockChallenges
 from openpilot.system.app.identity import get_device_public_key
 from openpilot.common.params import Params
 from openpilot.common.hardware import HARDWARE
@@ -71,7 +73,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
 LIVE_STATE_SERVICES = [
   "deviceState",
   "peripheralState",
-  "liveCalibration",
+  "extrinsicsCalibration",
   "managerState",
   "onroadEvents",
   "selfdriveState",
@@ -119,6 +121,7 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
+NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "requestRouteUpload"}
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
@@ -795,6 +798,25 @@ def startStream(sdp: str, enabled: bool = True) -> dict:
   return upstream_start_stream(sdp, enabled)
 
 
+@dispatcher.add_method
+def requestRouteUpload(paths: list[str]) -> dict:
+  from openpilot.common.hardware.hw import Paths
+  from openpilot.system.loggerd.data_upload_queue import request_uploads
+  if not Params().get_bool("DataUploadEnabled"):
+    raise ValueError("Device cloud uploads are disabled")
+  return request_uploads(Paths.log_root(), paths)
+
+
+def start_route_stream(sdp: str, peer: str) -> dict:
+  from openpilot.system.webrtc.helpers import WEBRTCD_PORT, wait_for_webrtcd
+  if peer not in load_authorized_peers():
+    raise PermissionError("device access required")
+  wait_for_webrtcd()
+  response = requests.post(f"http://127.0.0.1:{WEBRTCD_PORT}/routes", json={"sdp": sdp, "peer": peer}, timeout=35)
+  response.raise_for_status()
+  return response.json()
+
+
 def _json_safe(value: Any) -> Any:
   if isinstance(value, bytes):
     return base64.b64encode(value).decode("utf-8")
@@ -884,8 +906,19 @@ def live_state_handler(end_event: threading.Event) -> None:
     end_event.wait(LIVE_STATE_INTERVAL_S)
 
 
+clock_challenges = ClockChallenges()
+
+
+def dispatcher_for_peer(sender: str):
+  return dispatcher | {
+    "startRouteStream": lambda sdp: start_route_stream(sdp, sender),
+    "getTimeChallenge": lambda: clock_challenges.challenge(sender),
+    "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
+  }
+
+
 def handle_rpc(sender: str, body: dict) -> None:
-  send_peer_payload(sender, json.loads(handle(body, dispatcher)))
+  send_peer_payload(sender, json.loads(handle(body, dispatcher_for_peer(sender))))
 
 
 def handle_peer_message(data: str) -> bool:
