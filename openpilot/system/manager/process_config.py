@@ -131,7 +131,7 @@ procs = [
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
   PythonProcess("data_uploader", "openpilot.system.loggerd.data_uploader", data_upload),
   # debug procs
-  PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", or_(livestream, notcar)),
+  PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", always_run),
   PythonProcess("joystick", "openpilot.tools.joystick.joystick_control", and_(joystick, iscar)),
 ]
 
