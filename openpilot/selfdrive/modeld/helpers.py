@@ -20,6 +20,8 @@ def tensor_from_dma_buf(ptr: int, fd: int | None, size: int, device: str) -> Ten
 
 
 def modeld_pkl_path(chestnut: bool):
+  if chestnut and ASIUS_HARDWARE:
+    return MODELS_DIR / 'big_driving_asius_tinygrad.pkl'
   prefix = 'big_' if chestnut else ''
   return MODELS_DIR / f'{prefix}driving_tinygrad.pkl'
 
@@ -50,6 +52,5 @@ def wait_for_chestnut(timeout: float = 10.) -> None:
     time.sleep(0.1)
 
 def chestnut_compiled() -> bool:
-  path = modeld_pkl_path(chestnut=True)
-  return path.is_file() and all(
+  return modeld_pkl_path(chestnut=True).is_file() and all(
     (MODELS_DIR / f'big_driving_warp_{size}_tinygrad.pkl').is_file() for size in ('1344x760', '1928x1208'))
