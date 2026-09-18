@@ -7,7 +7,7 @@ from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, DM_INPUT
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 
 
-Import('env', 'arch')
+Import('env', 'arch', 'ASIUS_HARDWARE')
 
 # TODO: add GCC support to tinygrad?
 # tinygrad's CPU:LLVM backend requires libLLVM, skip the build on PC if it's not available
@@ -30,6 +30,8 @@ else:
   # JIT=2 disables graph batching, which produces incorrect outputs after buffers change.
   tg_flags = 'DEV=METAL JIT=2' if arch == 'Darwin' else 'DEV=CPU:LLVM'
 
+driving_tg_flags = tg_flags.replace(' NOLOCALS=1', '') if ASIUS_HARDWARE else tg_flags
+
 # tinygrad calls brew which needs a $HOME in the env
 mac_brew_string = f'HOME={os.path.expanduser("~")}' if arch == 'Darwin' else ''
 
@@ -38,9 +40,9 @@ compiler = Dir('#tinygrad_repo/examples/openpilot').abspath
 # build on all cores
 taskset = 'taskset -c 0-7 ' if arch == 'comma_arm64' else ''
 
-def compile_model(onnx_path, pkl_path):
+def compile_model(onnx_path, pkl_path, flags=tg_flags):
   onnx_path, target_pkl_path = File(onnx_path).abspath, File(pkl_path).abspath
-  cmd = (f'{tg_flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_onnx.py" '
+  cmd = (f'{flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_onnx.py" '
          f'"{onnx_path}" "{target_pkl_path}" --out-of-band --benchmark-runs 1')
   lenv.Command(
     target_pkl_path,
@@ -49,13 +51,13 @@ def compile_model(onnx_path, pkl_path):
   )
 
 compile_model('models/dmonitoring_model.onnx', 'models/dmonitoring_model_tinygrad.pkl')
-compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl')
+compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl', driving_tg_flags)
 
 model_w, model_h = MEDMODEL_INPUT_SIZE
 for cam_w, cam_h in camera_configs:
   warp_pkl_path = File(f"models/driving_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
   stride, y_height, uv_height, _ = get_nv12_info(cam_w, cam_h)
-  cmd = (f'{tg_flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_warp.py" '
+  cmd = (f'{driving_tg_flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_warp.py" '
          f'--frame {cam_w},{cam_h},{stride},{y_height},{uv_height},{stride * (y_height + uv_height)} '
          f'--warp-to {model_w}x{model_h} --layout yuv420 --frames 2 '
          f'--output {warp_pkl_path}')
