@@ -8,7 +8,7 @@ from openpilot.selfdrive.modeld.helpers import chestnut_present
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 
 
-Import('env', 'arch')
+Import('env', 'arch', 'ASIUS_HARDWARE')
 lenv = env.Clone()
 lenv.PrependENVPath('PYTHONPATH', Dir('#tinygrad_repo').abspath)
 
@@ -23,6 +23,8 @@ if arch == 'comma_arm64':
 else:
   # JIT=2 disables graph batching, which produces incorrect outputs after buffers change.
   tg_flags = 'DEV=METAL JIT=2' if arch == 'Darwin' else 'DEV=CPU:LLVM'
+
+driving_tg_flags = tg_flags.replace(' NOLOCALS=1', '') if ASIUS_HARDWARE else tg_flags
 
 CHESTNUT = chestnut_present()
 if CHESTNUT:
@@ -52,22 +54,26 @@ def chestnut_action(command):
     return env.Execute(command)
   return Action(do_compile, "  [CHESTNUT] $TARGET")
 
-def compile_model(onnx_path, pkl_path):
+def compile_model(onnx_path, pkl_path, flags=tg_flags, chestnut=False):
   onnx_path, target_pkl_path = File(onnx_path).abspath, File(pkl_path).abspath
-  cmd = (f'{tg_flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_onnx.py" '
+  cmd = (f'{flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_onnx.py" '
          f'"{onnx_path}" "{target_pkl_path}" --out-of-band --benchmark-runs 1')
-  lenv.Command(
+  node = lenv.Command(
     target_pkl_path,
     tinygrad_files + [onnx_path, Value(cmd)],
-    Action(cmd, "  [ONNX] $TARGET"),
+    chestnut_action(cmd) if chestnut else Action(cmd, "  [ONNX] $TARGET"),
   )
+  if chestnut:
+    lenv.SideEffect(chestnut_lock, node)
 
 compile_model('models/dmonitoring_model.onnx', 'models/dmonitoring_model_tinygrad.pkl')
-compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl')
+compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl', driving_tg_flags)
+if CHESTNUT and ASIUS_HARDWARE and File('models/big_driving_supercombo.onnx').exists():
+  compile_model('models/big_driving_supercombo.onnx', 'models/big_driving_asius_tinygrad.pkl', chestnut_tg_flags, chestnut=True)
 
 model_w, model_h = MEDMODEL_INPUT_SIZE
 for chestnut in [False, True] if CHESTNUT else [False]:
-  file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', tg_flags)
+  file_prefix, cmd_flags = ('big_', chestnut_tg_flags) if chestnut else ('', driving_tg_flags)
   for cam_w, cam_h in camera_configs:
     warp_pkl_path = File(f"models/{file_prefix}driving_warp_{cam_w}x{cam_h}_tinygrad.pkl").abspath
     stride, y_height, uv_height, _ = get_nv12_info(cam_w, cam_h)

@@ -1,7 +1,7 @@
 import pyray as rl
 import time
 
-from openpilot.common.api import Api
+from openpilot.system.app.websocketd import pairing_url
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, GreyBigButton
@@ -124,19 +124,18 @@ class PrimeScroller(NavScroller):
       self._scroller._show_scroll_indicator = False
       self._scroller.add_widgets([
         self._qr,
-        GreyBigButton("finish setup", "scan to pair device\nwith connect",
+        GreyBigButton("finish setup", "scan to pair device\nwith Asius App",
                       gui_app.texture("icons_mici/settings/device/green_settings.png", 64, 64)),
-        GreyBigButton("", "connect lets you review recent driving footage and bookmark events."),
+        GreyBigButton("", "Asius App lets you control your device and review driving footage."),
       ])
 
   def _get_pairing_url(self) -> str:
     try:
       dongle_id = self._params.get("DongleId") or ""
-      token = Api(dongle_id).get_token({'pair': True})
+      return pairing_url(dongle_id)
     except Exception as e:
       cloudlog.warning(f"Failed to get pairing token: {e}")
-      token = ""
-    return f"https://connect.comma.ai/?pair={token}"
+      return ""
 
   def _update_layout_rects(self):
     super()._update_layout_rects()
