@@ -31,7 +31,10 @@ if __name__ == "__main__":
       continue
 
     rf = os.fsdecode(tracked_file)
-    if not os.getenv("INCLUDE_BIG_MODEL") and rf == "openpilot/selfdrive/modeld/models/big_driving_tinygrad.pkl":
+    if not os.getenv("INCLUDE_BIG_MODEL") and rf in (
+      "openpilot/selfdrive/modeld/models/big_driving_tinygrad.pkl",
+      "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx",
+    ):
       continue
     blacklisted = any(re.search(p, rf) for p in blacklist)
     whitelisted = any(re.search(p, rf) for p in whitelist)
