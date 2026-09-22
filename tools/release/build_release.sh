@@ -60,7 +60,7 @@ else
 fi
 
 if [ -n "$INCLUDE_BIG_MODEL" ]; then
-  python3 -c 'from openpilot.selfdrive.modeld.helpers import modeld_pkl_path; assert modeld_pkl_path(True).is_file()'
+  test -f openpilot/selfdrive/modeld/models/big_driving_tinygrad.pkl
 fi
 
 # Ensure no submodules in release
@@ -101,11 +101,7 @@ for branch in ${RELEASE_BRANCH//,/ }; do
   REFS+=("$BUILD_BRANCH:$branch")
 done
 # uploading the larger pack is faster than spending CPU to optimize it
-# Native Asius models are generated during this build and need an LFS upload.
-if [ -f openpilot/selfdrive/modeld/models/big_driving_asius_tinygrad.pkl ]; then
-  git lfs push origin "$BUILD_BRANCH"
-fi
-# The upstream big model is already published to LFS by the source branch.
+# The big model is already published to LFS by the source branch.
 GIT_LFS_SKIP_PUSH=1 git -c pack.window=0 -c pack.depth=0 -c pack.compression=0 push -f origin "${REFS[@]}"
 
 echo "[-] done T=$SECONDS"
