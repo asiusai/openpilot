@@ -20,8 +20,6 @@ def tensor_from_dma_buf(ptr: int, fd: int | None, size: int, device: str) -> Ten
 
 
 def modeld_pkl_path(chestnut: bool):
-  if chestnut and ASIUS_HARDWARE:
-    return MODELS_DIR / 'big_driving_asius_tinygrad.pkl'
   prefix = 'big_' if chestnut else ''
   return MODELS_DIR / f'{prefix}driving_tinygrad.pkl'
 
