@@ -150,8 +150,8 @@ def test_pairing_blinks_green_without_driver_camera(monkeypatch):
   channels = ledd.pairing_led_channels(26)
   assert channels == {
     1: [0] * 9,
-    2: [0, 26, 8] * 3,
-    3: [0, 26, 8] * 3,
+    2: [0, 26, 0] * 3,
+    3: [0, 26, 0] * 3,
   }
 
   monkeypatch.setattr(ledd.time, 'monotonic', lambda: 0.5)

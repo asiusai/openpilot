@@ -64,7 +64,7 @@ class LedState:
 
 
 BLUE = LedState("blue", 0, 0, 180)
-GREEN = LedState("green", 0, 180, 35)
+GREEN = LedState("green", 0, 180, 0)
 YELLOW = LedState("yellow", 180, 130, 0)
 BROWN = LedState("brown", 120, 75, 20)
 RED = LedState("red", 180, 0, 0)
@@ -400,8 +400,8 @@ def pairing_led_channels(brightness: int = 255) -> dict[int, list[int]] | None:
   if not pairing_mode_active():
     return None
 
-  values = (0, round(255 * brightness / 255.), round(80 * brightness / 255.)) if int(time.monotonic() * 2) % 2 == 0 else (0, 0, 0)
-  channels = list(values) * 3
+  state = max_brightness(GREEN if int(time.monotonic() * 2) % 2 == 0 else OFF, brightness)
+  channels = [state.red, state.green, state.blue] * 3
 
   return {
     1: [0] * len(CAM_LED_CHANNELS),
