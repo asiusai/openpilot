@@ -799,23 +799,14 @@ def startStream(sdp: str, enabled: bool) -> dict:
   params = Params()
   bridge_services_in = []
 
-  # stale car params case taken care of by webrtcd being shut off on ignition
   cp_bytes = params.get("CarParamsPersistent")
   if cp_bytes is not None:
     with car.CarParams.from_bytes(cp_bytes) as CP:
       if CP.notCar:
         bridge_services_in.append("testJoystick")
 
-  if params.get_bool("IsOffroad"):
-    # manager owns camerad/stream_encoderd/webrtcd; flip the param and let it bring them up.
-    # webrtcd clears IsLiveStreaming when the session ends
-    params.put_bool("IsLiveStreaming", True)
-    # wait for webrtcd end points to wake up
-    try:
-      wait_for_webrtcd()
-    except TimeoutError:
-      cloudlog.event("athena.startStream.webrtcd_offroad_start_timeout", error=True)
-      raise
+  # webrtcd owns the streaming lifetime, including ignition transitions.
+  wait_for_webrtcd()
 
   return post_stream_request(StreamRequestBody(sdp, ["wideRoad"], enabled, bridge_services_in,
                                              ["carState", "deviceState", "drivingModelData", "extrinsicsCalibration"]))
