@@ -88,6 +88,9 @@ class HardwareComma(HardwareBase):
   def get_device_type(self):
     return get_device_type()
 
+  def get_network_capabilities(self) -> dict[str, bool]:
+    return {"hotspot": True, "cellular": True}
+
   def reboot(self, reason=None):
     subprocess.check_output(["sudo", "reboot"])
 
