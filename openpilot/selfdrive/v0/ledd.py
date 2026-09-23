@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from openpilot.selfdrive.v0.led_control import manual_led_channels
+
 STARTUP_GRACE = 30.
 RUNTIME_HZ = 4.
 STARTED_AT = time.monotonic()
@@ -448,6 +450,7 @@ def main() -> None:
 
   global Ratekeeper, log, messaging, pairing_mode_active
   from openpilot.common.realtime import Ratekeeper as OpenpilotRatekeeper
+  from openpilot.common.params import Params
   from openpilot.system.app.bluetoothd import pairing_mode_active as app_pairing_mode_active
   try:
     from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
@@ -477,13 +480,17 @@ def main() -> None:
     'wideRoadCameraState',
   ], ignore_avg_freq=['managerState'])
   rk = Ratekeeper(RUNTIME_HZ)
+  params = Params()
 
   while not done:
     sm.update(0)
     brightness = camera_led_brightness(sm)
+    manual_channels = manual_led_channels(sm, params)
     pairing_channels = pairing_led_channels(brightness)
     if pairing_channels is not None:
       led.set_channels(pairing_channels)
+    elif manual_channels is not None:
+      led.set_channels(manual_channels)
     else:
       led.set(led_state(sm), brightness=brightness)
     rk.keep_time()

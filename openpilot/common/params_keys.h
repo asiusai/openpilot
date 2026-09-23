@@ -26,6 +26,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"WebsocketdPid", {PERSISTENT, INT}},
     {"AppAuthorizedKeys", {PERSISTENT, JSON}},
     {"AppPairingUntil", {PERSISTENT, INT}},
+    {"ManualLedState", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"AthenadUploadQueue", {PERSISTENT, JSON}},
     {"AthenadRecentlyViewedRoutes", {PERSISTENT, STRING}},
     {"BootCount", {PERSISTENT, INT}},

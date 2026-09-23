@@ -23,13 +23,14 @@ from openpilot.cereal import log
 from openpilot.system.app.clock import ClockChallenges
 from openpilot.system.app.identity import get_device_public_key
 from openpilot.common.params import Params
-from openpilot.common.hardware import HARDWARE
+from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, handle
 from openpilot.system.app.device_name import get_device_name, set_device_name
 from openpilot.system.app.terminal import TerminalManager
+from openpilot.selfdrive.v0.led_control import MANUAL_LED_PARAM, get_led_state, set_led_state
 from openpilot.system.app.websocketd import (
   authorize_peer,
   load_authorized_peers,
@@ -53,6 +54,7 @@ LIVE_STATE_INTERVAL_S = 1.0
 VAMOS_UPDATE_STATE_FILE = Path("/data/vamos-update/state.json")
 VAMOS_WIFI_COMMAND = Path("/usr/bin/vamos-wifi")
 SAVE_PARAMS_BLOCKED_KEYS = {
+  MANUAL_LED_PARAM,
   "AccessToken",
   "ApiCache_Device",
   "AppAuthorizedKeys",
@@ -64,6 +66,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "GithubSshKeys",
   "GithubUsername",
   "HardwareSerial",
+  "IsOffroad",
   "LastAthenaPingTime",
   "SecOCKey",
   "AthenadPid",
@@ -72,6 +75,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
 }
 LIVE_STATE_SERVICES = [
   "deviceState",
+  "gpsLocation",
   "peripheralState",
   "extrinsicsCalibration",
   "managerState",
@@ -231,6 +235,16 @@ def getDeviceName() -> str:
 @dispatcher.add_method
 def setDeviceName(name: str) -> dict[str, str]:
   return {"name": set_device_name(name)}
+
+
+@dispatcher.add_method
+def getLedState() -> dict:
+  return get_led_state(Params(), ASIUS_HARDWARE)
+
+
+@dispatcher.add_method
+def setLedState(manual: bool, colors: list[str], brightness: int) -> dict:
+  return set_led_state(Params(), ASIUS_HARDWARE, manual, colors, brightness)
 
 
 @dispatcher.add_method
@@ -840,6 +854,9 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
   services: dict[str, Any] = {}
   for service in LIVE_STATE_SERVICES:
     try:
+      if service == "gpsLocation" and not (sm.alive[service] and sm.valid[service]):
+        services[service] = {"hasFix": False}
+        continue
       if sm.recv_frame[service] > 0:
         data = sm[service]
         services[service] = ([event.to_dict() for event in data]
