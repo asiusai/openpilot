@@ -266,7 +266,6 @@ class TxCharacteristic(GattCharacteristic):
 class Advertisement(ServiceInterface):
   def __init__(self):
     super().__init__(ADVERTISEMENT)
-    self.pairing = False
 
   @dbus_property(access=PropertyAccess.READ)
   def Type(self) -> DBusStr:
@@ -274,15 +273,17 @@ class Advertisement(ServiceInterface):
 
   @dbus_property(access=PropertyAccess.READ)
   def ServiceUUIDs(self) -> DBusStrList:
-    return [BLE_SERVICE_UUID] if self.pairing else []
+    return [BLE_SERVICE_UUID]
 
   @dbus_property(access=PropertyAccess.READ)
   def LocalName(self) -> DBusStr:
-    return get_device_name() if self.pairing else ""
+    return get_device_name()
 
   @dbus_property(access=PropertyAccess.READ)
   def Discoverable(self) -> DBusBool:
-    return self.pairing
+    # Browsers must be able to find saved devices after pairing mode ends.
+    # OS bonding and new app authorization are still gated by pairing mode.
+    return True
 
   @dbus_method()
   def Release(self):
@@ -580,11 +581,10 @@ async def set_adapter_property(bus: MessageBus, adapter: str, name: str, value: 
   await checked_call(bus, method_call(adapter, DBUS_PROPERTIES, "Set", "ssv", [ADAPTER, name, value]))
 
 
-async def register_bluez(bus: MessageBus, adapter: str, advertisement: Advertisement) -> None:
+async def register_bluez(bus: MessageBus, adapter: str) -> None:
   await set_adapter_property(bus, adapter, "Powered", Variant("b", True))
   await set_adapter_property(bus, adapter, "Alias", Variant("s", get_device_name()))
-  advertisement.pairing = pairing_mode_active()
-  await set_adapter_property(bus, adapter, "Pairable", Variant("b", advertisement.pairing))
+  await set_adapter_property(bus, adapter, "Pairable", Variant("b", pairing_mode_active()))
   await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RegisterAgent", "os", [AGENT_PATH, "NoInputNoOutput"]))
   await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RequestDefaultAgent", "o", [AGENT_PATH]))
   await checked_call(bus, method_call(adapter, GATT_MANAGER, "RegisterApplication", "oa{sv}", [APPLICATION_PATH, {}]))
@@ -622,19 +622,22 @@ async def refresh_advertisement(bus: MessageBus, adapter: str) -> None:
   await checked_call(bus, method_call(adapter, ADVERTISING_MANAGER, "RegisterAdvertisement", "oa{sv}", [ADVERTISEMENT_PATH, {}]))
 
 
-async def keep_advertising(bus: MessageBus, adapter: str, advertisement: Advertisement, stop: asyncio.Event) -> None:
+async def keep_advertising(bus: MessageBus, adapter: str, stop: asyncio.Event) -> None:
   connected = -1
   pairing: bool | None = None
+  name: str | None = None
   while not stop.is_set():
     try:
       current = await connected_device_count(bus, adapter)
       current_pairing = pairing_mode_active()
-      if current != connected or current_pairing != pairing:
-        advertisement.pairing = current_pairing
+      current_name = get_device_name()
+      if current_pairing != pairing:
         await set_adapter_property(bus, adapter, "Pairable", Variant("b", current_pairing))
+        pairing = current_pairing
+      if current != connected or current_name != name:
         await refresh_advertisement(bus, adapter)
         connected = current
-        pairing = current_pairing
+        name = current_name
         cloudlog.event("asius.bluetooth.advertisement_refreshed", connected=current, pairing=current_pairing)
     except Exception:
       cloudlog.exception("asius.bluetooth.advertisement_refresh_failed")
@@ -665,11 +668,11 @@ async def run_bluez(stop: asyncio.Event) -> None:
       bus.export(AGENT_PATH, PairingAgent())
 
       adapter = await find_adapter(bus)
-      await register_bluez(bus, adapter, advertisement)
+      await register_bluez(bus, adapter)
       cloudlog.event("asius.bluetooth.ready", adapter=adapter, service_uuid=BLE_SERVICE_UUID)
 
       engine_task = asyncio.create_task(engine.run(stop))
-      advertising_task = asyncio.create_task(keep_advertising(bus, adapter, advertisement, stop))
+      advertising_task = asyncio.create_task(keep_advertising(bus, adapter, stop))
       await stop.wait()
     except Exception:
       cloudlog.exception("asius.bluetooth.service_failed")
