@@ -48,6 +48,7 @@ APPLICATION_PATH = "/ai/asius/ble"
 SERVICE_PATH = f"{APPLICATION_PATH}/service0"
 RX_PATH = f"{SERVICE_PATH}/rx"
 TX_PATH = f"{SERVICE_PATH}/tx"
+STATUS_PATH = f"{SERVICE_PATH}/status"
 ADVERTISEMENT_PATH = "/ai/asius/advertisement0"
 AGENT_PATH = "/ai/asius/agent0"
 
@@ -63,6 +64,7 @@ APP_PAIRING_UNTIL_PARAM = "AppPairingUntil"
 BLE_SERVICE_UUID = "84a48ccf-5c26-56f7-91b8-5c39abd40cb9"
 BLE_RX_UUID = "756e901e-4d8e-53ca-a196-41927498a27d"
 BLE_TX_UUID = "6871393b-21dc-5830-b5b1-0debe5fd29c8"
+BLE_STATUS_UUID = "0673914b-aee6-53b5-bb41-53674b7f9510"
 PROTOCOL_VERSION = 1
 FRAME_START = 1
 FRAME_END = 2
@@ -205,6 +207,22 @@ class GattCharacteristic(ServiceInterface):
   @dbus_property(access=PropertyAccess.READ)
   def Flags(self) -> DBusStrList:
     return self.flags
+
+
+class StatusCharacteristic(GattCharacteristic):
+  def __init__(self, public_key: str | None):
+    # Public discovery information only. Commands still require encrypted GATT
+    # and an authorized, authenticated app envelope.
+    super().__init__(BLE_STATUS_UUID, ["read"])
+    self.public_key = public_key
+
+  @dbus_method()
+  def ReadValue(self, options: DBusDict) -> DBusBytes:
+    value = json.dumps({"v": PROTOCOL_VERSION, "publicKey": self.public_key, "pairingMode": pairing_mode_active()}, separators=(",", ":")).encode()
+    offset = int(variant_value(options.get("offset", Variant("q", 0))))
+    if offset > len(value):
+      raise DBusError("org.bluez.Error.InvalidOffset", "invalid status offset")
+    return value[offset:]
 
 
 class RxCharacteristic(GattCharacteristic):
@@ -664,6 +682,7 @@ async def run_bluez(stop: asyncio.Event) -> None:
       bus.export(SERVICE_PATH, service)
       bus.export(RX_PATH, rx)
       bus.export(TX_PATH, tx)
+      bus.export(STATUS_PATH, StatusCharacteristic(engine.dongle_id))
       bus.export(ADVERTISEMENT_PATH, advertisement)
       bus.export(AGENT_PATH, PairingAgent())
 
