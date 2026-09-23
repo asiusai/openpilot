@@ -499,6 +499,8 @@ def main():
 
   if COMMA_HARDWARE:
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
+
+  if not PC:
     threads.append(threading.Thread(target=chestnut_state_thread, args=(end_event,)))
 
   for t in threads:
