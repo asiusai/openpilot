@@ -827,12 +827,12 @@ def requestRouteUpload(paths: list[str]) -> dict:
   return request_uploads(Paths.log_root(), paths)
 
 
-def start_route_stream(sdp: str, peer: str) -> dict:
+def start_data_stream(sdp: str, peer: str, endpoint: str, **options) -> dict:
   from openpilot.system.webrtc.helpers import WEBRTCD_PORT, wait_for_webrtcd
   if peer not in load_authorized_peers():
     raise PermissionError("device access required")
   wait_for_webrtcd()
-  response = requests.post(f"http://127.0.0.1:{WEBRTCD_PORT}/routes", json={"sdp": sdp, "peer": peer}, timeout=35)
+  response = requests.post(f"http://127.0.0.1:{WEBRTCD_PORT}/{endpoint}", json={"sdp": sdp, "peer": peer, **options}, timeout=35)
   response.raise_for_status()
   return response.json()
 
@@ -934,7 +934,8 @@ clock_challenges = ClockChallenges()
 
 def dispatcher_for_peer(sender: str):
   return dispatcher | {
-    "startRouteStream": lambda sdp: start_route_stream(sdp, sender),
+    "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
+    "startStream": lambda sdp, enabled=True, display=False: start_data_stream(sdp, sender, "stream", display=True) if display else startStream(sdp, enabled),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
   }

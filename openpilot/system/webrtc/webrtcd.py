@@ -385,6 +385,7 @@ class ServerState:
   def __init__(self):
     self.streams: dict[str, StreamSession] = {}
     self.routes: dict = {}
+    self.in_car: dict = {}
     self.stream_lock = asyncio.Lock()
     self.teardown: asyncio.TimerHandle | None = None
 
@@ -397,6 +398,8 @@ def schedule_teardown(state: ServerState):
   def clear():
     if not state.streams:
       Params().put_bool("IsLiveStreaming", False)
+    if not state.in_car:
+      Params().put_bool("IsInCarDisplay", False)
 
   state.teardown = asyncio.get_running_loop().call_later(5.0, clear)
 
@@ -414,7 +417,10 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     return _json_response({"error": "unsupported media type"}, status=415)
 
   stream_dict = state.streams
-  body = StreamRequestBody(**json.loads(raw_body))
+  stream_body = json.loads(raw_body)
+  if stream_body.get("display") is True:
+    return await handle_in_car_stream(state, raw_body)
+  body = StreamRequestBody(**stream_body)
 
   async with state.stream_lock:
     # don't remove existing connection on prewarm request
@@ -432,6 +438,8 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
       await s.stop()
       stream_dict.pop(sid, None)
 
+    Params().put_bool("IsLiveStreaming", True)
+    schedule_teardown(state)
     session = StreamSession(body)
     stream_dict[session.identifier] = session
     try:
@@ -445,6 +453,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     except TimeoutError:
       await session.stop()
       stream_dict.pop(session.identifier, None)
+      schedule_teardown(state)
       logging.getLogger("webrtcd").exception("Timed out creating stream answer")
       with cloudlog.ctx(session_id=session.identifier):
         cloudlog.warning("webrtcd.session.answer_timeout")
@@ -452,6 +461,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     except Exception:
       await session.stop()
       stream_dict.pop(session.identifier, None)
+      schedule_teardown(state)
       logging.getLogger("webrtcd").exception("Failed to create stream answer")
       with cloudlog.ctx(session_id=session.identifier):
         cloudlog.exception("webrtcd.session.answer_exception")
@@ -487,6 +497,13 @@ async def handle_post_notify(state: ServerState, payload: Any) -> tuple[int, byt
 
 
 async def on_shutdown(state: ServerState):
+  if state.teardown is not None:
+    state.teardown.cancel()
+  for session in list(state.in_car.values()):
+    await session.stop()
+  state.in_car.clear()
+  Params().put_bool("IsInCarDisplay", False)
+  Params().put_bool("IsLiveStreaming", False)
   for session in list(state.routes.values()):
     await session.stop()
   state.routes.clear()
@@ -524,6 +541,48 @@ async def handle_route_stream(state: ServerState, raw_body: bytes) -> tuple[int,
     except Exception:
       state.routes.pop(session.identifier, None)
       await session.stop()
+      raise
+
+
+async def handle_in_car_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
+  from openpilot.system.app.websocketd import load_authorized_peers
+  from openpilot.system.webrtc.in_car import InCarSession
+  try:
+    body = json.loads(raw_body)
+    peer, sdp = body.get("peer"), body.get("sdp")
+  except (ValueError, AttributeError):
+    return _json_response({"error": "invalid request"}, status=400)
+  if not isinstance(peer, str) or peer not in load_authorized_peers():
+    return _json_response({"error": "device access required"}, status=403)
+  if not isinstance(sdp, str) or len(sdp) > 64 * 1024 or "m=application " not in sdp or any(
+      line.startswith(("m=audio ", "m=video ")) for line in sdp.splitlines()):
+    return _json_response({"error": "data-only offer required"}, status=400)
+  async with state.stream_lock:
+    # A reconnect replaces only this app's display, never another app's session.
+    if previous := state.in_car.pop(peer, None):
+      await previous.stop()
+    if len(state.in_car) >= 2:
+      return _json_response({"error": "too many in-car displays"}, status=429)
+    session = InCarSession(sdp, lambda: peer in load_authorized_peers())
+    state.in_car[peer] = session
+    Params().put_bool("IsInCarDisplay", True)
+    try:
+      answer = await asyncio.wait_for(session.get_answer(), timeout=30)
+      session.start()
+
+      def finished(task):
+        if state.in_car.get(peer) is session:
+          state.in_car.pop(peer, None)
+        if not task.cancelled() and task.exception() is not None:
+          cloudlog.error("in-car display failed: %s", task.exception())
+        schedule_teardown(state)
+
+      session.run_task.add_done_callback(finished)
+      return _json_response({"sdp": answer.sdp, "type": answer.type})
+    except BaseException:
+      state.in_car.pop(peer, None)
+      await session.stop()
+      schedule_teardown(state)
       raise
 
 
@@ -640,6 +699,9 @@ def webrtcd_thread(host: str, port: int):
   loop = asyncio.new_event_loop()
   asyncio.set_event_loop(loop)
   state = ServerState()
+  # No peer connection survives a daemon restart. Retire any orphaned camera demand.
+  Params().put_bool("IsLiveStreaming", False)
+  Params().put_bool("IsInCarDisplay", False)
 
   server = WebrtcdHTTPServer((host, port), WebrtcdHandler)
   server.state = state
