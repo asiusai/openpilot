@@ -97,6 +97,9 @@ class HardwareBase(ABC):
   def get_network_type(self):
     return NetworkType.none
 
+  def get_network_capabilities(self) -> dict[str, bool]:
+    return {"hotspot": False, "cellular": False}
+
   def get_sim_info(self):
     return {
       'sim_id': '',
