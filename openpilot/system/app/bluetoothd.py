@@ -472,6 +472,7 @@ class BlePeerEngine:
     self.active_peers[sender] = time.monotonic()
     message_type = body.get("type")
     if message_type == "ble-pair-request":
+      disable_pairing_mode()
       await self.send_body(sender, {
         "type": "pair-response",
         "publicKey": self.dongle_id,
@@ -479,7 +480,7 @@ class BlePeerEngine:
         "name": get_device_name(),
       })
     elif message_type == "ble-session":
-      await self.send_body(sender, {"type": "ble-session", "ready": True})
+      await self.send_body(sender, {"type": "ble-session", "ready": True, "requestId": body.get("requestId")})
     elif message_type == "ble-ping":
       await self.send_body(sender, {"type": "ble-pong", "id": body.get("id")})
     elif body.get("method"):
