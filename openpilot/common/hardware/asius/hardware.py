@@ -15,6 +15,9 @@ class HardwareAsius(HardwareComma):
   def get_device_type(self):
     return "v0"
 
+  def get_network_capabilities(self) -> dict[str, bool]:
+    return {"hotspot": False, "cellular": False}
+
   def get_serial(self):
     with open("/sys/devices/soc0/serial_number") as serial_file:
       return serial_file.read().strip()
