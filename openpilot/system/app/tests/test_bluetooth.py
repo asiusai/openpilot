@@ -1,12 +1,26 @@
+import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from dbus_fast import Variant
 from dbus_fast.errors import DBusError
 
-from openpilot.system.app.bluetoothd import Advertisement, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, keep_advertising
+from openpilot.system.app.bluetoothd import Advertisement, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, StatusCharacteristic, keep_advertising
 
 
 class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
+  def test_status_is_public_read_only_and_reflects_pairing_mode(self):
+    status = StatusCharacteristic('public-device-key')
+    self.assertEqual(status.Flags, ['read'])
+    read = StatusCharacteristic.ReadValue.__wrapped__
+    for active in (True, False):
+      with patch('openpilot.system.app.bluetoothd.pairing_mode_active', return_value=active):
+        value = read(status, {})
+        self.assertEqual(json.loads(value), {"v": 1, "publicKey": "public-device-key", "pairingMode": active})
+        self.assertEqual(read(status, {"offset": Variant('q', 10)}), value[10:])
+        with self.assertRaises(DBusError):
+          read(status, {"offset": Variant('q', len(value) + 1)})
+
   def test_discoverable_without_allowing_new_bonds_outside_pairing_mode(self):
     with patch('openpilot.system.app.bluetoothd.pairing_mode_active', return_value=False), \
          patch('openpilot.system.app.bluetoothd.get_device_name', return_value="Asius v0"):
