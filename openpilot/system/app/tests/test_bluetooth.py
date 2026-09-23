@@ -1,7 +1,36 @@
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from openpilot.system.app.bluetoothd import BlePeerEngine
+from dbus_fast.errors import DBusError
+
+from openpilot.system.app.bluetoothd import Advertisement, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, keep_advertising
+
+
+class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
+  def test_discoverable_without_allowing_new_bonds_outside_pairing_mode(self):
+    with patch('openpilot.system.app.bluetoothd.pairing_mode_active', return_value=False), \
+         patch('openpilot.system.app.bluetoothd.get_device_name', return_value="Asius v0"):
+      advertisement = Advertisement()
+      self.assertEqual(advertisement.ServiceUUIDs, [BLE_SERVICE_UUID])
+      self.assertEqual(advertisement.LocalName, 'Asius v0')
+      self.assertTrue(advertisement.Discoverable)
+      with self.assertRaises(DBusError):
+        PairingAgent.require_pairing_mode()
+
+  async def test_closing_pairing_does_not_restart_advertising(self):
+    stop = MagicMock()
+    stop.is_set.side_effect = [False, False, True]
+    stop.wait = AsyncMock()
+    bus = MagicMock()
+    with patch('openpilot.system.app.bluetoothd.connected_device_count', new=AsyncMock(return_value=0)), \
+         patch('openpilot.system.app.bluetoothd.pairing_mode_active', side_effect=[True, False]), \
+         patch('openpilot.system.app.bluetoothd.get_device_name', return_value='Asius v0'), \
+         patch('openpilot.system.app.bluetoothd.set_adapter_property', new=AsyncMock()) as set_property, \
+         patch('openpilot.system.app.bluetoothd.refresh_advertisement', new=AsyncMock()) as refresh:
+      await keep_advertising(bus, '/adapter', stop)
+    refresh.assert_awaited_once_with(bus, '/adapter')
+    self.assertEqual([call.args[2] for call in set_property.call_args_list], ['Pairable', 'Pairable'])
+    self.assertEqual([call.args[3].value for call in set_property.call_args_list], [True, False])
 
 
 class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
