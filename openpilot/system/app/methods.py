@@ -660,6 +660,7 @@ def _signal_updated(signal_name: str) -> dict[str, int | str]:
 @dispatcher.add_method
 def getNetworkState() -> dict:
   params = Params()
+  capabilities = HARDWARE.get_network_capabilities()
   local_ips = [ip for ip in _local_ips() if ip["interface"] != "lo"]
   wifi_ip = next((ip["address"] for ip in local_ips if ip["interface"] == "wlan0"), "")
   wifi_state = _nmcli_wifi_state()
@@ -669,6 +670,7 @@ def getNetworkState() -> dict:
     network_type = 6
   local_ip = wifi_ip or next((ip["address"] for ip in local_ips if ip["interface"] == ethernet_interface), "")
   return {
+    "capabilities": capabilities,
     "networkType": network_type,
     "networkMetered": HARDWARE.get_network_metered(HARDWARE.get_network_type()),
     "wifi": wifi_state,
@@ -677,9 +679,9 @@ def getNetworkState() -> dict:
     "localIp": local_ip,
     "localIps": local_ips,
     "currentNetworkMetered": _connection_metered(),
-    "tetheringActive": wifi_state["ssid"] == "Hotspot" or wifi_state["ssid"] == _tethering_ssid(),
-    "tetheringSsid": _tethering_ssid(),
-    "tetheringPassword": _tethering_password(),
+    "tetheringActive": capabilities["hotspot"] and (wifi_state["ssid"] == "Hotspot" or wifi_state["ssid"] == _tethering_ssid()),
+    "tetheringSsid": _tethering_ssid() if capabilities["hotspot"] else "",
+    "tetheringPassword": _tethering_password() if capabilities["hotspot"] else "",
     "gsmRoaming": params.get_bool("GsmRoaming"),
     "gsmMetered": params.get_bool("GsmMetered"),
     "gsmApn": params.get("GsmApn") or "",
@@ -736,7 +738,9 @@ def forgetNetwork(ssid: str) -> dict[str, int | str]:
 
 
 @dispatcher.add_method
-def setTethering(enabled: bool) -> dict[str, int]:
+def setTethering(enabled: bool) -> dict[str, int | str]:
+  if not HARDWARE.get_network_capabilities()["hotspot"]:
+    return {"success": 0, "error": "Hotspot is not supported on this device"}
   if enabled:
     _nmcli(["device", "wifi", "hotspot", "ifname", "wlan0", "ssid", _tethering_ssid(), "password", _tethering_password()], sensitive=True)
   else:
@@ -746,6 +750,8 @@ def setTethering(enabled: bool) -> dict[str, int]:
 
 @dispatcher.add_method
 def setTetheringPassword(password: str) -> dict[str, int | str]:
+  if not HARDWARE.get_network_capabilities()["hotspot"]:
+    return {"success": 0, "error": "Hotspot is not supported on this device"}
   if len(password) < 8:
     return {"success": 0, "error": "password must be at least 8 characters"}
   _nmcli(["connection", "modify", "Hotspot", "802-11-wireless-security.psk", password], sensitive=True)
