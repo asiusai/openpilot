@@ -125,7 +125,7 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
-NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "requestRouteUpload"}
+NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "requestRouteUpload", "getInCarFrame", "stopInCarDisplay"}
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
@@ -837,6 +837,15 @@ def start_data_stream(sdp: str, peer: str, endpoint: str, **options) -> dict:
   return response.json()
 
 
+def in_car_request(peer: str, session: str, **options) -> dict:
+  from openpilot.system.webrtc.helpers import WEBRTCD_PORT
+  if peer not in load_authorized_peers():
+    raise PermissionError("device access required")
+  response = requests.post(f"http://127.0.0.1:{WEBRTCD_PORT}/in-car", json={"peer": peer, "session": session, **options}, timeout=4)
+  response.raise_for_status()
+  return response.json()
+
+
 def _json_safe(value: Any) -> Any:
   if isinstance(value, bytes):
     return base64.b64encode(value).decode("utf-8")
@@ -935,7 +944,8 @@ clock_challenges = ClockChallenges()
 def dispatcher_for_peer(sender: str):
   return dispatcher | {
     "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
-    "startStream": lambda sdp, enabled=True, display=False: start_data_stream(sdp, sender, "stream", display=True) if display else startStream(sdp, enabled),
+    "getInCarFrame": lambda session, frameId: in_car_request(sender, session, id=frameId),
+    "stopInCarDisplay": lambda session: in_car_request(sender, session, close=True),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
   }
