@@ -237,6 +237,12 @@ class StreamSession:
 
     self.enabled = body.enabled
     self.session_timeout = None if body.in_car else SESSION_TIMEOUT_SECONDS
+    self.in_car_state = None
+    self.in_car_request_id = 0
+    self.in_car_request_at = 0.0
+    if body.in_car:
+      from openpilot.system.webrtc.in_car import InCarTelemetry
+      self.in_car_state = InCarTelemetry()
     self.video_tracks = []
     for camera in body.cameras:
       track = LiveStreamVideoStreamTrack(camera, self.enabled)
@@ -286,6 +292,14 @@ class StreamSession:
         msg_type = payload.get("type")
 
         match msg_type:
+          case "inCarState":
+            identifier = payload.get("id")
+            if (self.in_car_state is not None and type(identifier) is int and self.in_car_request_id < identifier < 2**32
+                and time.monotonic() - self.in_car_request_at >= 0.05):
+              self.in_car_request_id = identifier
+              self.in_car_request_at = time.monotonic()
+              self.stream.get_messaging_channel().send(json.dumps({"type": "inCarState", "id": identifier,
+                                                                 "state": self.in_car_state.snapshot()}))
           case "livestreamCameraSwitch":
             # only needed for 1 track stream
             if len(self.video_tracks) == 1:
@@ -376,6 +390,7 @@ class StreamSession:
         await self.bitrate_controller.stop()
       if self.outgoing_bridge is not None:
         await self.outgoing_bridge.stop()
+      self.in_car_state = None
       for track in self.video_tracks:
         track.stop()
       self.video_tracks.clear()
@@ -386,7 +401,6 @@ class ServerState:
   def __init__(self):
     self.streams: dict[str, StreamSession] = {}
     self.routes: dict = {}
-    self.in_car: dict = {}
     self.stream_lock = asyncio.Lock()
     self.teardown: asyncio.TimerHandle | None = None
 
@@ -399,8 +413,6 @@ def schedule_teardown(state: ServerState):
   def clear():
     if not state.streams:
       Params().put_bool("IsLiveStreaming", False)
-    if not state.in_car:
-      Params().put_bool("IsInCarDisplay", False)
 
   state.teardown = asyncio.get_running_loop().call_later(5.0, clear)
 
@@ -498,10 +510,6 @@ async def handle_post_notify(state: ServerState, payload: Any) -> tuple[int, byt
 async def on_shutdown(state: ServerState):
   if state.teardown is not None:
     state.teardown.cancel()
-  for session in list(state.in_car.values()):
-    await session.stop()
-  state.in_car.clear()
-  Params().put_bool("IsInCarDisplay", False)
   Params().put_bool("IsLiveStreaming", False)
   for session in list(state.routes.values()):
     await session.stop()
@@ -543,77 +551,6 @@ async def handle_route_stream(state: ServerState, raw_body: bytes) -> tuple[int,
       raise
 
 
-async def handle_in_car_frame(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
-  from openpilot.system.app.websocketd import load_authorized_peers
-  from openpilot.system.webrtc.in_car import InCarSession
-  try:
-    if len(raw_body) > 4096:
-      raise ValueError('request too large')
-    body = json.loads(raw_body)
-    peer, identifier, request_id = body.get("peer"), body.get("session"), body.get("id")
-  except (ValueError, AttributeError):
-    return _json_response({"error": "invalid request"}, status=400)
-  if not isinstance(peer, str) or peer not in load_authorized_peers():
-    return _json_response({"error": "device access required"}, status=403)
-  if not isinstance(identifier, str) or len(identifier) != 36:
-    return _json_response({"error": "invalid display session"}, status=400)
-  images = body.get("images", True)
-  if type(images) is not bool:
-    return _json_response({"error": "invalid image mode"}, status=400)
-  camera = body.get("camera")
-  if camera is not None and camera not in ("road", "wideRoad", "driver"):
-    return _json_response({"error": "invalid camera"}, status=400)
-  closing = body.get("close") is True
-  if not closing and (type(request_id) is not int or not 0 < request_id < 2**32):
-    return _json_response({"error": "invalid frame request"}, status=400)
-  async with state.stream_lock:
-    session = state.in_car.get(peer)
-    if closing:
-      if session is not None and session.identifier == identifier:
-        session.closed = True
-        if not session.busy:
-          state.in_car.pop(peer)
-          await session.stop()
-          schedule_teardown(state)
-      return _json_response({"success": 1})
-    if session is not None and session.busy:
-      return _json_response({"error": "display frame already pending"}, status=409)
-    if session is not None and session.identifier != identifier:
-      state.in_car.pop(peer)
-      await session.stop()
-      session = None
-    if session is None:
-      if len(state.in_car) >= 2:
-        return _json_response({"error": "too many in-car displays"}, status=429)
-      session = InCarSession(identifier, lambda: peer in load_authorized_peers())
-      state.in_car[peer] = session
-    if request_id <= session.last_id:
-      return _json_response({"error": "stale frame request"}, status=409)
-    session.busy = True
-    session.last_id = request_id
-    if session.expiry:
-      session.expiry.cancel()
-    Params().put_bool("IsInCarDisplay", True)
-
-  async def retire():
-    if state.in_car.get(peer) is session and not session.busy:
-      state.in_car.pop(peer)
-      await session.stop()
-      schedule_teardown(state)
-
-  try:
-    return _json_response(await session.frame(request_id, images, camera))
-  except PermissionError:
-    return _json_response({"error": "device access revoked"}, status=403)
-  finally:
-    session.busy = False
-    # Hidden/closed tabs and lost network connections relinquish camera demand.
-    if session.closed:
-      await retire()
-    else:
-      session.expiry = asyncio.get_running_loop().call_later(3, lambda: asyncio.create_task(retire()))
-
-
 class WebrtcdHandler(BaseHTTPRequestHandler):
   protocol_version = "HTTP/1.1"
 
@@ -622,7 +559,6 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
     "/schema": ("GET", "HEAD"),
     "/stream": ("POST",),
     "/routes": ("POST",),
-    "/in-car": ("POST",),
     "/notify": ("POST",),
   }
 
@@ -655,8 +591,6 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
         result = self._run(handle_get_schema(self.server.state, services))
       elif parsed.path == "/stream":
         result = self._run(handle_get_stream(self.server.state, self._read_body(), self.headers.get_content_type()))
-      elif parsed.path == "/in-car":
-        result = self._run(handle_in_car_frame(self.server.state, self._read_body()))
       elif parsed.path == "/routes":
         result = self._run(handle_route_stream(self.server.state, self._read_body()))
       else:  # /notify
@@ -732,7 +666,6 @@ def webrtcd_thread(host: str, port: int):
   state = ServerState()
   # No peer connection survives a daemon restart. Retire any orphaned camera demand.
   Params().put_bool("IsLiveStreaming", False)
-  Params().put_bool("IsInCarDisplay", False)
 
   server = WebrtcdHTTPServer((host, port), WebrtcdHandler)
   server.state = state
