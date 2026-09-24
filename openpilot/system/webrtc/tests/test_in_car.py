@@ -255,3 +255,63 @@ def test_selfdrive_timeout_uses_stock_alert_without_replaying_enabled_state():
   assert snapshot['alert']['alertStatus'] == 'critical'
   publish(session, 'selfdriveState', {'enabled': True}, age=16)
   assert session.snapshot()['alert']['alertText2'] == 'Reboot Device'
+
+
+def test_hud_only_pull_never_captures_or_encodes_a_second_video_transport():
+  async def run():
+    session = make_session()
+    session.camera.read = Mock(side_effect=AssertionError('unexpected JPEG capture'))
+    session.encoder.encode = AsyncMock(side_effect=AssertionError('unexpected JPEG encode'))
+    result = await session.frame(9, images=False)
+    assert result['id'] == 9 and result['jpeg'] == '' and 'width' not in result
+    assert 'state' in result
+    session.camera.read.assert_not_called()
+    session.encoder.encode.assert_not_called()
+    await session.stop()
+  asyncio.run(run())
+
+
+def test_hud_only_mode_is_validated_and_forwarded():
+  async def run():
+    state = ServerState()
+    body = {'peer': 'allowed', 'session': str(uuid.uuid4()), 'id': 1}
+    with patch('openpilot.system.app.websocketd.load_authorized_peers', return_value=['allowed']), \
+         patch('openpilot.system.webrtc.in_car.InCarSession.frame', new_callable=AsyncMock, return_value={'id': 1}) as frame, \
+         patch('openpilot.system.webrtc.webrtcd.Params'):
+      assert (await handle_in_car_frame(state, json.dumps({**body, 'images': 'false'}).encode()))[0] == 400
+      assert (await handle_in_car_frame(state, json.dumps({**body, 'images': False}).encode()))[0] == 200
+      frame.assert_awaited_once_with(1, False)
+      await state.in_car['allowed'].stop()
+  asyncio.run(run())
+
+
+def test_in_car_video_is_read_only_even_on_not_car_devices():
+  from opendbc.car.structs import car
+  from openpilot.system.athena.athenad import startStream
+  cp = car.CarParams.new_message(notCar=True)
+  with patch('openpilot.system.athena.athenad.Params') as params, \
+       patch('openpilot.system.webrtc.helpers.wait_for_webrtcd'), \
+       patch('openpilot.system.webrtc.helpers.post_stream_request') as post:
+    params.return_value.get.return_value = cp.to_bytes()
+    startStream('sdp', True, inCar=True)
+    request = post.call_args.args[0]
+    assert request.in_car and request.bridge_services_in == [] and request.bridge_services_out == []
+    startStream('sdp', True)
+    assert post.call_args.args[0].bridge_services_in == ['testJoystick']
+
+
+def test_in_car_video_waits_for_disconnection_without_five_minute_limit():
+  from openpilot.system.webrtc.webrtcd import StreamSession, SESSION_TIMEOUT_SECONDS
+  from openpilot.system.webrtc.helpers import StreamRequestBody
+  async def run():
+    with patch('teleoprtc.builder.WebRTCAnswerBuilder'), patch('openpilot.system.webrtc.webrtcd._default_route_ip'):
+      display = StreamSession(StreamRequestBody('sdp', [], True, in_car=True))
+      ordinary = StreamSession(StreamRequestBody('sdp', [], True))
+    assert display.session_timeout is None and ordinary.session_timeout == SESSION_TIMEOUT_SECONDS
+    display.stream.wait_for_disconnection = AsyncMock()
+    with patch('openpilot.system.webrtc.webrtcd.asyncio.wait_for', new_callable=AsyncMock) as wait:
+      await display.run_normal_session()
+      pending = wait.call_args.args[0]
+      assert wait.call_args.kwargs['timeout'] is None
+      await pending
+  asyncio.run(run())
