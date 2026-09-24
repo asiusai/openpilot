@@ -813,9 +813,9 @@ def installSoftwareUpdate() -> dict[str, int]:
 
 
 @dispatcher.add_method
-def startStream(sdp: str, enabled: bool = True) -> dict:
+def startStream(sdp: str, enabled: bool = True, inCar: bool = False) -> dict:
   from openpilot.system.athena.athenad import startStream as upstream_start_stream
-  return upstream_start_stream(sdp, enabled)
+  return upstream_start_stream(sdp, enabled, inCar)
 
 
 @dispatcher.add_method
@@ -944,7 +944,7 @@ clock_challenges = ClockChallenges()
 def dispatcher_for_peer(sender: str):
   return dispatcher | {
     "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
-    "getInCarFrame": lambda session, frameId: in_car_request(sender, session, id=frameId),
+    "getInCarFrame": lambda session, frameId, images=True: in_car_request(sender, session, id=frameId, images=images),
     "stopInCarDisplay": lambda session: in_car_request(sender, session, close=True),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),

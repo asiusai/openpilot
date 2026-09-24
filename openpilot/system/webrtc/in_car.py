@@ -218,10 +218,10 @@ class InCarSession:
             'alert': alert, 'offroadAlerts': self.alerts if not started else [], 'camera': camera,
             'isMetric': self.params.get_bool('IsMetric'), 'alwaysOnDM': self.params.get_bool('AlwaysOnDM')}
 
-  async def frame(self, identifier: int) -> dict:
+  async def frame(self, identifier: int, images: bool = True) -> dict:
     started = time.monotonic()
     state = self.snapshot()
-    frame = await asyncio.to_thread(self.camera.read, state['camera'])
+    frame = await asyncio.to_thread(self.camera.read, state['camera']) if images else None
     jpeg = b''
     meta = {}
     if frame is not None:
