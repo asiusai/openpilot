@@ -85,7 +85,7 @@ procs = [
                 restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
 
-  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(driverview, livestream, in_car_display), enabled=not WEBCAM,
+  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(or_(driverview, livestream), in_car_display), enabled=not WEBCAM,
                 restart_delay=1.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("webcamerad", "openpilot.system.camerad.webcam.camerad", driverview, enabled=WEBCAM),
   PythonProcess("proclogd", "openpilot.system.proclogd", only_onroad, enabled=platform.system() != "Darwin"),
