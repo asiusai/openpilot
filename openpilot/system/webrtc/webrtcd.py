@@ -560,6 +560,9 @@ async def handle_in_car_frame(state: ServerState, raw_body: bytes) -> tuple[int,
   images = body.get("images", True)
   if type(images) is not bool:
     return _json_response({"error": "invalid image mode"}, status=400)
+  camera = body.get("camera")
+  if camera is not None and camera not in ("road", "wideRoad", "driver"):
+    return _json_response({"error": "invalid camera"}, status=400)
   closing = body.get("close") is True
   if not closing and (type(request_id) is not int or not 0 < request_id < 2**32):
     return _json_response({"error": "invalid frame request"}, status=400)
@@ -599,7 +602,7 @@ async def handle_in_car_frame(state: ServerState, raw_body: bytes) -> tuple[int,
       schedule_teardown(state)
 
   try:
-    return _json_response(await session.frame(request_id, images))
+    return _json_response(await session.frame(request_id, images, camera))
   except PermissionError:
     return _json_response({"error": "device access revoked"}, status=403)
   finally:

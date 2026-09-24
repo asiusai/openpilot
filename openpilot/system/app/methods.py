@@ -944,7 +944,7 @@ clock_challenges = ClockChallenges()
 def dispatcher_for_peer(sender: str):
   return dispatcher | {
     "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
-    "getInCarFrame": lambda session, frameId, images=True: in_car_request(sender, session, id=frameId, images=images),
+    "getInCarFrame": lambda session, frameId, images=True, camera=None: in_car_request(sender, session, id=frameId, images=images, camera=camera),
     "stopInCarDisplay": lambda session: in_car_request(sender, session, close=True),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
