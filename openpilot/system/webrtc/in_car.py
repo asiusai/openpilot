@@ -1,25 +1,14 @@
-"""Read-only canvas frames pulled through the existing authenticated app relay.
-
-No browser WebRTC connection or media playback is needed for the in-car display.
-"""
+"""Read-only driving UI snapshots for the live WebRTC data channel."""
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import math
-import base64
 import time
-from collections.abc import Callable
-
-import numpy as np
 
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.modeld.helpers import chestnut_compiled
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
-MAX_FRAME_BYTES = 512 * 1024
-SERVICES = ['deviceState', 'carState', 'selfdriveState', 'driverMonitoringState', 'drivingModelData', 'extrinsicsCalibration',
+SERVICES = ['deviceState', 'carState', 'selfdriveState', 'driverMonitoringState', 'extrinsicsCalibration',
             'modelV2', 'carOutput', 'narrowRoadCameraState', 'wideRoadCameraState']
 FIELDS = {
   'deviceState': ['deviceType', 'started', 'chestnutPresent', 'networkType', 'thermalStatus', 'gpuTempC', 'cpuTempC', 'freeSpacePercent'],
@@ -27,108 +16,16 @@ FIELDS = {
   'selfdriveState': ['enabled', 'state', 'experimentalMode', 'alertText1', 'alertText2', 'alertSize', 'alertStatus', 'alertType', 'alertHudVisual'],
   'driverMonitoringState': ['activePolicy', 'isRHD', 'alertLevel', 'visionPolicyState'],
   'extrinsicsCalibration': ['rpyCalib', 'wideFromDeviceEuler', 'calStatus', 'height'],
-  'drivingModelData': ['position', 'laneLines', 'laneLineProbs', 'roadEdges', 'roadEdgeStds'],
+  'modelV2': ['position', 'laneLines', 'laneLineProbs', 'roadEdges', 'roadEdgeStds'],
   'narrowRoadCameraState': ['sensor'],
   'wideRoadCameraState': ['sensor'],
 }
 
 
-def pack_nv12(buf) -> tuple[bytes, int, int]:
-  """Remove camera stride/UV padding and downsample before feeding the encoder."""
-  data = np.frombuffer(buf.data, dtype=np.uint8)
-  step = max(1, math.ceil(buf.width / 1024))
-  width = (buf.width // step) & ~1
-  height = (buf.height // step) & ~1
-  y = data[:buf.uv_offset].reshape(-1, buf.stride)[:height * step:step, :width * step:step]
-  uv = data[buf.uv_offset:buf.uv_offset + (buf.height // 2) * buf.stride].reshape(-1, buf.stride // 2, 2)
-  uv = uv[:height // 2 * step:step, :width // 2 * step:step].reshape(height // 2, width)
-  return y.tobytes() + uv.tobytes(), width, height
-
-
-class CameraSource:
-  def __init__(self, name: str = 'camerad'):
-    self.name = name
-    self.client = None
-    self.camera = ''
-    self.requested_camera = ''
-    self.last_frame = 0.0
-
-  def read(self, camera: str):
-    from msgq.visionipc import VisionIpcClient
-    from openpilot.cereal.visionipc import VisionStreamType
-    streams = {'road': VisionStreamType.VISION_STREAM_NARROW_ROAD, 'wideRoad': VisionStreamType.VISION_STREAM_WIDE_ROAD,
-               'driver': VisionStreamType.VISION_STREAM_CABIN}
-    now = time.monotonic()
-    if camera != self.requested_camera or now - self.last_frame > 1.0:
-      self.client = None
-    if self.client is None:
-      self.requested_camera = camera
-      available = VisionIpcClient.available_streams(self.name, False)
-      if streams[camera] not in available:
-        return None
-      self.client = VisionIpcClient(self.name, streams[camera], True)
-      self.camera = camera
-      self.last_frame = now
-      if not self.client.connect(False):
-        self.client = None
-        return None
-    buf = self.client.recv(100)
-    if buf is None or time.monotonic_ns() - self.client.timestamp_sof > 500_000_000:
-      return None
-    self.last_frame = time.monotonic()
-    pixels, width, height = pack_nv12(buf)
-    return pixels, width, height, self.camera, self.client.timestamp_sof
-
-
-class JpegEncoder:
+class InCarTelemetry:
   def __init__(self):
-    self.process = None
-    self.size = None
-
-  async def encode(self, pixels: bytes, width: int, height: int) -> bytes:
-    if self.size != (width, height) or self.process is None or self.process.returncode is not None:
-      await self.close()
-      self.process = await asyncio.create_subprocess_exec(
-        'ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'rawvideo', '-pixel_format', 'nv12',
-        '-video_size', f'{width}x{height}', '-framerate', '10', '-i', 'pipe:0', '-an',
-        # The device FFmpeg build has no image2pipe muxer; rawvideo writes the encoded JPEG packets unchanged.
-        '-threads', '1', '-c:v', 'mjpeg', '-q:v', '6', '-f', 'rawvideo', '-flush_packets', '1', 'pipe:1',
-        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=MAX_FRAME_BYTES)
-      self.size = (width, height)
-    try:
-      async with asyncio.timeout(2):
-        self.process.stdin.write(pixels)
-        await self.process.stdin.drain()
-        jpeg = await self.process.stdout.readuntil(b'\xff\xd9')
-        if not jpeg.startswith(b'\xff\xd8') or len(jpeg) > MAX_FRAME_BYTES:
-          raise ValueError('invalid JPEG frame')
-        return jpeg
-    except BaseException:
-      await self.close()
-      raise
-
-  async def close(self):
-    if self.process is not None:
-      if self.process.returncode is None:
-        with contextlib.suppress(ProcessLookupError):
-          self.process.kill()
-      await self.process.wait()
-      self.process = None
-      self.size = None
-
-
-class InCarSession:
-  def __init__(self, identifier: str, authorized: Callable[[], bool]):
-    self.identifier = identifier
-    self.authorized = authorized
-    self.busy = False
-    self.last_id = 0
-    self.expiry: asyncio.TimerHandle | None = None
     self.params = Params()
     self.sm = messaging.SubMaster(SERVICES)
-    self.camera = CameraSource()
-    self.encoder = JpegEncoder()
-    self.closed = False
     self.compiled = False
     self.gpu = 'disconnected'
     self.was_started = False
@@ -146,11 +43,11 @@ class InCarSession:
       if not self.sm.seen[name]:
         continue
       age = max(0, now - self.sm.logMonoTime[name] / 1e9)
-      max_age = 5 if name == 'deviceState' else 0.5 if name in ('carState', 'selfdriveState', 'driverMonitoringState', 'drivingModelData') else 2
+      max_age = 5 if name == 'deviceState' else 0.5 if name in ('carState', 'selfdriveState', 'driverMonitoringState', 'modelV2') else 2
       if age > max_age or not self.sm.valid[name]:
         continue
       values = self.sm[name].to_dict()
-      if name == 'drivingModelData' and not all(key in values for key in FIELDS[name]):
+      if name == 'modelV2' and not all(key in values for key in FIELDS[name]):
         continue
       if name == 'extrinsicsCalibration' and not all(key in values for key in ('rpyCalib', 'wideFromDeviceEuler', 'calStatus')):
         continue
@@ -216,32 +113,3 @@ class InCarSession:
     return {'services': services, 'gpu': self.gpu if ds else 'unknown', 'confidence': confidence, 'torque': torque,
             'alert': alert, 'offroadAlerts': self.alerts if not started else [], 'camera': camera,
             'isMetric': self.params.get_bool('IsMetric'), 'alwaysOnDM': self.params.get_bool('AlwaysOnDM')}
-
-  async def frame(self, identifier: int, images: bool = True, camera: str | None = None) -> dict:
-    started = time.monotonic()
-    state = self.snapshot()
-    frame = await asyncio.to_thread(self.camera.read, camera or state['camera']) if images else None
-    jpeg = b''
-    meta = {}
-    if frame is not None:
-      pixels, width, height, camera, captured = frame
-      try:
-        jpeg = await self.encoder.encode(pixels, width, height)
-        if time.monotonic_ns() - captured > 500_000_000:
-          jpeg = b''
-        else:
-          meta = {'width': width, 'height': height, 'camera': camera}
-      except (TimeoutError, ValueError, OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-        await self.encoder.close()
-    # One pull at a time, at most 10 fps; never queue old camera frames.
-    await asyncio.sleep(max(0, 0.1 - (time.monotonic() - started)))
-    if self.closed or not self.authorized():
-      raise PermissionError('device access revoked')
-    return {'id': identifier, 'jpeg': base64.b64encode(jpeg).decode('ascii'), 'state': self.snapshot(), **meta}
-
-  async def stop(self):
-    self.closed = True
-    if self.expiry:
-      self.expiry.cancel()
-    await self.encoder.close()
-    self.camera.client = None
