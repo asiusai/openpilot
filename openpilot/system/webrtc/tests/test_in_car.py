@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import uuid
+from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -63,6 +64,17 @@ def test_ignition_does_not_clear_display_or_livestream(tmp_path):
   assert params.get_bool('IsLiveStreaming') and params.get_bool('IsInCarDisplay')
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
   assert not params.get_bool('IsLiveStreaming') and not params.get_bool('IsInCarDisplay')
+
+
+def test_camera_process_runs_for_display_without_starting_stream_encoder():
+  from openpilot.system.manager.process_config import managed_processes
+  cp = SimpleNamespace(notCar=False)
+  for started, driver_view, livestream, display in product((False, True), repeat=4):
+    flags = {'IsDriverViewEnabled': driver_view, 'IsLiveStreaming': livestream, 'IsInCarDisplay': display}
+    params = Mock()
+    params.get_bool.side_effect = flags.__getitem__
+    assert managed_processes['camerad'].should_run(started, params, cp) == (started or driver_view or livestream or display)
+    assert managed_processes['stream_encoderd'].should_run(started, params, cp) == livestream
 
 
 def test_snapshot_removes_stale_speed_engagement_monitoring_and_path():
