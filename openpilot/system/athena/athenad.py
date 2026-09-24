@@ -806,8 +806,8 @@ def getNetworkMetered() -> bool:
   return HARDWARE.get_network_metered(network_type)
 
 
-@dispatcher.add_method(sdp=regex(r'[\x20-\x7e\r\n]*'), enabled=boolean)
-def startStream(sdp: str, enabled: bool) -> dict:
+@dispatcher.add_method(sdp=regex(r'[\x20-\x7e\r\n]*'), enabled=boolean, inCar=boolean)
+def startStream(sdp: str, enabled: bool, inCar: bool = False) -> dict:
   from openpilot.system.webrtc.helpers import StreamRequestBody, post_stream_request, wait_for_webrtcd
   params = Params()
   bridge_services_in = []
@@ -815,14 +815,14 @@ def startStream(sdp: str, enabled: bool) -> dict:
   cp_bytes = params.get("CarParamsPersistent")
   if cp_bytes is not None:
     with car.CarParams.from_bytes(cp_bytes) as CP:
-      if CP.notCar:
+      if CP.notCar and not inCar:
         bridge_services_in.append("testJoystick")
 
   # webrtcd owns the streaming lifetime, including ignition transitions.
   wait_for_webrtcd()
 
   return post_stream_request(StreamRequestBody(sdp, ["wideRoad"], enabled, bridge_services_in,
-                                             ["carState", "deviceState", "drivingModelData", "extrinsicsCalibration"]))
+                                             [] if inCar else ["carState", "deviceState", "drivingModelData", "extrinsicsCalibration"], in_car=inCar))
 
 
 def get_logs_to_send_sorted() -> list[str]:
