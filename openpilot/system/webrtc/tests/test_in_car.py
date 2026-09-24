@@ -11,13 +11,11 @@ import numpy as np
 from openpilot.cereal import messaging
 from openpilot.common.params import ParamKeyFlag, Params
 from openpilot.system.webrtc.in_car import CameraSource, InCarSession, JpegEncoder, pack_nv12
-from openpilot.system.webrtc.webrtcd import ServerState, handle_get_stream, schedule_teardown
+from openpilot.system.webrtc.webrtcd import ServerState, handle_in_car_frame, schedule_teardown
 
 
 def make_session():
-  with patch('teleoprtc.builder.WebRTCAnswerBuilder') as builder:
-    builder.return_value.stream.return_value = Mock(stop=AsyncMock())
-    return InCarSession('', lambda: True)
+  return InCarSession(str(uuid.uuid4()), lambda: True)
 
 
 def publish(session, name, data, age=0):
@@ -125,45 +123,78 @@ def test_camera_reconnects_after_producer_restart():
     client.assert_called_once()
 
 
-def test_offer_requires_authorized_peer_and_no_media_tracks():
+def test_frame_requests_require_authorized_peer_and_valid_identifiers():
   async def run():
     with patch('openpilot.system.app.websocketd.load_authorized_peers', return_value=['allowed']):
       state = ServerState()
-      for peer, sdp, code in [('other', 'm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 403),
-                              ('allowed', 'm=audio 9 UDP/TLS/RTP/SAVPF 111\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 400),
-                              ('allowed', 'm=video 9 UDP/TLS/RTP/SAVPF 96\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel', 400),
-                              ('allowed', 'x' * 65537, 400)]:
-        response = await handle_get_stream(state, json.dumps({'display': True, 'peer': peer, 'sdp': sdp}).encode(), 'application/json')
+      for peer, session, identifier, code in [('other', str(uuid.uuid4()), 1, 403), ('allowed', '', 1, 400),
+                                              ('allowed', str(uuid.uuid4()), True, 400), ('allowed', str(uuid.uuid4()), 0, 400)]:
+        response = await handle_in_car_frame(state, json.dumps({'peer': peer, 'session': session, 'id': identifier}).encode())
         assert response[0] == code
       assert not state.in_car
   asyncio.run(run())
 
 
-def test_revocation_during_wait_never_sends_another_frame():
+def test_display_pull_is_serial_expires_and_does_not_create_webrtc():
   async def run():
-    session = make_session()
-    session.stream.wait_for_connection = AsyncMock()
-    session.authorized = Mock(side_effect=[True, False])
-    session.request.set()
-    session.send = AsyncMock()
-    await session.run()
-    session.send.assert_not_called()
-    session.stream.stop.assert_awaited_once()
+    state = ServerState()
+    identifier = str(uuid.uuid4())
+    body = {'peer': 'allowed', 'session': identifier, 'id': 1}
+    async def request(**changes):
+      return await handle_in_car_frame(state, json.dumps({**body, **changes}).encode())
+    with patch('openpilot.system.app.websocketd.load_authorized_peers', return_value=['allowed']), \
+         patch('openpilot.system.webrtc.in_car.InCarSession.frame', new_callable=AsyncMock, return_value={'id': 1}) as frame, \
+         patch('teleoprtc.builder.WebRTCAnswerBuilder') as rtc, patch('openpilot.system.webrtc.webrtcd.Params'):
+      assert (await request())[0] == 200
+      session = state.in_car['allowed']
+      assert (await request())[0] == 409  # a duplicate never captures another image
+      session.busy = True
+      assert (await request(id=2))[0] == 409
+      session.busy = False
+      assert (await request(id=2))[0] == 200
+      frame.assert_awaited()
+      rtc.assert_not_called()
+      # Closing an obsolete tab must not close its replacement's display.
+      assert (await request(session=str(uuid.uuid4()), close=True))[0] == 200
+      assert state.in_car['allowed'] is session
+      expiry = session.expiry
+      callback = expiry._callback
+      expiry.cancel()
+      callback()
+      await asyncio.sleep(0)
+      assert not state.in_car and session.closed
+      state.teardown.cancel()
   asyncio.run(run())
 
 
-def test_channel_backpressure_waits_for_drain():
+def test_revocation_during_capture_never_returns_an_image():
   async def run():
     session = make_session()
-    channel = session.stream.get_messaging_channel.return_value
-    channel.send.return_value = False
-    task = asyncio.create_task(session.send(b'data'))
-    await asyncio.sleep(0)
-    assert not task.done()
-    channel.on_buffered_amount_low.call_args.args[0]()
-    await task
-    channel.send.assert_called_once_with(b'data')
-    channel.buffered_amount.assert_not_called()
+    def revoke(_):
+      session.authorized = lambda: False
+      return None
+    session.camera.read = revoke
+    try:
+      await session.frame(1)
+      raise AssertionError('revoked peer received a frame')
+    except PermissionError:
+      pass
+    finally:
+      await session.stop()
+  asyncio.run(run())
+
+
+def test_display_frame_encodes_camera_and_refreshes_telemetry():
+  async def run():
+    import base64
+    session = make_session()
+    session.camera.read = Mock(return_value=(b'pixels', 64, 32, 'road', time.monotonic_ns()))
+    session.encoder.encode = AsyncMock(return_value=b'jpeg')
+    result = await session.frame(7)
+    assert result['id'] == 7 and result['width'] == 64 and result['height'] == 32
+    assert base64.b64decode(result['jpeg']) == b'jpeg'
+    assert 'state' in result
+    await session.stop()
   asyncio.run(run())
 
 
