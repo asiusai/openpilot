@@ -1,17 +1,14 @@
-"""Silent, read-only driving display over an authenticated WebRTC data channel.
+"""Read-only canvas frames pulled through the existing authenticated app relay.
 
-The browser pulls at most one JPEG at a time. There are no RTP media tracks,
-media playback APIs, or queues of old frames, including across ignition changes.
+No browser WebRTC connection or media playback is needed for the in-car display.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import math
-import struct
+import base64
 import time
-import uuid
 from collections.abc import Callable
 
 import numpy as np
@@ -21,7 +18,6 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.modeld.helpers import chestnut_compiled
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
-CHUNK_BYTES = 16 * 1024
 MAX_FRAME_BYTES = 512 * 1024
 SERVICES = ['deviceState', 'carState', 'selfdriveState', 'driverMonitoringState', 'drivingModelData', 'extrinsicsCalibration',
             'modelV2', 'carOutput', 'narrowRoadCameraState', 'wideRoadCameraState']
@@ -123,21 +119,17 @@ class JpegEncoder:
 
 
 class InCarSession:
-  def __init__(self, sdp: str, authorized: Callable[[], bool]):
-    from teleoprtc.builder import WebRTCAnswerBuilder
-    self.identifier = str(uuid.uuid4())
-    self.stream = WebRTCAnswerBuilder(sdp).stream()
+  def __init__(self, identifier: str, authorized: Callable[[], bool]):
+    self.identifier = identifier
     self.authorized = authorized
+    self.busy = False
+    self.last_id = 0
+    self.expiry: asyncio.TimerHandle | None = None
     self.params = Params()
     self.sm = messaging.SubMaster(SERVICES)
     self.camera = CameraSource()
     self.encoder = JpegEncoder()
-    self.run_task: asyncio.Task | None = None
     self.closed = False
-    self.request = asyncio.Event()
-    self.request_id = 0
-    self.drained = asyncio.Event()
-    self.channel_ready = False
     self.compiled = False
     self.gpu = 'disconnected'
     self.was_started = False
@@ -146,25 +138,6 @@ class InCarSession:
     self.wide = False
     self.alerts = []
     self.alerts_updated = 0.0
-    self.stream.set_message_handler(self.message_handler)
-
-  async def get_answer(self):
-    return await self.stream.start()
-
-  def start(self):
-    self.run_task = asyncio.create_task(self.run())
-
-  def message_handler(self, message: bytes | str):
-    try:
-      if len(message) > 256:
-        return
-      body = json.loads(message)
-      identifier = body.get('id')
-      if body.get('op') == 'next' and type(identifier) is int and 0 < identifier < 2**32 and not self.request.is_set():
-        self.request_id = identifier
-        self.request.set()
-    except (ValueError, TypeError, AttributeError):
-      pass
 
   def snapshot(self) -> dict:
     self.sm.update(0)
@@ -245,67 +218,31 @@ class InCarSession:
             'alert': alert, 'offroadAlerts': self.alerts if not started else [], 'camera': camera,
             'isMetric': self.params.get_bool('IsMetric'), 'alwaysOnDM': self.params.get_bool('AlwaysOnDM')}
 
-  async def send(self, message: str | bytes):
-    channel = self.stream.get_messaging_channel()
-    if not self.channel_ready:
-      loop = asyncio.get_running_loop()
-      channel.set_buffered_amount_low_threshold(0)
-      channel.on_buffered_amount_low(lambda: loop.call_soon_threadsafe(self.drained.set))
-      self.channel_ready = True
-    if self.closed or not channel.is_open():
-      raise ConnectionError('in-car connection closed')
-    self.drained.clear()
-    # buffered_amount() in the deployed libdatachannel binding crashes. Wait for
-    # the native drain notification instead, keeping at most one chunk queued.
-    if not channel.send(message):
-      await asyncio.wait_for(self.drained.wait(), timeout=2)
-
-  async def run(self):
-    try:
-      await asyncio.wait_for(self.stream.wait_for_connection(), timeout=30)
-      while not self.closed and self.authorized():
-        await asyncio.wait_for(self.request.wait(), timeout=10)
-        if not self.authorized():
-          break
-        identifier = self.request_id
-        started = time.monotonic()
-        state = self.snapshot()
-        frame = await asyncio.to_thread(self.camera.read, state['camera'])
-        jpeg = b''
-        meta = {}
-        if frame is not None:
-          pixels, width, height, camera, captured = frame
-          try:
-            jpeg = await self.encoder.encode(pixels, width, height)
-            # Do not deliver a frame held up by encoder startup/stalls.
-            if time.monotonic_ns() - captured > 500_000_000:
-              jpeg = b''
-            else:
-              meta = {'width': width, 'height': height, 'camera': camera}
-          except (TimeoutError, ValueError, OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-            await self.encoder.close()
-        # Refresh HUD after camera work so blocked capture never replays engagement.
-        state = self.snapshot()
-        if not self.authorized():
-          break
-        await self.send(json.dumps({'type': 'frame', 'id': identifier, 'length': len(jpeg), 'state': state, **meta}, separators=(',', ':')))
-        for offset in range(0, len(jpeg), CHUNK_BYTES):
-          await self.send(struct.pack('>I', identifier) + jpeg[offset:offset + CHUNK_BYTES])
-        self.request.clear()
-        await self.send(json.dumps({'type': 'done', 'id': identifier}))
-        await asyncio.sleep(max(0, 0.1 - (time.monotonic() - started)))
-    except (TimeoutError, ConnectionError):
-      pass
-    finally:
-      await self.stop()
+  async def frame(self, identifier: int) -> dict:
+    started = time.monotonic()
+    state = self.snapshot()
+    frame = await asyncio.to_thread(self.camera.read, state['camera'])
+    jpeg = b''
+    meta = {}
+    if frame is not None:
+      pixels, width, height, camera, captured = frame
+      try:
+        jpeg = await self.encoder.encode(pixels, width, height)
+        if time.monotonic_ns() - captured > 500_000_000:
+          jpeg = b''
+        else:
+          meta = {'width': width, 'height': height, 'camera': camera}
+      except (TimeoutError, ValueError, OSError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+        await self.encoder.close()
+    # One pull at a time, at most 10 fps; never queue old camera frames.
+    await asyncio.sleep(max(0, 0.1 - (time.monotonic() - started)))
+    if self.closed or not self.authorized():
+      raise PermissionError('device access revoked')
+    return {'id': identifier, 'jpeg': base64.b64encode(jpeg).decode('ascii'), 'state': self.snapshot(), **meta}
 
   async def stop(self):
-    if self.closed:
-      return
     self.closed = True
-    if self.run_task and self.run_task is not asyncio.current_task():
-      self.run_task.cancel()
-      with contextlib.suppress(asyncio.CancelledError):
-        await self.run_task
+    if self.expiry:
+      self.expiry.cancel()
     await self.encoder.close()
-    await self.stream.stop()
+    self.camera.client = None

@@ -418,8 +418,6 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
 
   stream_dict = state.streams
   stream_body = json.loads(raw_body)
-  if stream_body.get("display") is True:
-    return await handle_in_car_stream(state, raw_body)
   body = StreamRequestBody(**stream_body)
 
   async with state.stream_lock:
@@ -544,46 +542,69 @@ async def handle_route_stream(state: ServerState, raw_body: bytes) -> tuple[int,
       raise
 
 
-async def handle_in_car_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
+async def handle_in_car_frame(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
   from openpilot.system.app.websocketd import load_authorized_peers
   from openpilot.system.webrtc.in_car import InCarSession
   try:
+    if len(raw_body) > 4096:
+      raise ValueError('request too large')
     body = json.loads(raw_body)
-    peer, sdp = body.get("peer"), body.get("sdp")
+    peer, identifier, request_id = body.get("peer"), body.get("session"), body.get("id")
   except (ValueError, AttributeError):
     return _json_response({"error": "invalid request"}, status=400)
   if not isinstance(peer, str) or peer not in load_authorized_peers():
     return _json_response({"error": "device access required"}, status=403)
-  if not isinstance(sdp, str) or len(sdp) > 64 * 1024 or "m=application " not in sdp or any(
-      line.startswith(("m=audio ", "m=video ")) for line in sdp.splitlines()):
-    return _json_response({"error": "data-only offer required"}, status=400)
+  if not isinstance(identifier, str) or len(identifier) != 36:
+    return _json_response({"error": "invalid display session"}, status=400)
+  closing = body.get("close") is True
+  if not closing and (type(request_id) is not int or not 0 < request_id < 2**32):
+    return _json_response({"error": "invalid frame request"}, status=400)
   async with state.stream_lock:
-    # A reconnect replaces only this app's display, never another app's session.
-    if previous := state.in_car.pop(peer, None):
-      await previous.stop()
-    if len(state.in_car) >= 2:
-      return _json_response({"error": "too many in-car displays"}, status=429)
-    session = InCarSession(sdp, lambda: peer in load_authorized_peers())
-    state.in_car[peer] = session
+    session = state.in_car.get(peer)
+    if closing:
+      if session is not None and session.identifier == identifier:
+        session.closed = True
+        if not session.busy:
+          state.in_car.pop(peer)
+          await session.stop()
+          schedule_teardown(state)
+      return _json_response({"success": 1})
+    if session is not None and session.busy:
+      return _json_response({"error": "display frame already pending"}, status=409)
+    if session is not None and session.identifier != identifier:
+      state.in_car.pop(peer)
+      await session.stop()
+      session = None
+    if session is None:
+      if len(state.in_car) >= 2:
+        return _json_response({"error": "too many in-car displays"}, status=429)
+      session = InCarSession(identifier, lambda: peer in load_authorized_peers())
+      state.in_car[peer] = session
+    if request_id <= session.last_id:
+      return _json_response({"error": "stale frame request"}, status=409)
+    session.busy = True
+    session.last_id = request_id
+    if session.expiry:
+      session.expiry.cancel()
     Params().put_bool("IsInCarDisplay", True)
-    try:
-      answer = await asyncio.wait_for(session.get_answer(), timeout=30)
-      session.start()
 
-      def finished(task):
-        if state.in_car.get(peer) is session:
-          state.in_car.pop(peer, None)
-        if not task.cancelled() and task.exception() is not None:
-          cloudlog.error("in-car display failed: %s", task.exception())
-        schedule_teardown(state)
-
-      session.run_task.add_done_callback(finished)
-      return _json_response({"sdp": answer.sdp, "type": answer.type})
-    except BaseException:
-      state.in_car.pop(peer, None)
+  async def retire():
+    if state.in_car.get(peer) is session and not session.busy:
+      state.in_car.pop(peer)
       await session.stop()
       schedule_teardown(state)
-      raise
+
+  try:
+    return _json_response(await session.frame(request_id))
+  except PermissionError:
+    return _json_response({"error": "device access revoked"}, status=403)
+  finally:
+    session.busy = False
+    # Hidden/closed tabs and lost network connections relinquish camera demand.
+    if session.closed:
+      await retire()
+    else:
+      session.expiry = asyncio.get_running_loop().call_later(3, lambda: asyncio.create_task(retire()))
 
 
 class WebrtcdHandler(BaseHTTPRequestHandler):
@@ -594,6 +615,7 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
     "/schema": ("GET", "HEAD"),
     "/stream": ("POST",),
     "/routes": ("POST",),
+    "/in-car": ("POST",),
     "/notify": ("POST",),
   }
 
@@ -626,6 +648,8 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
         result = self._run(handle_get_schema(self.server.state, services))
       elif parsed.path == "/stream":
         result = self._run(handle_get_stream(self.server.state, self._read_body(), self.headers.get_content_type()))
+      elif parsed.path == "/in-car":
+        result = self._run(handle_in_car_frame(self.server.state, self._read_body()))
       elif parsed.path == "/routes":
         result = self._run(handle_route_stream(self.server.state, self._read_body()))
       else:  # /notify
