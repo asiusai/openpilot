@@ -56,15 +56,14 @@ class CameraSource:
   def read(self, camera: str):
     from msgq.visionipc import VisionIpcClient
     from openpilot.cereal.visionipc import VisionStreamType
-    streams = {'road': VisionStreamType.VISION_STREAM_NARROW_ROAD, 'wideRoad': VisionStreamType.VISION_STREAM_WIDE_ROAD}
+    streams = {'road': VisionStreamType.VISION_STREAM_NARROW_ROAD, 'wideRoad': VisionStreamType.VISION_STREAM_WIDE_ROAD,
+               'driver': VisionStreamType.VISION_STREAM_CABIN}
     now = time.monotonic()
     if camera != self.requested_camera or now - self.last_frame > 1.0:
       self.client = None
     if self.client is None:
       self.requested_camera = camera
       available = VisionIpcClient.available_streams(self.name, False)
-      if streams[camera] not in available:
-        camera = 'wideRoad' if camera == 'road' else 'road'
       if streams[camera] not in available:
         return None
       self.client = VisionIpcClient(self.name, streams[camera], True)
@@ -218,10 +217,10 @@ class InCarSession:
             'alert': alert, 'offroadAlerts': self.alerts if not started else [], 'camera': camera,
             'isMetric': self.params.get_bool('IsMetric'), 'alwaysOnDM': self.params.get_bool('AlwaysOnDM')}
 
-  async def frame(self, identifier: int, images: bool = True) -> dict:
+  async def frame(self, identifier: int, images: bool = True, camera: str | None = None) -> dict:
     started = time.monotonic()
     state = self.snapshot()
-    frame = await asyncio.to_thread(self.camera.read, state['camera']) if images else None
+    frame = await asyncio.to_thread(self.camera.read, camera or state['camera']) if images else None
     jpeg = b''
     meta = {}
     if frame is not None:
