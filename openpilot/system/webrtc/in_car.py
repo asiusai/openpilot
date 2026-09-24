@@ -96,7 +96,8 @@ class JpegEncoder:
       self.process = await asyncio.create_subprocess_exec(
         'ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'rawvideo', '-pixel_format', 'nv12',
         '-video_size', f'{width}x{height}', '-framerate', '10', '-i', 'pipe:0', '-an',
-        '-threads', '1', '-c:v', 'mjpeg', '-q:v', '6', '-f', 'image2pipe', '-flush_packets', '1', 'pipe:1',
+        # The device FFmpeg build has no image2pipe muxer; rawvideo writes the encoded JPEG packets unchanged.
+        '-threads', '1', '-c:v', 'mjpeg', '-q:v', '6', '-f', 'rawvideo', '-flush_packets', '1', 'pipe:1',
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=MAX_FRAME_BYTES)
       self.size = (width, height)
     try:
