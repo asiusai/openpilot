@@ -198,6 +198,44 @@ def test_display_frame_encodes_camera_and_refreshes_telemetry():
   asyncio.run(run())
 
 
+def test_manual_camera_selection_including_driver_is_independent_of_driving_camera():
+  async def run():
+    session = make_session()
+    try:
+      for camera in ('road', 'wideRoad', 'driver'):
+        session.camera.read = Mock(return_value=(b'pixels', 64, 32, camera, time.monotonic_ns()))
+        session.encoder.encode = AsyncMock(return_value=b'jpeg')
+        result = await session.frame(7, camera=camera)
+        session.camera.read.assert_called_once_with(camera)
+        assert result['camera'] == camera
+      session.camera.read.reset_mock()
+      await session.frame(8, images=False, camera='driver')
+      session.camera.read.assert_not_called()
+    finally:
+      await session.stop()
+  asyncio.run(run())
+
+
+def test_invalid_camera_does_not_create_session_or_capture():
+  async def run():
+    state = ServerState()
+    with patch('openpilot.system.app.websocketd.load_authorized_peers', return_value=['allowed']):
+      for camera in ('other', 3, [], {}):
+        body = {'peer': 'allowed', 'session': str(uuid.uuid4()), 'id': 1, 'camera': camera}
+        assert (await handle_in_car_frame(state, json.dumps(body).encode()))[0] == 400
+      assert not state.in_car
+  asyncio.run(run())
+
+
+def test_missing_driver_camera_does_not_substitute_road_camera():
+  from openpilot.cereal.visionipc import VisionStreamType
+  source = CameraSource()
+  with patch('msgq.visionipc.VisionIpcClient') as client:
+    client.available_streams.return_value = [VisionStreamType.VISION_STREAM_NARROW_ROAD, VisionStreamType.VISION_STREAM_WIDE_ROAD]
+    assert source.read('driver') is None
+    client.assert_not_called()
+
+
 def test_teardown_keeps_independent_display_and_video_lifetimes():
   async def run():
     state = ServerState()
@@ -280,7 +318,7 @@ def test_hud_only_mode_is_validated_and_forwarded():
          patch('openpilot.system.webrtc.webrtcd.Params'):
       assert (await handle_in_car_frame(state, json.dumps({**body, 'images': 'false'}).encode()))[0] == 400
       assert (await handle_in_car_frame(state, json.dumps({**body, 'images': False}).encode()))[0] == 200
-      frame.assert_awaited_once_with(1, False)
+      frame.assert_awaited_once_with(1, False, None)
       await state.in_car['allowed'].stop()
   asyncio.run(run())
 
