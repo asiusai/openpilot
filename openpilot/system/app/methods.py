@@ -125,7 +125,7 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
-NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "requestRouteUpload"}
+NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "requestRouteUpload", "setRoutePublic"}
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
@@ -825,6 +825,19 @@ def requestRouteUpload(paths: list[str]) -> dict:
   if not Params().get_bool("DataUploadEnabled"):
     raise ValueError("Device cloud uploads are disabled")
   return request_uploads(Paths.log_root(), paths)
+
+
+@dispatcher.add_method
+def setRoutePublic(routeId: str, enabled: bool, files: list[dict]) -> dict:
+  from openpilot.system.app.identity import get_device_private_key
+  from openpilot.system.app.route_sharing import publication_request
+  from openpilot.system.loggerd.data_api import DataApiClient
+  body = publication_request(routeId, enabled, files)
+  client = DataApiClient(Params().get("DataApiHost", return_default=True), get_device_private_key())
+  try:
+    return client.request("PUT", f"/v1/{client.owner}/routes/{routeId}/publication", body).json()
+  except requests.RequestException as e:
+    raise ValueError("Could not change route visibility. Check the device internet connection and retry.") from e
 
 
 def start_data_stream(sdp: str, peer: str, endpoint: str, **options) -> dict:
