@@ -236,6 +236,7 @@ class StreamSession:
     builder = WebRTCAnswerBuilder(body.sdp, bind_address=_default_route_ip())
 
     self.enabled = body.enabled
+    self.session_timeout = None if body.in_car else SESSION_TIMEOUT_SECONDS
     self.video_tracks = []
     for camera in body.cameras:
       track = LiveStreamVideoStreamTrack(camera, self.enabled)
@@ -321,7 +322,7 @@ class StreamSession:
 
   async def run_normal_session(self):
     try:
-      await asyncio.wait_for(self.stream.wait_for_disconnection(), timeout=SESSION_TIMEOUT_SECONDS)
+      await asyncio.wait_for(self.stream.wait_for_disconnection(), timeout=self.session_timeout)
     except TimeoutError:
       self.logger.warning("Stream session (%s) timed out after %d s", self.identifier, SESSION_TIMEOUT_SECONDS)
       try:
@@ -556,6 +557,9 @@ async def handle_in_car_frame(state: ServerState, raw_body: bytes) -> tuple[int,
     return _json_response({"error": "device access required"}, status=403)
   if not isinstance(identifier, str) or len(identifier) != 36:
     return _json_response({"error": "invalid display session"}, status=400)
+  images = body.get("images", True)
+  if type(images) is not bool:
+    return _json_response({"error": "invalid image mode"}, status=400)
   closing = body.get("close") is True
   if not closing and (type(request_id) is not int or not 0 < request_id < 2**32):
     return _json_response({"error": "invalid frame request"}, status=400)
@@ -595,7 +599,7 @@ async def handle_in_car_frame(state: ServerState, raw_body: bytes) -> tuple[int,
       schedule_teardown(state)
 
   try:
-    return _json_response(await session.frame(request_id))
+    return _json_response(await session.frame(request_id, images))
   except PermissionError:
     return _json_response({"error": "device access revoked"}, status=403)
   finally:
