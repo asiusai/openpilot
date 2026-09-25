@@ -13,8 +13,8 @@ class TestChestnutFirmware(unittest.TestCase):
     self.assertEqual(flash.image_product(image), CHESTNUT_USB_PRODUCT)
 
   @parameterized.expand([
-    b"custom ed4e39b7-quiet1",
-    b"custom ed4e39b7-quiet1\0custom ed4e39b7-CLEAN\0",
+    b"custom ed4e39b7-quiet2",
+    b"custom ed4e39b7-quiet2\0custom ed4e39b7-CLEAN\0",
     b"custom not-a-version\0",
   ])
   def test_reject_ambiguous_or_incomplete_product(self, image):
