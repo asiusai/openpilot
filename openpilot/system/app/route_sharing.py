@@ -25,3 +25,14 @@ def publication_request(route_id: str, enabled: bool, files: list[dict]) -> dict
       raise ValueError("Invalid public file key")
     checked.append({"path": path, "checksumSha256": checksum, "key": key})
   return {"enabled": True, "files": checked}
+
+
+def authorize_publication(private_key, route_id: str, enabled: bool, files: list[dict], timestamp: int) -> dict:
+  from openpilot.system.loggerd.data_api import DataApiClient
+  if type(timestamp) is not int or not 0 < timestamp < 2**53:
+    raise ValueError("Invalid request time")
+  body = publication_request(route_id, enabled, files)
+  client = DataApiClient("", private_key)
+  path = f"/v1/{client.owner}/routes/{route_id}/publication"
+  encoded, authorization = client.authorization("PUT", path, body, timestamp=timestamp)
+  return {"path": path, "body": encoded.decode(), "authorization": authorization}

@@ -31,6 +31,7 @@ from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, handle
 from openpilot.system.app.device_name import get_device_name, set_device_name
 from openpilot.system.app.terminal import TerminalManager
+from openpilot.system.app.param_editor import ParameterEditor
 from openpilot.selfdrive.v0.led_control import MANUAL_LED_PARAM, get_led_state, set_led_state
 from openpilot.system.app.websocketd import (
   authorize_peer,
@@ -83,6 +84,7 @@ LIVE_STATE_SERVICES = [
   "onroadEvents",
   "selfdriveState",
 ]
+parameter_editor = ParameterEditor(SAVE_PARAMS_BLOCKED_KEYS)
 LIVE_STATE_PARAM_KEYS = [
   "DongleId",
   "DataApiHost",
@@ -207,6 +209,16 @@ def getAllParams() -> dict[str, str | bool | int | float | None]:
     result[key] = value
 
   return result
+
+
+@dispatcher.add_method
+def getParamCatalog(after: str = '', limit: int = 24) -> dict:
+  return parameter_editor.catalog(after, limit)
+
+
+@dispatcher.add_method
+def readParamValue(name: str, revision: str, offset: int = 0) -> dict:
+  return parameter_editor.read(name, revision, offset)
 
 
 @dispatcher.add_method
@@ -839,16 +851,13 @@ def requestRouteUpload(paths: list[str]) -> dict:
 
 
 @dispatcher.add_method
-def setRoutePublic(routeId: str, enabled: bool, files: list[dict]) -> dict:
+def authorizeRoutePublication(routeId: str, enabled: bool, files: list[dict], timestamp: int) -> dict:
   from openpilot.system.app.identity import get_device_private_key
-  from openpilot.system.app.route_sharing import publication_request
-  from openpilot.system.loggerd.data_api import DataApiClient
-  body = publication_request(routeId, enabled, files)
-  client = DataApiClient(Params().get("DataApiHost", return_default=True), get_device_private_key())
-  try:
-    return client.request("PUT", f"/v1/{client.owner}/routes/{routeId}/publication", body).json()
-  except requests.RequestException as e:
-    raise ValueError("Could not change route visibility. Check the device internet connection and retry.") from e
+  from openpilot.system.app.route_sharing import authorize_publication
+  # Only authenticated, device-authorized peers reach this dispatcher. The app
+  # sends this narrowly scoped request over its internet connection, including
+  # when the device has Bluetooth only or an unset wall clock.
+  return authorize_publication(get_device_private_key(), routeId, enabled, files, timestamp)
 
 
 def start_data_stream(sdp: str, peer: str, endpoint: str, **options) -> dict:
@@ -988,6 +997,7 @@ clock_challenges = ClockChallenges()
 
 def dispatcher_for_peer(sender: str):
   return dispatcher | {
+    "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
     "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
