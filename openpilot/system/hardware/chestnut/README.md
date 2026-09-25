@@ -28,6 +28,6 @@ return immediately.
 
 With the VamOS USB recovery kernel, bench tests passed 55/55 host reboots,
 10/10 SuperSpeed port reconnects, and 8 GiB of verified GPU transfers each way.
-USB2 retries stopped after two attempts and active USB2 work cancelled them.
+USB2 retries stopped after two attempts and active USB2 work canceled them.
 The debug cable remained attached; removal, both Type-C orientations, other
 GPUs and a full Openpilot run remain unverified for this build.
