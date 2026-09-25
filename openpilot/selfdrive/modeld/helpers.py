@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 from tinygrad import Tensor, Device
@@ -31,16 +32,25 @@ def load_oob(path, chestnut=False):
     from tinygrad_repo.examples.openpilot.helpers import load_pickle
     return load_pickle(path, out_of_band=True)
 
-def chestnut_present() -> bool:
-  for d in USB_DEVICES_PATH.glob("*"):
-    try:
-      usb_id = (int((d / "idVendor").read_text(), 16), int((d / "idProduct").read_text(), 16))
-      product = (d / "product").read_text().strip()
-      if is_chestnut_usb_id(*usb_id) and product == CHESTNUT_USB_PRODUCT:
-        return True
-    except Exception:
-      pass
-  return False
+def chestnut_present(timeout: float = 0.) -> bool:
+  deadline = time.monotonic() + timeout
+  seen = False
+  while True:
+    for d in USB_DEVICES_PATH.glob("*"):
+      try:
+        usb_id = (int((d / "idVendor").read_text(), 16), int((d / "idProduct").read_text(), 16))
+        product = (d / "product").read_text().strip()
+        if is_chestnut_usb_id(*usb_id) and product == CHESTNUT_USB_PRODUCT:
+          seen = True
+          if float((d / "speed").read_text()) >= 5000:
+            return True
+      except (OSError, ValueError):
+        pass
+    if not seen or time.monotonic() >= deadline:
+      return False
+    # Keep USB idle during firmware recovery, including its brief disconnect.
+    # F3/GPU initialization at 480M would cancel the pending SuperSpeed retry.
+    time.sleep(.1)
 
 def chestnut_compiled() -> bool:
   return modeld_pkl_path(chestnut=True).is_file() and all(
