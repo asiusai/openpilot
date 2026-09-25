@@ -14,7 +14,7 @@
 +static volatile uint8_t payload_started;
 +
 +/* Timer 3 mode follows upstream PR84. Poll it with no timer IRQ enabled.
-+ * Limit recovery to two idle USB2 configurations; leave active USB2 alone. */
++ * Limit recovery to two idle USB2 fallbacks; leave active USB2 alone. */
 +static void schedule_ss_retry(void) {
 +  ss_retry_pending = 0;
 +  REG_TIMER3_CSR = TIMER_CSR_CLEAR;
@@ -79,7 +79,16 @@
        if (ep & BUF_CFG_9300_SS_FAIL) {
          uart_puts("[USB2 fallback]\n");
          // fallback to USB2
-@@ -493,6 +537,11 @@
+@@ -452,6 +496,8 @@
+         REG_CPU_MODE = CPU_MODE_USB2;
+         // enable USB high speed mode
+         REG_USB_PHY_CTRL_91C0 = 0x10;
++        /* USB2 may never enumerate. Retry without waiting for SET_CONFIG. */
++        schedule_ss_retry();
+       }
+       REG_BUF_CFG_9300 = ep;
+       uart_puts("[LINK EVENT ");
+@@ -493,6 +539,11 @@
    REG_UART_LCR &= ~LCR_PARITY_MASK;
  
    uart_puts("\n[BOOT]\n");
@@ -91,7 +100,7 @@
    gpio_set(GPIO_BOB_FLT_N, GPIO_INPUT);
    led_set_rgb(false, false, true);
  
-@@ -507,8 +556,8 @@
+@@ -507,8 +558,8 @@
    pcie_apply_x2_rxphy_tuning();
    pcie_power_off();
  
@@ -102,7 +111,7 @@
  
    // Bring USB up. force_usb2=0: try SS first, fall back via LINK_EVENT.
    usb_init_controller(0);
-@@ -520,7 +569,19 @@
+@@ -520,7 +571,19 @@
    ina231_init();
  
    while (1) {
@@ -133,7 +142,7 @@
  /* String descriptors */
  #define USB_STR_MFG             "tiny"
 -#define USB_STR_PRODUCT         "custom " GIT_VERSION
-+#define USB_STR_PRODUCT         "custom ed4e39b7-quiet1"
++#define USB_STR_PRODUCT         "custom ed4e39b7-quiet2"
  
  #define USB_STR_IDX_LANG        0
  #define USB_STR_IDX_MFG         1
