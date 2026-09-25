@@ -561,7 +561,7 @@ class BlePeerEngine:
         now = time.monotonic()
         self.active_peers = {peer: seen for peer, seen in self.active_peers.items() if now - seen < ACTIVE_PEER_SECONDS}
         if self.tx.notifying and self.active_peers:
-          snapshot = methods._live_state_snapshot(self.sm, self.params)
+          snapshot = methods._live_state_snapshot(self.sm, self.params, compact=True)
           for peer in list(self.active_peers):
             if peer in load_authorized_peers():
               await self.send_body(peer, {"type": "event", "name": "liveState", "payload": snapshot})
