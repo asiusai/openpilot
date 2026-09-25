@@ -268,10 +268,10 @@ def validate_image(data):
 
 
 def image_product(image):
-  match = re.search(rb"custom [0-9a-f]{8}-CLEAN", image)
-  if match is None:
-    raise ValueError("no product string in wrapped firmware")
-  return match.group().decode()
+  products = re.findall(rb"(custom [0-9a-f]{8}-[A-Za-z0-9_.-]+)\x00", image)
+  if len(products) != 1:
+    raise ValueError("expected one product string in wrapped firmware")
+  return products[0].decode()
 
 
 def reconnect(flash):
@@ -461,7 +461,7 @@ def flash_chestnut(expected_version=None, force=False):
   image = FIRMWARE_PATH.read_bytes()
   validate_image(image)
   expected_product = image_product(image)
-  if expected_version is not None and expected_product != f"custom {expected_version}-CLEAN":
+  if expected_version is not None and expected_product != f"custom {expected_version}":
     raise RuntimeError(f"bundled firmware is {expected_product!r}, expected version {expected_version}")
 
   path, vid_pid, product = find_chestnut()
@@ -565,7 +565,7 @@ def write_image(image, expected_product, product, force):
 
 def main():
   parser = argparse.ArgumentParser(description="check and flash the bundled chestnut firmware")
-  parser.add_argument("version", nargs="?", help="expected firmware version hash")
+  parser.add_argument("version", nargs="?", help="expected firmware version including build suffix")
   parser.add_argument("--force", action="store_true", help="reflash even when the version matches")
   args = parser.parse_args()
   if os.geteuid() != 0:
