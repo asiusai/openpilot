@@ -160,9 +160,9 @@ class DataApiClient:
     self.session = session or requests.Session()
     self._config: dict[str, Any] | None = None
 
-  def request(self, method: str, path: str, body: Any = None) -> requests.Response:
+  def authorization(self, method: str, path: str, body: Any = None, *, timestamp: int | None = None) -> tuple[bytes, str]:
     encoded = b"" if body is None else canonical_json(body).encode()
-    now = int(wall_time())
+    now = int(wall_time()) if timestamp is None else timestamp
     claims = {
       "v": 1,
       "identity": self.owner,
@@ -175,7 +175,11 @@ class DataApiClient:
     }
     signature = b64url(self.private_key.sign(canonical_json(claims).encode()))
     token = b64url(canonical_json(claims | {"signature": signature}).encode())
-    headers = {"Authorization": f"Data {token}", **({"Content-Type": "application/json"} if encoded else {})}
+    return encoded, f"Data {token}"
+
+  def request(self, method: str, path: str, body: Any = None) -> requests.Response:
+    encoded, authorization = self.authorization(method, path, body)
+    headers = {"Authorization": authorization, **({"Content-Type": "application/json"} if encoded else {})}
     response = self.session.request(method, self.base_url + path, data=encoded or None, headers=headers, timeout=30)
     response.raise_for_status()
     return response
