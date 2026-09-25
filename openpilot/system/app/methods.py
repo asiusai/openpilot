@@ -128,7 +128,7 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
-NETWORK_ONLY_METHODS = {"startStream", "startRouteStream"}
+NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "startRelayStream", "stopRelayStream"}
 # Use the same active Params alerts as the device UI, including their extra text.
 OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/selfdrived/alerts_offroad.json").read_text()))
 BLUETOOTH_STATE_FIELDS = {
@@ -870,6 +870,17 @@ def start_data_stream(sdp: str, peer: str, endpoint: str, **options) -> dict:
   return response.json()
 
 
+def relay_stream(peer: str, session: str, camera: str = 'wideRoad', stop: bool = False) -> dict:
+  from openpilot.system.webrtc.helpers import WEBRTCD_PORT, wait_for_webrtcd
+  if peer not in load_authorized_peers():
+    raise PermissionError('device access required')
+  wait_for_webrtcd()
+  response = requests.post(f'http://127.0.0.1:{WEBRTCD_PORT}/relay-stream',
+                           json={'peer': peer, 'session': session, 'camera': camera, 'stop': stop}, timeout=10)
+  response.raise_for_status()
+  return response.json()
+
+
 def _json_safe(value: Any) -> Any:
   if isinstance(value, bytes):
     return base64.b64encode(value).decode("utf-8")
@@ -999,6 +1010,8 @@ def dispatcher_for_peer(sender: str):
   return dispatcher | {
     "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
     "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
+    "startRelayStream": lambda session, camera: relay_stream(sender, session, camera),
+    "stopRelayStream": lambda session: relay_stream(sender, session, stop=True),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
   }
@@ -1046,7 +1059,9 @@ def handle_peer_message(data: str) -> bool:
       return True
 
     if body.get("type") == "event":
-      if body.get("name") == "terminal":
+      if body.get("name") == "relayVideoControl":
+        pass  # The dedicated video socket consumes these; never log frame acknowledgements.
+      elif body.get("name") == "terminal":
         terminal_manager.handle(sender, body.get("payload"))
       else:
         cloudlog.event("athena.websocket.event", sender=sender, name=body.get("name"), payload=body.get("payload"))

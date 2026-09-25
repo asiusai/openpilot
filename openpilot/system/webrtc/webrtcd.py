@@ -401,6 +401,7 @@ class ServerState:
   def __init__(self):
     self.streams: dict[str, StreamSession] = {}
     self.routes: dict = {}
+    self.relay = None
     self.stream_lock = asyncio.Lock()
     self.teardown: asyncio.TimerHandle | None = None
 
@@ -411,7 +412,7 @@ def schedule_teardown(state: ServerState):
     state.teardown.cancel()
 
   def clear():
-    if not state.streams:
+    if not state.streams and state.relay is None:
       Params().put_bool("IsLiveStreaming", False)
 
   state.teardown = asyncio.get_running_loop().call_later(5.0, clear)
@@ -434,6 +435,9 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
   body = StreamRequestBody(**stream_body)
 
   async with state.stream_lock:
+    if state.relay is not None:
+      await state.relay.stop()
+      state.relay = None
     # don't remove existing connection on prewarm request
     enabled = any(s.run_task and not s.run_task.done() and s.enabled for s in stream_dict.values())
     if enabled and not body.enabled:
@@ -511,6 +515,9 @@ async def on_shutdown(state: ServerState):
   if state.teardown is not None:
     state.teardown.cancel()
   Params().put_bool("IsLiveStreaming", False)
+  if state.relay is not None:
+    await state.relay.stop()
+    state.relay = None
   for session in list(state.routes.values()):
     await session.stop()
   state.routes.clear()
@@ -551,6 +558,47 @@ async def handle_route_stream(state: ServerState, raw_body: bytes) -> tuple[int,
       raise
 
 
+async def handle_relay_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
+  from openpilot.system.app.websocketd import load_authorized_peers
+  from openpilot.system.webrtc.relay_video import CAMERAS, RelayVideoSession
+  body = json.loads(raw_body)
+  peer, identifier = body.get('peer'), body.get('session')
+  if not isinstance(peer, str) or peer not in load_authorized_peers():
+    return _json_response({'error': 'device access required'}, 403)
+  try:
+    valid_id = isinstance(identifier, str) and str(uuid.UUID(identifier)) == identifier
+  except ValueError:
+    valid_id = False
+  if not valid_id:
+    return _json_response({'error': 'invalid session'}, 400)
+  async with state.stream_lock:
+    if body.get('stop') is True:
+      if state.relay is not None and state.relay.peer == peer and state.relay.identifier == identifier:
+        await state.relay.stop()
+        state.relay = None
+        schedule_teardown(state)
+      return _json_response({'session': identifier})
+    if body.get('camera') not in CAMERAS:
+      return _json_response({'error': 'invalid camera'}, 400)
+    if state.relay is not None:
+      await state.relay.stop()
+    for stream in list(state.streams.values()):
+      await stream.stop()
+    state.streams.clear()
+    session = RelayVideoSession(peer, identifier, body['camera'])
+    state.relay = session
+    Params().put_bool('IsLiveStreaming', True)
+    session.start()
+
+    def finished(_):
+      if state.relay is session:
+        state.relay = None
+        schedule_teardown(state)
+
+    session.run_task.add_done_callback(finished)
+  return _json_response({'session': identifier})
+
+
 class WebrtcdHandler(BaseHTTPRequestHandler):
   protocol_version = "HTTP/1.1"
 
@@ -559,6 +607,7 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
     "/schema": ("GET", "HEAD"),
     "/stream": ("POST",),
     "/routes": ("POST",),
+    "/relay-stream": ("POST",),
     "/notify": ("POST",),
   }
 
@@ -593,6 +642,8 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
         result = self._run(handle_get_stream(self.server.state, self._read_body(), self.headers.get_content_type()))
       elif parsed.path == "/routes":
         result = self._run(handle_route_stream(self.server.state, self._read_body()))
+      elif parsed.path == "/relay-stream":
+        result = self._run(handle_relay_stream(self.server.state, self._read_body()))
       else:  # /notify
         try:
           payload = json.loads(self._read_body())
