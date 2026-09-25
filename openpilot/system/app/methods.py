@@ -23,6 +23,7 @@ from openpilot.cereal import log
 from openpilot.system.app.clock import ClockChallenges
 from openpilot.system.app.identity import get_device_public_key
 from openpilot.common.params import Params
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
@@ -125,7 +126,17 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
-NETWORK_ONLY_METHODS = {"startStream", "startRouteStream", "requestRouteUpload", "setRoutePublic"}
+NETWORK_ONLY_METHODS = {"startStream", "startRouteStream"}
+# Use the same active Params alerts as the device UI, including their extra text.
+OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/selfdrived/alerts_offroad.json").read_text()))
+BLUETOOTH_STATE_FIELDS = {
+  "deviceState": ("started", "networkType", "networkStrength", "cpuTempC", "gpuTempC", "memoryTempC", "freeSpacePercent",
+                  "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "uptime"),
+  "peripheralState": ("pandaType", "voltage", "current"),
+  "extrinsicsCalibration": ("calStatus", "calPerc"),
+  "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source"),
+  "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize"),
+}
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
@@ -862,7 +873,7 @@ def _json_safe(value: Any) -> Any:
   return str(value)
 
 
-def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, Any]:
+def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
   build_metadata = get_build_metadata()
   services: dict[str, Any] = {}
   for service in LIVE_STATE_SERVICES:
@@ -887,7 +898,14 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
     except Exception:
       cloudlog.exception("athena.live_state.param_failed key=%s", key)
 
-  return {
+  offroad_alerts = []
+  for key in OFFROAD_ALERT_KEYS:
+    alert = params.get(key)
+    if isinstance(alert, dict) and alert.get("text"):
+      offroad_alerts.append({"key": key, "text": alert["text"].replace("%1", str(alert.get("extra", ""))),
+                             "severity": alert.get("severity", 0)})
+
+  snapshot = {
     "ts": time.time(),  # noqa: TID251
     "dongleId": params.get("DongleId"),
     "deviceName": get_device_name(),
@@ -901,8 +919,31 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
     "params": param_values,
     "software": _software_update_state(params),
     "services": services,
+    "offroadAlerts": offroad_alerts,
     "authorizedPeers": list(load_authorized_peers().keys()),
   }
+  if compact:
+    # GATT notifications share the link with RPC replies. Release notes, branch
+    # inventories and per-process profiling can otherwise occupy it for seconds.
+    # Full software/access details remain available through their explicit RPCs.
+    snapshot.pop("authorizedPeers")
+    for key in ("UpdaterCurrentReleaseNotes", "UpdaterNewReleaseNotes", "UpdaterAvailableBranches"):
+      snapshot["software"].pop(key, None)
+    for key in snapshot["software"]:
+      param_values.pop(key, None)
+    param_values.pop("UpdaterAvailableBranches", None)
+    failure = snapshot["software"].get("LastUpdateException")
+    if isinstance(failure, str):
+      snapshot["software"]["LastUpdateException"] = failure[-4096:]
+    for service, fields in BLUETOOTH_STATE_FIELDS.items():
+      if service in services:
+        services[service] = {key: services[service][key] for key in fields if key in services[service]}
+    if "managerState" in services:
+      services["managerState"] = {"processes": [
+        {key: process.get(key) for key in ("name", "running", "shouldBeRunning", "exitCode")}
+        for process in services["managerState"].get("processes", []) if process.get("shouldBeRunning") and not process.get("running")
+      ]}
+  return snapshot
 
 
 def send_peer_payload(to: str, body: dict) -> None:
