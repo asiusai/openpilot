@@ -93,3 +93,11 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_encrypted(b'')
     self.assertEqual(list(peers), ['first'])
     self.assertFalse(pairing)
+
+  async def test_retired_phone_gps_commands_are_not_exposed_over_bluetooth(self):
+    for method in ('startPhoneGps', 'updatePhoneGps', 'stopPhoneGps'):
+      await self.engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': method, 'method': method})
+      response = self.engine.send_body.call_args.args[1]
+      self.assertEqual(response['error']['code'], -32601)
+    await self.engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 'echo', 'method': 'echo', 'params': {'s': 'still connected'}})
+    self.assertEqual(self.engine.send_body.call_args.args[1]['result'], 'still connected')
