@@ -15,6 +15,7 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
+from openpilot.common.gps import get_gps_location_service
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, PC
@@ -197,7 +198,8 @@ def hw_state_thread(end_event, hw_queue):
 def hardware_thread(end_event, hw_queue) -> None:
   system_stats = LinuxSystemStats() if sys.platform == "linux" else None
   pm = messaging.PubMaster(['deviceState'])
-  sm = messaging.SubMaster(["peripheralState", "gpsLocationExternal", "selfdriveState", "pandaStates", "chestnutState"], poll="pandaStates")
+  gps_service = get_gps_location_service(Params())
+  sm = messaging.SubMaster(["peripheralState", gps_service, "selfdriveState", "pandaStates", "chestnutState"], poll="pandaStates")
 
   count = 0
 
@@ -306,6 +308,8 @@ def hardware_thread(end_event, hw_queue) -> None:
       msg.deviceState.networkInfo = last_hw_state.network_info
 
     msg.deviceState.modemTempC = last_hw_state.modem_temps
+    if ufs_health := HARDWARE.get_ufs_health():
+      msg.deviceState.ufsHealth = ufs_health
 
     msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
 
@@ -457,7 +461,7 @@ def hardware_thread(end_event, hw_queue) -> None:
         'count': count,
         'pandaStates': [strip_deprecated_keys(p.to_dict()) for p in pandaStates],
         'peripheralState': strip_deprecated_keys(peripheralState.to_dict()),
-        'location': (strip_deprecated_keys(sm["gpsLocationExternal"].to_dict()) if sm.alive["gpsLocationExternal"] else None),
+        'location': (strip_deprecated_keys(sm[gps_service].to_dict()) if sm.alive[gps_service] and sm[gps_service].hasFix else None),
         'deviceState': strip_deprecated_keys(msg.to_dict())
       }
       cloudlog.event("STATUS_PACKET", **dat)
@@ -497,6 +501,8 @@ def main():
 
   if COMMA_HARDWARE:
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
+
+  if not PC:
     threads.append(threading.Thread(target=chestnut_state_thread, args=(end_event,)))
 
   for t in threads:

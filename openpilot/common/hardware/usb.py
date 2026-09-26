@@ -1,10 +1,10 @@
 import os
 from pathlib import Path
 
-CHESTNUT_FW_VERSION = "ed4e39b7"
+CHESTNUT_FW_VERSION = "ed4e39b7-quiet2"
 CHESTNUT_USB_IDS = ((0xADD1, 0x0001), (0x3801, 0x0001))
 CHESTNUT_ROM_USB_IDS = ((0x174C, 0x2464), (0x174C, 0x2463))
-CHESTNUT_USB_PRODUCT = f"custom {CHESTNUT_FW_VERSION}-CLEAN"
+CHESTNUT_USB_PRODUCT = f"custom {CHESTNUT_FW_VERSION}"
 USB_DEVICES_PATH = Path("/sys/bus/usb/devices")
 TYPEC_CC_ORIENTATION_PATH = Path("/sys/class/power_supply/usb/typec_cc_orientation")
 PRIMARY_USB_CONTROLLER = "a600000.ssusb"

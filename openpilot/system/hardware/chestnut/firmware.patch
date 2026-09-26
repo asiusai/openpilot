@@ -1,0 +1,148 @@
+--- a/handmade/src/main.c
++++ b/handmade/src/main.c
+@@ -39,6 +39,29 @@
+ }
+ 
+ static uint8_t is_usb2;
++static uint8_t configured_ss;
++static volatile uint8_t ss_retry_pending;
++/* CC31 preserves XDATA; crt0 clears IDATA. Preserve the retry budget so a
++ * real USB2 cable cannot cause an unbounded software reset loop. */
++static __xdata volatile uint8_t ss_retry_magic_a;
++static __xdata volatile uint8_t ss_retry_magic_b;
++static __xdata volatile uint8_t ss_retry_count;
++static volatile uint8_t payload_started;
++
++/* Timer 3 mode follows upstream PR84. Poll it with no timer IRQ enabled.
++ * Limit recovery to two idle USB2 fallbacks; leave active USB2 alone. */
++static void schedule_ss_retry(void) {
++  ss_retry_pending = 0;
++  REG_TIMER3_CSR = TIMER_CSR_CLEAR;
++  REG_TIMER3_CSR = TIMER_CSR_EXPIRED;
++  if (is_usb2 && ss_retry_count < 2) {
++    REG_TIMER3_DIV = (REG_TIMER3_DIV & 0xE8) | 0x04;
++    XDATA_REG8(0xCC24) = 40000U >> 8;
++    XDATA_REG8(0xCC25) = 40000U & 0xFF;
++    REG_TIMER3_CSR = TIMER_CSR_ENABLE;
++    ss_retry_pending = 1;
++  }
++}
+ 
+ /* Streaming PCIe state — configured via 0xF0 control message */
+ static uint32_t dma_dwords;    /* total dwords remaining for streaming transfer */
+@@ -156,6 +179,12 @@
+     wValL = REG_USB_SETUP_WVAL_L; wValH = REG_USB_SETUP_WVAL_H;
+     wLen = ((uint16_t)REG_USB_SETUP_WLEN_H << 8) | REG_USB_SETUP_WLEN_L;
+ 
++    if ((bmReq & USB_SETUP_TYPE_VENDOR) &&
++        (bReq == 0xE5 || bReq == 0xF0 || bReq == 0xF2 || bReq == 0xF3)) {
++      payload_started = 1;
++      ss_retry_pending = 0;
++    }
++
+     if (!(bmReq & USB_SETUP_TYPE_VENDOR)) {
+       uart_puts("[C ");
+       uart_puthex(bmReq);
+@@ -213,6 +242,10 @@
+       dma_dwords = 0;
+       usb_send_zlp();
+       uart_puts("[*** SET CONFIG ***]\n");
++      payload_started = 0;
++      configured_ss = wValL && !is_usb2;
++      if (!is_usb2) ss_retry_count = 0;
++      if (wValL) schedule_ss_retry();
+     } else if (bmReq == (USB_SETUP_DIR_HOST_TO_DEV | USB_SETUP_RECIP_INTERFACE) && bReq == USB_REQ_SET_INTERFACE) {
+       REG_USB_EP_CFG2 = USB_EP_CFG2_CLEAR_IN;
+       REG_USB_EP_CFG2 = USB_EP_CFG2_CLEAR_OUT;
+@@ -247,6 +280,12 @@
+       XDATA_REG8(addr) = val;
+       if (bank) DPX = 0x00;
+       usb_send_zlp();
++    } else if (bmReq == (USB_SETUP_DIR_HOST_TO_DEV | USB_SETUP_TYPE_VENDOR) &&
++               bReq == 0xF4 && wValL == 1 && wValH == 0 && wLen == 0) {
++      /* Changing CC30 while using USB2 can corrupt the next SETUP packet.
++       * Perform both writes within this request, then re-enumerate. */
++      REG_CPU_MODE = CPU_MODE_USB3;
++      REG_CPU_RESET = CPU_RESET_TRIGGER;
+     } else if (bmReq == (USB_SETUP_DIR_HOST_TO_DEV | USB_SETUP_TYPE_VENDOR) && bReq == 0xF2) {
+       /* 0xF2: SRAM DMA — init DMA engine and arm for bulk transfer.
+       *   wValue bit 15 = direction: 0=BULK OUT (host→SRAM), 1=BULK IN (SRAM→host)
+@@ -444,6 +483,11 @@
+       REG_USB_EP_READY = ep;
+     } else if (periph_status & USB_PERIPH_LINK_EVENT) {
+       uint8_t ep = REG_BUF_CFG_9300;
++      if (configured_ss && (ep & 0x0A) == 0x0A) {
++        configured_ss = 0;
++        pcie_power_off();
++        uart_puts("[PCIe parked on host loss]\n");
++      }
+       if (ep & BUF_CFG_9300_SS_FAIL) {
+         uart_puts("[USB2 fallback]\n");
+         // fallback to USB2
+@@ -452,6 +496,8 @@
+         REG_CPU_MODE = CPU_MODE_USB2;
+         // enable USB high speed mode
+         REG_USB_PHY_CTRL_91C0 = 0x10;
++        /* USB2 may never enumerate. Retry without waiting for SET_CONFIG. */
++        schedule_ss_retry();
+       }
+       REG_BUF_CFG_9300 = ep;
+       uart_puts("[LINK EVENT ");
+@@ -493,6 +539,11 @@
+   REG_UART_LCR &= ~LCR_PARITY_MASK;
+ 
+   uart_puts("\n[BOOT]\n");
++  if (ss_retry_magic_a != 0xA6 || ss_retry_magic_b != 0x59 || ss_retry_count > 2) {
++    ss_retry_count = 0;
++    ss_retry_magic_a = 0xA6;
++    ss_retry_magic_b = 0x59;
++  }
+   gpio_set(GPIO_BOB_FLT_N, GPIO_INPUT);
+   led_set_rgb(false, false, true);
+ 
+@@ -507,8 +558,8 @@
+   pcie_apply_x2_rxphy_tuning();
+   pcie_power_off();
+ 
+-  // PCIe power on for backwards compatibility, can be removed
+-  pcie_power_on();
++  // Keep the downstream rails off until the host's existing F3 request.
++  // tinygrad enables PCIe explicitly when the link is not trained.
+ 
+   // Bring USB up. force_usb2=0: try SS first, fall back via LINK_EVENT.
+   usb_init_controller(0);
+@@ -520,7 +571,19 @@
+   ina231_init();
+ 
+   while (1) {
+-    // DO NOT PUT ANYTHING HERE, EVERYTHING SHOULD BE HANDLED IN INTERRUPTS
+-  }
+-}
+-
++    if (ss_retry_pending && (XDATA_REG8V(0xCC23) & TIMER_CSR_EXPIRED)) {
++      IE &= (uint8_t)~IE_EA;
++      ss_retry_pending = 0;
++      REG_TIMER3_CSR = TIMER_CSR_CLEAR;
++      REG_TIMER3_CSR = TIMER_CSR_EXPIRED;
++      if (is_usb2 && !payload_started && ss_retry_count < 2) {
++        ss_retry_count++;
++        uart_puts("[RETRY SS CPU]\n");
++        dma_dwords = 0;
++        REG_CPU_MODE = CPU_MODE_USB3;
++        REG_CPU_RESET = CPU_RESET_TRIGGER;
++      }
++      IE |= IE_EA;
++    }
++  }
++}
+--- a/handmade/src/usb.h
++++ b/handmade/src/usb.h
+@@ -12,7 +12,7 @@
+ 
+ /* String descriptors */
+ #define USB_STR_MFG             "tiny"
+-#define USB_STR_PRODUCT         "custom " GIT_VERSION
++#define USB_STR_PRODUCT         "custom ed4e39b7-quiet2"
+ 
+ #define USB_STR_IDX_LANG        0
+ #define USB_STR_IDX_MFG         1

@@ -236,6 +236,13 @@ class StreamSession:
     builder = WebRTCAnswerBuilder(body.sdp, bind_address=_default_route_ip())
 
     self.enabled = body.enabled
+    self.session_timeout = None if body.in_car else SESSION_TIMEOUT_SECONDS
+    self.in_car_state = None
+    self.in_car_request_id = 0
+    self.in_car_request_at = 0.0
+    if body.in_car:
+      from openpilot.system.webrtc.in_car import InCarTelemetry
+      self.in_car_state = InCarTelemetry()
     self.video_tracks = []
     for camera in body.cameras:
       track = LiveStreamVideoStreamTrack(camera, self.enabled)
@@ -285,6 +292,14 @@ class StreamSession:
         msg_type = payload.get("type")
 
         match msg_type:
+          case "inCarState":
+            identifier = payload.get("id")
+            if (self.in_car_state is not None and type(identifier) is int and self.in_car_request_id < identifier < 2**32
+                and time.monotonic() - self.in_car_request_at >= 0.05):
+              self.in_car_request_id = identifier
+              self.in_car_request_at = time.monotonic()
+              self.stream.get_messaging_channel().send(json.dumps({"type": "inCarState", "id": identifier,
+                                                                 "state": self.in_car_state.snapshot()}))
           case "livestreamCameraSwitch":
             # only needed for 1 track stream
             if len(self.video_tracks) == 1:
@@ -321,7 +336,7 @@ class StreamSession:
 
   async def run_normal_session(self):
     try:
-      await asyncio.wait_for(self.stream.wait_for_disconnection(), timeout=SESSION_TIMEOUT_SECONDS)
+      await asyncio.wait_for(self.stream.wait_for_disconnection(), timeout=self.session_timeout)
     except TimeoutError:
       self.logger.warning("Stream session (%s) timed out after %d s", self.identifier, SESSION_TIMEOUT_SECONDS)
       try:
@@ -375,6 +390,7 @@ class StreamSession:
         await self.bitrate_controller.stop()
       if self.outgoing_bridge is not None:
         await self.outgoing_bridge.stop()
+      self.in_car_state = None
       for track in self.video_tracks:
         track.stop()
       self.video_tracks.clear()
@@ -384,6 +400,8 @@ class StreamSession:
 class ServerState:
   def __init__(self):
     self.streams: dict[str, StreamSession] = {}
+    self.routes: dict = {}
+    self.relay = None
     self.stream_lock = asyncio.Lock()
     self.teardown: asyncio.TimerHandle | None = None
 
@@ -394,7 +412,7 @@ def schedule_teardown(state: ServerState):
     state.teardown.cancel()
 
   def clear():
-    if not state.streams:
+    if not state.streams and state.relay is None:
       Params().put_bool("IsLiveStreaming", False)
 
   state.teardown = asyncio.get_running_loop().call_later(5.0, clear)
@@ -413,9 +431,13 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     return _json_response({"error": "unsupported media type"}, status=415)
 
   stream_dict = state.streams
-  body = StreamRequestBody(**json.loads(raw_body))
+  stream_body = json.loads(raw_body)
+  body = StreamRequestBody(**stream_body)
 
   async with state.stream_lock:
+    if state.relay is not None:
+      await state.relay.stop()
+      state.relay = None
     # don't remove existing connection on prewarm request
     enabled = any(s.run_task and not s.run_task.done() and s.enabled for s in stream_dict.values())
     if enabled and not body.enabled:
@@ -431,6 +453,8 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
       await s.stop()
       stream_dict.pop(sid, None)
 
+    Params().put_bool("IsLiveStreaming", True)
+    schedule_teardown(state)
     session = StreamSession(body)
     stream_dict[session.identifier] = session
     try:
@@ -444,6 +468,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     except TimeoutError:
       await session.stop()
       stream_dict.pop(session.identifier, None)
+      schedule_teardown(state)
       logging.getLogger("webrtcd").exception("Timed out creating stream answer")
       with cloudlog.ctx(session_id=session.identifier):
         cloudlog.warning("webrtcd.session.answer_timeout")
@@ -451,6 +476,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     except Exception:
       await session.stop()
       stream_dict.pop(session.identifier, None)
+      schedule_teardown(state)
       logging.getLogger("webrtcd").exception("Failed to create stream answer")
       with cloudlog.ctx(session_id=session.identifier):
         cloudlog.exception("webrtcd.session.answer_exception")
@@ -486,6 +512,15 @@ async def handle_post_notify(state: ServerState, payload: Any) -> tuple[int, byt
 
 
 async def on_shutdown(state: ServerState):
+  if state.teardown is not None:
+    state.teardown.cancel()
+  Params().put_bool("IsLiveStreaming", False)
+  if state.relay is not None:
+    await state.relay.stop()
+    state.relay = None
+  for session in list(state.routes.values()):
+    await session.stop()
+  state.routes.clear()
   for session in list(state.streams.values()):
     try:
       ch = session.stream.get_messaging_channel()
@@ -496,6 +531,74 @@ async def on_shutdown(state: ServerState):
   state.streams.clear()
 
 
+async def handle_route_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
+  from openpilot.common.hardware.hw import Paths
+  from openpilot.system.app.websocketd import load_authorized_peers
+  from openpilot.system.webrtc.routes import RouteSession
+  body = json.loads(raw_body)
+  peer = body.get("peer")
+  if not isinstance(peer, str) or peer not in load_authorized_peers():
+    return _json_response({"error": "device access required"}, status=403)
+  sdp = body.get("sdp")
+  if not isinstance(sdp, str) or len(sdp) > 64 * 1024:
+    return _json_response({"error": "invalid offer"}, status=400)
+  async with state.stream_lock:
+    if len(state.routes) >= 4:
+      return _json_response({"error": "too many playback connections"}, status=429)
+    session = RouteSession(sdp, Paths.log_root(), lambda: peer in load_authorized_peers())
+    state.routes[session.identifier] = session
+    try:
+      answer = await asyncio.wait_for(session.get_answer(), timeout=30)
+      session.start()
+      session.run_task.add_done_callback(lambda _: state.routes.pop(session.identifier, None))
+      return _json_response({"sdp": answer.sdp, "type": answer.type})
+    except Exception:
+      state.routes.pop(session.identifier, None)
+      await session.stop()
+      raise
+
+
+async def handle_relay_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
+  from openpilot.system.app.websocketd import load_authorized_peers
+  from openpilot.system.webrtc.relay_video import CAMERAS, RelayVideoSession
+  body = json.loads(raw_body)
+  peer, identifier = body.get('peer'), body.get('session')
+  if not isinstance(peer, str) or peer not in load_authorized_peers():
+    return _json_response({'error': 'device access required'}, 403)
+  try:
+    valid_id = isinstance(identifier, str) and str(uuid.UUID(identifier)) == identifier
+  except ValueError:
+    valid_id = False
+  if not valid_id:
+    return _json_response({'error': 'invalid session'}, 400)
+  async with state.stream_lock:
+    if body.get('stop') is True:
+      if state.relay is not None and state.relay.peer == peer and state.relay.identifier == identifier:
+        await state.relay.stop()
+        state.relay = None
+        schedule_teardown(state)
+      return _json_response({'session': identifier})
+    if body.get('camera') not in CAMERAS:
+      return _json_response({'error': 'invalid camera'}, 400)
+    if state.relay is not None:
+      await state.relay.stop()
+    for stream in list(state.streams.values()):
+      await stream.stop()
+    state.streams.clear()
+    session = RelayVideoSession(peer, identifier, body['camera'])
+    state.relay = session
+    Params().put_bool('IsLiveStreaming', True)
+    session.start()
+
+    def finished(_):
+      if state.relay is session:
+        state.relay = None
+        schedule_teardown(state)
+
+    session.run_task.add_done_callback(finished)
+  return _json_response({'session': identifier})
+
+
 class WebrtcdHandler(BaseHTTPRequestHandler):
   protocol_version = "HTTP/1.1"
 
@@ -503,6 +606,8 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
   _routes = {
     "/schema": ("GET", "HEAD"),
     "/stream": ("POST",),
+    "/routes": ("POST",),
+    "/relay-stream": ("POST",),
     "/notify": ("POST",),
   }
 
@@ -535,6 +640,10 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
         result = self._run(handle_get_schema(self.server.state, services))
       elif parsed.path == "/stream":
         result = self._run(handle_get_stream(self.server.state, self._read_body(), self.headers.get_content_type()))
+      elif parsed.path == "/routes":
+        result = self._run(handle_route_stream(self.server.state, self._read_body()))
+      elif parsed.path == "/relay-stream":
+        result = self._run(handle_relay_stream(self.server.state, self._read_body()))
       else:  # /notify
         try:
           payload = json.loads(self._read_body())
@@ -606,6 +715,8 @@ def webrtcd_thread(host: str, port: int):
   loop = asyncio.new_event_loop()
   asyncio.set_event_loop(loop)
   state = ServerState()
+  # No peer connection survives a daemon restart. Retire any orphaned camera demand.
+  Params().put_bool("IsLiveStreaming", False)
 
   server = WebrtcdHTTPServer((host, port), WebrtcdHandler)
   server.state = state

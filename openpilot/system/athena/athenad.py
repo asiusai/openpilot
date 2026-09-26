@@ -63,6 +63,7 @@ WS_FRAME_SIZE = 4096
 DEVICE_STATE_UPDATE_INTERVAL = 1.0  # in seconds
 DEFAULT_UPLOAD_PRIORITY = 99  # higher number = lower priority
 CLIP_CHUNK_SIZE = 512 * 1024
+CLIP_CAMERAS = {"fcamera.hevc", "ecamera.hevc", "dcamera.hevc", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 SEND_PRIORITY_HIGH = 0
 SEND_PRIORITY_LOW = 1
@@ -422,7 +423,7 @@ class VideoClips:
     self.lock = threading.Condition()
     self.clips: dict[str, VideoClips.Clip] = {}
     self.transcode_proc: tuple[str, subprocess.Popen] | None = None
-    threading.Thread(target=self._worker, name="video_clip", daemon=True).start()
+    self.worker_started = False
 
   def _encode(self, clip: Clip, inputs: Iterable[str], output_path: str, start_time: float, duration: float) -> None:
     inputs = list(inputs)
@@ -454,7 +455,8 @@ class VideoClips:
         process.stdin.write("ffconcat version 1.0\n")
         for path in inputs:
           escaped_path = path.replace("'", "'\\''")
-          process.stdin.write(f"file 'file:{escaped_path}'\noption framerate {CAMERA_FPS}\nduration {SEGMENT_LENGTH}\n")
+          framerate = f"option framerate {CAMERA_FPS}\n" if clip.camera.endswith(".hevc") else ""
+          process.stdin.write(f"file 'file:{escaped_path}'\n{framerate}duration {SEGMENT_LENGTH}\n")
         process.stdin.close()
       process.wait()
       if process.returncode != 0:
@@ -542,7 +544,7 @@ class VideoClips:
             continue
           with os.scandir(entry.path) as files:
             for camera in files:
-              if camera.is_file() and camera.name.endswith("camera.hevc"):
+              if camera.is_file() and camera.name in CLIP_CAMERAS:
                 cameras.setdefault(camera.name, []).append(int(segment))
     except OSError:
       return {}
@@ -566,9 +568,12 @@ class VideoClips:
     route_name = route_match.group("log_id")
     camera = clip["camera"]
     filename = clip["filename"]
-    assert camera == os.path.basename(camera) and camera.endswith("camera.hevc"), "invalid camera filename"
+    assert camera == os.path.basename(camera) and camera in CLIP_CAMERAS, "invalid camera filename"
     assert filename == os.path.basename(filename), "invalid filename"
     with self.lock:
+      if not self.worker_started:
+        threading.Thread(target=self._worker, name="video_clip", daemon=True).start()
+        self.worker_started = True
       self.clips[filename] = self.Clip(route_name, camera, source_start_time, source_end_time, clip["bitrate"], clip["speedup"],
                                         filename, datetime.now().timestamp())
       self.lock.notify()
@@ -789,30 +794,22 @@ def getNetworkMetered() -> bool:
 
 
 @dispatcher.add_method
-def startStream(sdp: str, enabled: bool) -> dict:
+def startStream(sdp: str, enabled: bool, inCar: bool = False) -> dict:
   from openpilot.system.webrtc.helpers import StreamRequestBody, post_stream_request, wait_for_webrtcd
   params = Params()
   bridge_services_in = []
 
-  # stale car params case taken care of by webrtcd being shut off on ignition
   cp_bytes = params.get("CarParamsPersistent")
   if cp_bytes is not None:
     with car.CarParams.from_bytes(cp_bytes) as CP:
-      if CP.notCar:
+      if CP.notCar and not inCar:
         bridge_services_in.append("testJoystick")
 
-  if params.get_bool("IsOffroad"):
-    # manager owns camerad/stream_encoderd/webrtcd; flip the param and let it bring them up.
-    # webrtcd clears IsLiveStreaming when the session ends
-    params.put_bool("IsLiveStreaming", True)
-    # wait for webrtcd end points to wake up
-    try:
-      wait_for_webrtcd()
-    except TimeoutError:
-      cloudlog.event("athena.startStream.webrtcd_offroad_start_timeout", error=True)
-      raise
+  # webrtcd owns the streaming lifetime, including ignition transitions.
+  wait_for_webrtcd()
 
-  return post_stream_request(StreamRequestBody(sdp, ["wideRoad"], enabled, bridge_services_in, ["carState", "deviceState"]))
+  return post_stream_request(StreamRequestBody(sdp, ["wideRoad"], enabled, bridge_services_in,
+                                             [] if inCar else ["carState", "deviceState", "drivingModelData", "extrinsicsCalibration"], in_car=inCar))
 
 
 def get_logs_to_send_sorted() -> list[str]:
