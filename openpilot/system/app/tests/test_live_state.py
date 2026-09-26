@@ -22,6 +22,7 @@ def device(monkeypatch):
   params.get.side_effect = lambda key, **_: values.get(key)
   services = {
     "deviceState": {"started": True, "cpuTempC": [85], "networkType": "none", "chestnutPresent": False},
+    "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
     "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android"},
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
     "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical", "alertSize": "full"},
@@ -67,6 +68,17 @@ def test_live_alerts_match_raylib_and_clear_with_device_params(device, compact):
   assert methods._live_state_snapshot(sm, params, compact=compact)['offroadAlerts'] == []
 
 
+@pytest.mark.parametrize('compact', [False, True])
+def test_home_vehicle_readings_require_live_valid_car_data(device, compact):
+  sm, params, _ = device
+  assert methods._live_state_snapshot(sm, params, compact=compact)['services']['carState'] == {
+    'vEgo': 20.0, 'vEgoCluster': 20.5, 'gearShifter': 'drive', 'canValid': True,
+  }
+  for alive, valid in [(False, True), (True, False)]:
+    sm.alive['carState'], sm.valid['carState'] = alive, valid
+    assert 'carState' not in methods._live_state_snapshot(sm, params, compact=compact)['services']
+
+
 def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_path):
   import asyncio
   from openpilot.system.app.bluetoothd import BlePeerEngine
@@ -93,8 +105,8 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   params = Mock()
   params.get.return_value = None
   sm = Mock()
-  sm.alive = {'gpsLocation': False}
-  sm.valid = {'gpsLocation': True}
+  sm.alive = dict.fromkeys(methods.LIVE_STATE_SERVICES, False)
+  sm.valid = dict.fromkeys(methods.LIVE_STATE_SERVICES, True)
   sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)

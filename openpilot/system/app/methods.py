@@ -77,6 +77,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
 }
 LIVE_STATE_SERVICES = [
   "deviceState",
+  "carState",
   "gpsLocation",
   "peripheralState",
   "extrinsicsCalibration",
@@ -901,10 +902,15 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
       if service == "gpsLocation" and not (sm.alive[service] and sm.valid[service]):
         services[service] = {"hasFix": False}
         continue
+      if service == "carState" and not (sm.alive[service] and sm.valid[service]):
+        continue
       if sm.recv_frame[service] > 0:
         data = sm[service]
         services[service] = ([event.to_dict() for event in data]
                              if service == "onroadEvents" else data.to_dict())
+        if service == "carState":
+          # Home needs only these readings, including over the Bluetooth link.
+          services[service] = {key: services[service][key] for key in ("vEgo", "vEgoCluster", "gearShifter", "canValid")}
     except Exception:
       cloudlog.exception("athena.live_state.service_failed service=%s", service)
 
