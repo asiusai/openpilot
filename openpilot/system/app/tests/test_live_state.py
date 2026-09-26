@@ -87,3 +87,18 @@ def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_p
   for method in ('startStream', 'startRouteStream'):
     asyncio.run(engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 2, 'method': method, 'params': {'sdp': 'test'}}))
     assert 'network connection' in engine.send_body.call_args.args[1]['error']['message']
+
+
+def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
+  params = Mock()
+  params.get.return_value = None
+  sm = Mock()
+  sm.alive = {'gpsLocation': False}
+  sm.valid = {'gpsLocation': True}
+  sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
+  build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
+  monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
+  monkeypatch.setattr(methods, 'get_device_name', lambda: 'Asius v0')
+  monkeypatch.setattr(methods, 'load_authorized_peers', dict)
+  monkeypatch.setattr(methods, '_software_update_state', lambda _: {})
+  assert methods._live_state_snapshot(sm, params)['services']['gpsLocation'] == {'hasFix': False}
