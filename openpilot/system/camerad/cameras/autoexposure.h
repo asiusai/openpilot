@@ -54,14 +54,17 @@ inline void AutoExposure::update_exposure_score(float desired_ev, int exp_t, int
 }
 
 inline void AutoExposure::update(float grey_frac, uint32_t frame_id, int override_gain, int override_time) {
-  std::vector<double> target_grey_minimums = {0.1, 0.1, 0.125}; // wide, road, driver
+  // Keep a modest floor for road-camera shadow visibility in low light.
+  std::vector<double> target_grey_minimums = {0.15, 0.15, 0.125}; // wide, road, driver
 
   const float dt = 0.05;
 
   const float ts_grey = 10.0;
   const float ts_ev = 0.05;
 
-  const float k_grey = (dt / ts_grey) / (1.0 + dt / ts_grey);
+  // Initialize the target from current lighting during the first second.
+  // The normal slow filter then suppresses brightness changes while driving.
+  const float k_grey = frame_id < 20 ? 1.0f : (dt / ts_grey) / (1.0 + dt / ts_grey);
   const float k_ev = (dt / ts_ev) / (1.0 + dt / ts_ev);
 
   // It takes 3 frames for the commanded exposure settings to take effect. The first frame is already started by the time
