@@ -69,6 +69,44 @@ void test_camera_policy() {
   CHECK(ae.exposure_time == sensor.exposure_time_min);
   ae.update(0.2f, 2001, 8, 100);
   CHECK(ae.gain_idx == 8 && ae.exposure_time == 100 && !ae.dc_gain_enabled);
+
+  // A dim scene must reach the brighter target during startup, without the
+  // normal ten-second target filter holding it near the initial dark value.
+  // Model a three-frame sensor delay in both OS04 exposure-time units.
+  for (bool raw10 : {false, true}) {
+    OS04C10 startup_sensor;
+    if (raw10) {
+      startup_sensor.ev_scale = 75;
+      startup_sensor.exposure_time_max = 4717;
+      startup_sensor.max_ev = 4717 * 8.5f;
+    }
+    for (int camera : {0, 1}) {
+      AutoExposure startup;
+      startup.init(&startup_sensor, camera, raw10 ? 600 : 5);
+      std::array<float, 3> history;
+      history.fill(startup.exposure_time);
+      float grey = 0;
+      for (uint32_t frame = 1; frame <= 120; ++frame) {
+        grey = std::clamp(0.1f + history[frame % 3] * 0.00002f * startup_sensor.ev_scale / 150, 0.0f, 1.0f);
+        startup.update(grey, frame);
+        history[frame % 3] = startup.exposure_time * startup_sensor.sensor_analog_gains[startup.gain_idx];
+        CHECK(startup.exposure_time <= startup_sensor.exposure_time_max);
+        CHECK(startup.gain_idx <= startup_sensor.analog_gain_max_idx);
+        if (frame >= 60) CHECK(std::abs(grey - 0.15f) < 0.01f);
+      }
+      // A subsequent bright scene must reduce exposure within the same limits.
+      const float dim_ev = history[0];
+      for (uint32_t frame = 121; frame <= 240; ++frame) {
+        grey = std::clamp(0.1f + history[frame % 3] * 0.002f * startup_sensor.ev_scale / 150, 0.0f, 1.0f);
+        startup.update(grey, frame);
+        history[frame % 3] = startup.exposure_time * startup_sensor.sensor_analog_gains[startup.gain_idx];
+        CHECK(startup.exposure_time >= startup_sensor.exposure_time_min);
+        CHECK(startup.gain_idx >= startup_sensor.analog_gain_min_idx);
+      }
+      CHECK(history[0] < dim_ev / 10);
+      CHECK(grey < 0.5f);
+    }
+  }
 }
 
 int main() { return run_native_test(test_camera_policy); }
