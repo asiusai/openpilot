@@ -28,14 +28,14 @@ def test_individual_colors_map_to_six_leds_and_leave_driver_camera_off(params):
   assert state == {"supported": True, "parked": True, "manual": True, "colors": COLORS, "brightness": 100}
   assert manual_led_channels(parked_sm(), params) == {
     1: [0] * 9,
-    2: [255, 0, 0, 0, 255, 0, 0, 0, 255],
-    3: [255, 255, 255, 128, 64, 32, 0, 0, 0],
+    2: [0, 0, 0, 13, 6, 3, 255, 255, 255],
+    3: [0, 0, 255, 0, 26, 0, 255, 0, 0],
   }
 
 
 def test_brightness_scales_all_channels_and_zero_is_off_without_losing_colors(params):
   set_led_state(params, True, True, ["#804020"] * 6, 50)
-  assert manual_led_channels(parked_sm(), params) == {1: [0] * 9, 2: [64, 32, 16] * 3, 3: [64, 32, 16] * 3}
+  assert manual_led_channels(parked_sm(), params) == {1: [0] * 9, 2: [64, 32, 16, 6, 3, 2, 64, 32, 16], 3: [64, 32, 16, 6, 3, 2, 64, 32, 16]}
   set_led_state(params, True, True, COLORS, 0)
   assert manual_led_channels(parked_sm(), params) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
   assert get_led_state(params, True)["colors"] == COLORS
