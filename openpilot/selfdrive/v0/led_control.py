@@ -2,6 +2,8 @@
 
 import re
 
+from openpilot.selfdrive.v0.led_patterns import camera_channels
+
 MANUAL_LED_PARAM = "ManualLedState"
 LED_COUNT = 6
 
@@ -37,7 +39,7 @@ def get_led_state(params, supported: bool) -> dict:
     "supported": supported,
     "parked": parked,
     "manual": settings is not None,
-    **(settings or {"colors": ["#0000ff"] * LED_COUNT, "brightness": 10}),
+    **(settings or {"colors": ["#ffc378"] * LED_COUNT, "brightness": 10}),
   }
 
 
@@ -70,6 +72,6 @@ def manual_led_channels(sm, params) -> dict[int, list[int]] | None:
   if not parked:
     params.remove(MANUAL_LED_PARAM)
     return None
-  channels = [round(int(color[offset:offset + 2], 16) * settings["brightness"] / 100)
-              for color in settings["colors"] for offset in (1, 3, 5)]
-  return {1: [0] * 9, 2: channels[:9], 3: channels[9:]}
+  colors = [[round(int(color[offset:offset + 2], 16) * settings["brightness"] / 100) for offset in (1, 3, 5)]
+            for color in settings["colors"]]
+  return camera_channels(colors)
