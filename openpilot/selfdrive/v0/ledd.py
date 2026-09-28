@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.selfdrive.v0.led_control import manual_led_channels
+from openpilot.selfdrive.v0.led_patterns import ORANGE_RGB, WHITE_RGB, STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels
 
 STARTUP_GRACE = 30.
-RUNTIME_HZ = 4.
+RUNTIME_HZ = 30.
 STARTED_AT = time.monotonic()
 CAM_LED_ADDR = 0x64
 CAM_LED_BUSES = (16, 18, 20)
@@ -65,10 +66,10 @@ class LedState:
   blue: int
 
 
-BLUE = LedState("blue", 0, 0, 180)
+WHITE = LedState("white", *WHITE_RGB)
 GREEN = LedState("green", 0, 180, 0)
 YELLOW = LedState("yellow", 180, 130, 0)
-BROWN = LedState("brown", 120, 75, 20)
+ORANGE = LedState("orange", *ORANGE_RGB)
 RED = LedState("red", 180, 0, 0)
 DM_WARNING = LedState("dm_warning", 180, 0, 180)
 OFF = LedState("off", 0, 0, 0)
@@ -188,9 +189,10 @@ class CameraLedBoard:
       self.write(IS31FL3199_SHUTDOWN, 0x00)
 
   def set(self, state: LedState) -> None:
+    # The middle LED in each window is less diffused than its two neighbors.
     self.set_channels([
       state.red, state.green, state.blue,
-      state.red, state.green, state.blue,
+      round(state.red * 0.1), round(state.green * 0.1), round(state.blue * 0.1),
       state.red, state.green, state.blue,
     ])
 
@@ -369,12 +371,12 @@ def engaged_warning(sm) -> LedState | None:
 
 
 def calibration_state(sm) -> LedState | None:
-  if not sm.seen['extrinsicsCalibration'] or not sm.alive['extrinsicsCalibration']:
+  if not sm.seen['extrinsicsCalibration'] or not sm.alive['extrinsicsCalibration'] or not sm.valid['extrinsicsCalibration']:
     return None
   if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started:
     return None
   if sm['extrinsicsCalibration'].calStatus != log.ExtrinsicsCalibration.Status.calibrated:
-    return BROWN
+    return ORANGE
   return None
 
 
@@ -403,7 +405,8 @@ def pairing_led_channels(brightness: int = 255) -> dict[int, list[int]] | None:
     return None
 
   state = max_brightness(GREEN if int(time.monotonic() * 2) % 2 == 0 else OFF, brightness)
-  channels = [state.red, state.green, state.blue] * 3
+  channels = [state.red, state.green, state.blue, round(state.red * 0.1), round(state.green * 0.1),
+              round(state.blue * 0.1), state.red, state.green, state.blue]
 
   return {
     1: [0] * len(CAM_LED_CHANNELS),
@@ -414,10 +417,14 @@ def pairing_led_channels(brightness: int = 255) -> dict[int, list[int]] | None:
 
 def led_state(sm, now: float | None = None) -> LedState:
   if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started:
-    return BLUE
+    return WHITE
 
   if persistent_error(sm):
     return RED
+
+  warning = engaged_warning(sm)
+  if warning is not None:
+    return blinking(warning, now)
 
   calibrating = calibration_state(sm)
   if calibrating is not None:
@@ -427,15 +434,31 @@ def led_state(sm, now: float | None = None) -> LedState:
   if selfdrive_available:
     selfdrive_state = sm['selfdriveState']
     if selfdrive_state.active:
-      warning = engaged_warning(sm)
-      return blinking(warning, now) if warning is not None else GREEN
+      return GREEN
     if sm['deviceState'].started and (
       not selfdrive_state.engageable or
       selfdrive_state.state == log.SelfdriveState.OpenpilotState.preEnabled
     ):
       return YELLOW
 
-  return BLUE
+  return WHITE
+
+
+def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[int]] | None:
+  state = led_state(sm, now)
+  if (sm.seen['deviceState'] and sm.alive['deviceState'] and sm['deviceState'].started and
+      not persistent_error(sm) and engaged_warning(sm) is not None):
+    state = max_brightness(state, brightness)
+    rgb = [state.red, state.green, state.blue]
+    return camera_channels([rgb] * 6)
+  if state == ORANGE:
+    return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
+  # Continue the kernel sweep for one cycle while userspace starts. Driving
+  # statuses, manual control and Bluetooth pairing take priority immediately.
+  if (now - STARTED_AT < STARTUP_PERIOD and state == WHITE and
+      (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
+    return startup_channels(now)
+  return None
 
 
 def main() -> None:
@@ -492,7 +515,12 @@ def main() -> None:
     elif manual_channels is not None:
       led.set_channels(manual_channels)
     else:
-      led.set(led_state(sm), brightness=brightness)
+      now = time.monotonic()
+      animated_channels = automatic_led_channels(sm, brightness, now)
+      if animated_channels is not None:
+        led.set_channels(animated_channels)
+      else:
+        led.set(led_state(sm, now), brightness=brightness)
     rk.keep_time()
 
   led.clear()
