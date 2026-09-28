@@ -24,6 +24,9 @@
 #include "common/swaglog.h"
 #include "common/timing.h"
 #include "system/camerad/cameras/hw.h"
+#include "system/camerad/cameras/autoexposure.h"
+#include "system/camerad/cameras/ife.h"
+#include "system/camerad/cameras/cdm_parse.h"
 #include "system/camerad/cameras/nv12_info.h"
 #include "system/camerad/sensors/sensor.h"
 
@@ -113,10 +116,7 @@ struct OneSensorWriteRegsCmd {
 
 #define ONE_SENSOR_WRITE_REGS _IOW('S', 1, struct OneSensorWriteRegsCmd)
 
-struct VfeRegWrite {
-  uint32_t offset;
-  uint32_t value;
-};
+using VfeRegWrite = IspRegWrite;
 
 struct VfeWriteRegsCmd {
   uint64_t regs;
@@ -154,298 +154,36 @@ static constexpr uint32_t ONE_SENSOR_DELAY_MS = 0xffffffffU;
 static constexpr uint32_t OS04_RAW10_20FPS_VTS = 0x1275;
 
 static const std::vector<i2c_random_wr_payload> &os04_default_init_regs() {
-  static const std::vector<i2c_random_wr_payload> regs = {
-    {0x0103, 0x01},
-    {0x0301, 0x84},
-    {0x0303, 0x01},
-    {0x0305, 0x5b},
-    {0x0306, 0x00},
-    {0x0307, 0x17},
-    {0x0323, 0x04},
-    {0x0324, 0x01},
-    {0x0325, 0x62},
-    {0x3012, 0x06},
-    {0x3013, 0x02},
-    {0x3016, 0x32},
-    {0x3021, 0x03},
-    {0x3106, 0x25},
-    {0x3107, 0xa1},
-    {0x3500, 0x00},
-    {0x3501, 0x04},
-    {0x3502, 0x40},
-    {0x3503, 0x88},
-    {0x3508, 0x00},
-    {0x3509, 0x80},
-    {0x350a, 0x04},
-    {0x350b, 0x00},
-    {0x350c, 0x00},
-    {0x350d, 0x80},
-    {0x350e, 0x04},
-    {0x350f, 0x00},
-    {0x3510, 0x00},
-    {0x3511, 0x01},
-    {0x3512, 0x20},
-    {0x3624, 0x02},
-    {0x3625, 0x4c},
-    {0x3660, 0x00},
-    {0x3666, 0xa5},
-    {0x3667, 0xa5},
-    {0x366a, 0x64},
-    {0x3673, 0x0d},
-    {0x3672, 0x0d},
-    {0x3671, 0x0d},
-    {0x3670, 0x0d},
-    {0x3685, 0x00},
-    {0x3694, 0x0d},
-    {0x3693, 0x0d},
-    {0x3692, 0x0d},
-    {0x3691, 0x0d},
-    {0x3696, 0x4c},
-    {0x3697, 0x4c},
-    {0x3698, 0x40},
-    {0x3699, 0x80},
-    {0x369a, 0x18},
-    {0x369b, 0x1f},
-    {0x369c, 0x14},
-    {0x369d, 0x80},
-    {0x369e, 0x40},
-    {0x369f, 0x21},
-    {0x36a0, 0x12},
-    {0x36a1, 0x5d},
-    {0x36a2, 0x66},
-    {0x370a, 0x00},
-    {0x370e, 0x0c},
-    {0x3710, 0x00},
-    {0x3713, 0x00},
-    {0x3725, 0x02},
-    {0x372a, 0x03},
-    {0x3738, 0xce},
-    {0x3748, 0x00},
-    {0x374a, 0x00},
-    {0x374c, 0x00},
-    {0x374e, 0x00},
-    {0x3756, 0x00},
-    {0x3757, 0x0e},
-    {0x3767, 0x00},
-    {0x3771, 0x00},
-    {0x377b, 0x20},
-    {0x377c, 0x00},
-    {0x377d, 0x0c},
-    {0x3781, 0x03},
-    {0x3782, 0x00},
-    {0x3789, 0x14},
-    {0x3795, 0x02},
-    {0x379c, 0x00},
-    {0x379d, 0x00},
-    {0x37b8, 0x04},
-    {0x37ba, 0x03},
-    {0x37bb, 0x00},
-    {0x37bc, 0x04},
-    {0x37be, 0x08},
-    {0x37c4, 0x11},
-    {0x37c5, 0x80},
-    {0x37c6, 0x14},
-    {0x37c7, 0x08},
-    {0x37da, 0x11},
-    {0x381f, 0x08},
-    {0x3829, 0x03},
-    {0x3881, 0x00},
-    {0x3888, 0x04},
-    {0x388b, 0x00},
-    {0x3c80, 0x10},
-    {0x3c86, 0x00},
-    {0x3c8c, 0x20},
-    {0x3c9f, 0x01},
-    {0x3d85, 0x1b},
-    {0x3d8c, 0x71},
-    {0x3d8d, 0xe2},
-    {0x3f00, 0x0b},
-    {0x3f06, 0x04},
-    {0x400a, 0x01},
-    {0x400b, 0x50},
-    {0x400e, 0x08},
-    {0x4043, 0x7e},
-    {0x4045, 0x7e},
-    {0x4047, 0x7e},
-    {0x4049, 0x7e},
-    {0x4090, 0x14},
-    {0x40b0, 0x00},
-    {0x40b1, 0x00},
-    {0x40b2, 0x00},
-    {0x40b3, 0x00},
-    {0x40b4, 0x00},
-    {0x40b5, 0x00},
-    {0x40b7, 0x00},
-    {0x40b8, 0x00},
-    {0x40b9, 0x00},
-    {0x40ba, 0x00},
-    {0x4301, 0x00},
-    {0x4303, 0x00},
-    {0x4502, 0x04},
-    {0x4503, 0x00},
-    {0x4504, 0x06},
-    {0x4506, 0x00},
-    {0x4507, 0x64},
-    {0x4803, 0x10},
-    {0x480c, 0x32},
-    {0x480e, 0x00},
-    {0x4813, 0x00},
-    {0x4819, 0x70},
-    {0x481f, 0x30},
-    {0x4823, 0x3c},
-    {0x4825, 0x32},
-    {0x4833, 0x10},
-    {0x484b, 0x07},
-    {0x488b, 0x00},
-    {0x4d00, 0x04},
-    {0x4d01, 0xad},
-    {0x4d02, 0xbc},
-    {0x4d03, 0xa1},
-    {0x4d04, 0x1f},
-    {0x4d05, 0x4c},
-    {0x4d0b, 0x01},
-    {0x4e00, 0x2a},
-    {0x4e0d, 0x00},
-    {0x5001, 0x09},
-    {0x5004, 0x00},
-    {0x5080, 0x04},
-    {0x5036, 0x00},
-    {0x5180, 0x70},
-    {0x5181, 0x10},
-    {0x520a, 0x03},
-    {0x520b, 0x06},
-    {0x520c, 0x0c},
-    {0x580b, 0x0f},
-    {0x580d, 0x00},
-    {0x580f, 0x00},
-    {0x5820, 0x00},
-    {0x5821, 0x00},
-    {0x301c, 0xf0},
-    {0x301e, 0xb4},
-    {0x301f, 0xd0},
-    {0x3022, 0x01},
-    {0x3109, 0xe7},
-    {0x3600, 0x00},
-    {0x3610, 0x65},
-    {0x3611, 0x85},
-    {0x3613, 0x3a},
-    {0x3615, 0x60},
-    {0x3621, 0x90},
-    {0x3620, 0x0c},
-    {0x3629, 0x00},
-    {0x3661, 0x04},
-    {0x3664, 0x70},
-    {0x3665, 0x00},
-    {0x3681, 0xa6},
-    {0x3682, 0x53},
-    {0x3683, 0x2a},
-    {0x3684, 0x15},
-    {0x3700, 0x2a},
-    {0x3701, 0x12},
-    {0x3703, 0x28},
-    {0x3704, 0x0e},
-    {0x3706, 0x4a},
-    {0x3709, 0x4a},
-    {0x370b, 0xa2},
-    {0x370c, 0x01},
-    {0x370f, 0x04},
-    {0x3714, 0x24},
-    {0x3716, 0x24},
-    {0x3719, 0x11},
-    {0x371a, 0x1e},
-    {0x3720, 0x00},
-    {0x3724, 0x13},
-    {0x373f, 0xb0},
-    {0x3741, 0x4a},
-    {0x3743, 0x4a},
-    {0x3745, 0x4a},
-    {0x3747, 0x4a},
-    {0x3749, 0xa2},
-    {0x374b, 0xa2},
-    {0x374d, 0xa2},
-    {0x374f, 0xa2},
-    {0x3755, 0x10},
-    {0x376c, 0x00},
-    {0x378d, 0x30},
-    {0x3790, 0x4a},
-    {0x3791, 0xa2},
-    {0x3798, 0xc0},
-    {0x379e, 0x00},
-    {0x379f, 0x04},
-    {0x37a1, 0x01},
-    {0x37a2, 0x1e},
-    {0x37a8, 0x01},
-    {0x37a9, 0x1e},
-    {0x37ac, 0xa0},
-    {0x37b9, 0x01},
-    {0x37bd, 0x01},
-    {0x37bf, 0x26},
-    {0x37c0, 0x11},
-    {0x37c2, 0x04},
-    {0x37cd, 0x19},
-    {0x37e0, 0x08},
-    {0x37e6, 0x04},
-    {0x37e5, 0x02},
-    {0x37e1, 0x0c},
-    {0x3737, 0x04},
-    {0x37d8, 0x02},
-    {0x37e2, 0x10},
-    {0x3739, 0x10},
-    {0x3662, 0x10},
-    {0x37e4, 0x20},
-    {0x37e3, 0x08},
-    {0x37d9, 0x08},
-    {0x4040, 0x00},
-    {0x4041, 0x07},
-    {0x4008, 0x02},
-    {0x4009, 0x0d},
-    {0x3800, 0x00},
-    {0x3801, 0x00},
-    {0x3802, 0x00},
-    {0x3803, 0x00},
-    {0x3804, 0x0a},
-    {0x3805, 0x8f},
-    {0x3806, 0x05},
-    {0x3807, 0xff},
-    {0x3808, 0x0a},
-    {0x3809, 0x80},
-    {0x380a, 0x05},
-    {0x380b, 0xf0},
-    {0x380c, 0x04},
-    {0x380d, 0x2e},
-    {0x380e, 0x12},
-    {0x380f, 0x75},
-    {0x3811, 0x09},
-    {0x3813, 0x09},
-    {0x3814, 0x01},
-    {0x3815, 0x01},
-    {0x3816, 0x01},
-    {0x3817, 0x01},
-    {0x3820, 0x88},
-    {0x3821, 0x00},
-    {0x3880, 0x25},
-    {0x3882, 0x20},
-    {0x3c91, 0x0b},
-    {0x3c94, 0x45},
-    {0x4000, 0xf3},
-    {0x4001, 0x60},
-    {0x4003, 0x40},
-    {0x4300, 0xff},
-    {0x4302, 0x0f},
-    {0x4305, 0x83},
-    {0x4505, 0x84},
-    {0x4809, 0x1e},
-    {0x480a, 0x04},
-    {0x4837, 0x0a},
-    {0x4c00, 0x08},
-    {0x4c01, 0x00},
-    {0x4c04, 0x00},
-    {0x4c05, 0x00},
-    {0x5000, 0xf9},
-    {0x3624, 0x00},
-    {0x3822, 0x14},
-    {0x0100, 0x00},
-  };
+  static const std::vector<i2c_random_wr_payload> regs = [] {
+    std::vector<i2c_random_wr_payload> result(std::begin(init_array_os04c10), std::end(init_array_os04c10));
+    // Two-lane RAW10 sensor mode. Retain this module's white balance in the
+    // VFE, after black-level subtraction.
+    result.insert(result.end(), {
+      {0x0301, 0x84}, {0x0305, 0x5b}, {0x0306, 0x00}, {0x3016, 0x32},
+      {0x3106, 0x25}, {0x3501, 0x04}, {0x3502, 0x40}, {0x3511, 0x01},
+      {0x3512, 0x20}, {0x3660, 0x00}, {0x366a, 0x64}, {0x3698, 0x40},
+      {0x369a, 0x18}, {0x369c, 0x14}, {0x36a1, 0x5d}, {0x370a, 0x00},
+      {0x370e, 0x0c}, {0x3713, 0x00}, {0x3748, 0x00}, {0x374a, 0x00},
+      {0x374c, 0x00}, {0x374e, 0x00}, {0x3757, 0x0e}, {0x377b, 0x20},
+      {0x37be, 0x08}, {0x37c7, 0x08}, {0x3c8c, 0x20}, {0x4090, 0x14},
+      {0x40ba, 0x00}, {0x4507, 0x64}, {0x4803, 0x10}, {0x480e, 0x00},
+      {0x4813, 0x00}, {0x4823, 0x3c}, {0x4825, 0x32}, {0x484b, 0x07},
+      {0x5036, 0x00}, {0x301c, 0xf0}, {0x301f, 0xd0}, {0x3022, 0x01},
+      {0x3621, 0x90}, {0x3681, 0xa6}, {0x3682, 0x53}, {0x3683, 0x2a},
+      {0x3684, 0x15}, {0x3706, 0x4a}, {0x370b, 0xa2}, {0x370f, 0x04},
+      {0x3716, 0x24}, {0x3741, 0x4a}, {0x3743, 0x4a}, {0x3745, 0x4a},
+      {0x3747, 0x4a}, {0x3749, 0xa2}, {0x374b, 0xa2}, {0x374d, 0xa2},
+      {0x374f, 0xa2}, {0x378d, 0x30}, {0x3790, 0x4a}, {0x3791, 0xa2},
+      {0x3798, 0xc0}, {0x37a1, 0x01}, {0x37a8, 0x01}, {0x380c, 0x04},
+      {0x380d, 0x2e}, {0x380e, 0x12}, {0x380f, 0x75}, {0x3811, 0x09},
+      {0x3813, 0x09}, {0x3820, 0x88}, {0x3880, 0x25}, {0x4809, 0x1e},
+      {0x4837, 0x0a}, {0x4c01, 0x00}, {0x3822, 0x14}, {0x0100, 0x00},
+      {0x5100, 0x04}, {0x5101, 0x00}, {0x5102, 0x04}, {0x5103, 0x00},
+      {0x5104, 0x04}, {0x5105, 0x00}, {0x5140, 0x04}, {0x5141, 0x00},
+      {0x5142, 0x04}, {0x5143, 0x00}, {0x5144, 0x04}, {0x5145, 0x00},
+    });
+    return result;
+  }();
   return regs;
 }
 
@@ -520,91 +258,6 @@ static bool write_sensor_regs(int sensor_fd, const std::vector<i2c_random_wr_pay
   return true;
 }
 
-struct Os04VfeWbRegs {
-  bool valid = false;
-  int blue = 0;
-  int green = 0;
-  int red = 0;
-};
-
-static Os04VfeWbRegs default_os04_vfe_wb_regs(int) {
-  // The CamThink modules need input correction before comma's OS04 CCM/YUV
-  // pipeline. Unity WB, as used with comma's own modules, produces a strong
-  // green cast on this hardware. Use one correction for all three modules.
-  return {.valid = true, .blue = 0x00bc, .green = 0x0080, .red = 0x00d1};
-}
-
-static std::vector<VfeRegWrite> os04_vfe_wb_reg_writes(const Os04VfeWbRegs &wb) {
-  if (!wb.valid) return {};
-  return {
-    {0x6fc, ((uint32_t)(wb.blue & 0xffff) << 16) | (uint32_t)(wb.green & 0xffff)},
-    {0x700, (uint32_t)(wb.red & 0xffff)},
-    {0x704, 0x00000000},
-    {0x708, 0x00000000},
-  };
-}
-
-static std::vector<VfeRegWrite> os04_vfe_demosaic_reg_writes(int) {
-  // Match comma four's OS04 IFE state. The Dragon kernel baseline writes the
-  // first interpolation coefficient into all 16 directional slots, while the
-  // comma pipeline leaves the remaining reset-state slots at zero.
-  std::vector<VfeRegWrite> regs = {
-    {0x6f8, 0x00000100},
-    {0x71c, 0x00008000},
-    {0x720, 0x08000066},
-  };
-  for (uint32_t offset = 0x724; offset <= 0x75c; offset += 4) {
-    regs.push_back({offset, 0x00000000});
-  }
-  return regs;
-}
-
-static std::vector<VfeRegWrite> os04_vfe_ccm_reg_writes(int) {
-  static constexpr uint32_t c4_os04_ccm[] = {
-    0x000000c2, 0x00000fe0, 0x00000fde,
-    0x00000fa7, 0x000000d9, 0x00001000,
-    0x00000fca, 0x00000fef, 0x000000c7,
-    0x00000000, 0x00000000, 0x00000000,
-    0x00000000,
-  };
-  std::vector<VfeRegWrite> regs;
-  regs.reserve(std::size(c4_os04_ccm));
-  for (size_t i = 0; i < std::size(c4_os04_ccm); i++) {
-    regs.push_back({0x760 + (uint32_t)i * 4, c4_os04_ccm[i]});
-  }
-  return regs;
-}
-
-static std::vector<VfeRegWrite> os04_vfe_yuv_reg_writes(int) {
-  // Use comma four's OS04 RGB-to-YUV conversion unchanged. Module/lens color
-  // response is compensated by white balance before this conversion.
-  static constexpr uint32_t yuv[] = {
-    0x00680208, 0x00000108, 0x00400000, 0x03ff0000,
-    0x01c01ed8, 0x00001f68, 0x02000000, 0x03ff0000,
-    0x1fb81e88, 0x000001c0, 0x02000000, 0x03ff0000,
-  };
-  std::vector<VfeRegWrite> regs;
-  regs.reserve(std::size(yuv));
-  for (size_t i = 0; i < std::size(yuv); i++) {
-    regs.push_back({0xf30 + (uint32_t)i * 4, yuv[i]});
-  }
-  return regs;
-}
-
-static std::vector<VfeRegWrite> default_os04_vfe_tuning_regs(int cam_idx) {
-  // Stream start resets CORE_CFG; restore the CamThink module's RGGB phase.
-  std::vector<VfeRegWrite> regs = {{0x050, 0x00000000}};
-  std::vector<VfeRegWrite> wb = os04_vfe_wb_reg_writes(default_os04_vfe_wb_regs(cam_idx));
-  regs.insert(regs.end(), wb.begin(), wb.end());
-  std::vector<VfeRegWrite> demosaic = os04_vfe_demosaic_reg_writes(cam_idx);
-  regs.insert(regs.end(), demosaic.begin(), demosaic.end());
-  std::vector<VfeRegWrite> ccm = os04_vfe_ccm_reg_writes(cam_idx);
-  regs.insert(regs.end(), ccm.begin(), ccm.end());
-  std::vector<VfeRegWrite> yuv = os04_vfe_yuv_reg_writes(cam_idx);
-  regs.insert(regs.end(), yuv.begin(), yuv.end());
-  return regs;
-}
-
 static bool apply_os04_20fps_timing(int sensor_fd, int cam_idx) {
   return write_sensor_regs(sensor_fd, {
     {0x380e, (OS04_RAW10_20FPS_VTS >> 8) & 0xff},
@@ -637,13 +290,12 @@ public:
   void set_formats();
   bool write_vfe_regs(const std::vector<VfeRegWrite> &regs, const char *name);
   bool apply_vfe_tuning();
-  bool apply_vfe_gamma();
   void queue_all_buffers();
   void stream_on();
   void stop_streaming();
   int dequeue_frame(uint64_t *timestamp);
   void queue_frame(int index);
-  void set_exposure(int exposure_time, int gain_idx);
+  void set_exposure(int exposure_time, int gain_idx, bool dc_gain_enabled);
 
   VisionIpcServer *vipc_server = nullptr;
   VisionStreamType stream_type;
@@ -867,32 +519,46 @@ bool OneCamera::write_vfe_regs(const std::vector<VfeRegWrite> &regs, const char 
 }
 
 bool OneCamera::apply_vfe_tuning() {
-  return write_vfe_regs(default_os04_vfe_tuning_regs(cc.camera_num), "OS04 tuning");
-}
+  uint8_t program[8192] = {};
+  std::vector<uint32_t> patches;
+  const int size = build_initial_config(program, cc, sensor.get(), patches, output_width, output_height);
+  std::vector<IspRegWrite> regs;
+  std::vector<IspLutWrite> luts;
+  if (!parse_isp_cdm(program, size, regs, luts)) return false;
 
-bool OneCamera::apply_vfe_gamma() {
-  const uint8_t banks[] = {26, 28, 30};
-  for (const uint8_t bank : banks) {
+  // Mainline CAMSS starts the ISP before userspace can configure it. Restore
+  // the Bayer phase and full-frame CAMIF crop required by its active route.
+  regs.push_back({0x050, sensor->bayer_pattern});
+  regs.push_back({0xce4, sensor->frame_width - 1});
+  regs.push_back({0xce8, sensor->frame_height - 1});
+  // Preserve the module white balance; C4's sensor-side gains increased noise
+  // in RAW10 captures. The rest of the ISP program is shared.
+  regs.push_back({0x6fc, (0xbc << 16) | 0x80});
+  regs.push_back({0x700, 0xd1});
+  // Clear the extra interpolation slots initialized by the kernel baseline.
+  for (uint32_t offset = 0x724; offset <= 0x75c; offset += 4) regs.push_back({offset, 0});
+  if (!write_vfe_regs(regs, "upstream IFE")) return false;
+
+  for (const auto &lut : luts) {
+    const std::vector<uint32_t> *values = nullptr;
+    switch (lut.bank) {
+      case 9: values = &sensor->linearization_lut; break;
+      case 14: case 15: values = &sensor->vignetting_lut; break;
+      case 26: case 28: case 30: values = &sensor->gamma_lut_rgb; break;
+      default: return false;
+    }
+    if (lut.bytes != values->size() * sizeof(uint32_t)) return false;
     VfeDmiCmd cmd = {};
-    cmd.dmi_cfg_offset = 0xc24;
-    cmd.ram_select = bank;
-    cmd.count = sensor->gamma_lut_rgb.size();
-    cmd.data = (uint64_t)(uintptr_t)sensor->gamma_lut_rgb.data();
+    cmd.dmi_cfg_offset = lut.cfg_offset;
+    cmd.ram_select = lut.bank;
+    cmd.count = values->size();
+    cmd.data = (uint64_t)(uintptr_t)values->data();
     if (v0_ioctl(video_fd, VFE_WRITE_DMI, &cmd) != 0) {
-      LOGE("cam %d: failed to write OS04 gamma DMI ram=%u: %d (%s)",
-           cc.camera_num, bank, errno, strerror(errno));
+      LOGE("cam %d: failed upstream IFE LUT bank=%u: %d (%s)", cc.camera_num, lut.bank, errno, strerror(errno));
       return false;
     }
   }
-
-  if (v0_ioctl(video_fd, VFE_REG_UPDATE) != 0) {
-    LOGE("cam %d: failed to commit OS04 gamma DMI: %d (%s)",
-         cc.camera_num, errno, strerror(errno));
-    return false;
-  }
-
-  LOG("cam %d: wrote standard OS04 gamma DMI", cc.camera_num);
-  return true;
+  return v0_ioctl(video_fd, VFE_REG_UPDATE) == 0;
 }
 
 void OneCamera::camera_open(VisionIpcServer *v) {
@@ -906,6 +572,8 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   sensor = std::make_unique<OS04C10>();
   LOG("cam %d: using OS04C10 RAW10 media path", cam_idx);
   sensor->bits_per_pixel = 10;
+  sensor->black_level = 64;
+  sensor->bayer_pattern = CAM_ISP_PATTERN_BAYER_RGRGRG;
   sensor->mipi_format = CAM_FORMAT_MIPI_RAW_10;
   sensor->frame_data_type = CSI_RAW10;
   sensor->frame_stride = sensor->frame_width * 10 / 8;
@@ -913,7 +581,6 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   // half as much so target-grey calculations represent the same exposure.
   sensor->ev_scale = 75.0f;
   sensor->exposure_time_max = 4717;
-  sensor->analog_gain_max_idx = 0x1e;
   sensor->max_ev = sensor->exposure_time_max * sensor->dc_gain_factor *
                    sensor->sensor_analog_gains[sensor->analog_gain_max_idx];
 
@@ -1045,12 +712,6 @@ void OneCamera::stream_on() {
     return;
   }
 
-  if (!apply_vfe_gamma()) {
-    ioctl(video_fd, VIDIOC_STREAMOFF, &type);
-    enabled = false;
-    return;
-  }
-
   streaming = true;
   LOG("cam %d: VFE PIX V4L2 streaming started", cc.camera_num);
 }
@@ -1101,10 +762,10 @@ int OneCamera::dequeue_frame(uint64_t *timestamp) {
   return dbuf.index;
 }
 
-void OneCamera::set_exposure(int exposure_time, int gain_idx) {
+void OneCamera::set_exposure(int exposure_time, int gain_idx, bool dc_gain_enabled) {
   if (sensor_fd < 0) return;
 
-  write_sensor_regs(sensor_fd, sensor->getExposureRegisters(exposure_time, gain_idx, false),
+  write_sensor_regs(sensor_fd, sensor->getExposureRegisters(exposure_time, gain_idx, dc_gain_enabled),
                     "exposure", cc.camera_num);
 }
 
@@ -1130,24 +791,11 @@ struct Os04AeSample {
   float grey_frac = 0.5f;
 };
 
-static constexpr int OS04_AE_HISTORY_SIZE = 4;
-static constexpr int OS04_EXPOSURE_DELAY_FRAMES = 3;
-
-class CameraState {
+class CameraState : public AutoExposure {
 public:
   OneCamera camera;
   uint64_t last_frame_ns = 0;
-  int exposure_time = 1600;
-  int gain_idx = 8;
-  float current_ev = 0;
-  float os04_ev_history[OS04_AE_HISTORY_SIZE] = {};
-  float best_ev_score = 0;
-  int new_exp_g = 0;
-  int new_exp_t = 0;
-
   Rect ae_xywh = {};
-  float measured_grey_fraction = 0;
-  float target_grey_fraction = 0.125;
 
   uint32_t frame_id = 0;
   std::unique_ptr<PubMaster> pm;
@@ -1157,7 +805,6 @@ public:
 
   void init(VisionIpcServer *v);
   void process_pix_frame(int buf_idx, uint64_t timestamp);
-  void update_exposure_score(float desired_ev, int exp_t, int exp_g_idx, float exp_gain);
   void set_camera_exposure(const Os04AeSample &ae_sample);
   void set_exposure_rect();
 
@@ -1176,27 +823,15 @@ void CameraState::init(VisionIpcServer *v) {
 
   pm = std::make_unique<PubMaster>(std::vector{camera.cc.publish_name});
 
-  exposure_time = std::clamp(600, camera.sensor->exposure_time_min, camera.sensor->exposure_time_max);
-  gain_idx = camera.sensor->analog_gain_rec_idx;
-
-  float gain = camera.sensor->sensor_analog_gains[gain_idx];
-  current_ev = gain * exposure_time;
-  std::fill(std::begin(os04_ev_history), std::end(os04_ev_history), gain * exposure_time);
-  camera.set_exposure(exposure_time, gain_idx);
+  AutoExposure::init(camera.sensor.get(), camera.cc.camera_num, 600);
+  camera.set_exposure(exposure_time, gain_idx, dc_gain_enabled);
 
   set_exposure_rect();
 }
 
 void CameraState::set_exposure_rect() {
-  // AE rectangle for NV12 frames
-  const int width = camera.output_width ? camera.output_width : camera.sensor->frame_width;
-  const int height = camera.output_height ? camera.output_height : camera.sensor->frame_height;
-  ae_xywh = {
-    (int)(width * 0.05f),
-    (int)(height * 0.15f),
-    (int)(width * 0.9f),
-    (int)(height * 0.75f),
-  };
+  const float fl_pix = camera.cc.focal_len / camera.sensor->pixel_size_mm / camera.sensor->out_scale;
+  ae_xywh = get_exposure_rect(camera.cc.camera_num, fl_pix, camera.output_width, camera.output_height);
 }
 
 static Os04AeSample calculate_os04_ae_sample_nv12(const uint8_t *base, int stride, Rect ae_xywh,
@@ -1228,68 +863,13 @@ static Os04AeSample calculate_os04_ae_sample_nv12(const uint8_t *base, int strid
   return ret;
 }
 
-void CameraState::update_exposure_score(float desired_ev, int exp_t, int exp_g_idx, float exp_gain) {
-  float score = camera.sensor->getExposureScore(desired_ev, exp_t, exp_g_idx, exp_gain, gain_idx);
-  if (score < best_ev_score) {
-    new_exp_t = exp_t;
-    new_exp_g = exp_g_idx;
-    best_ev_score = score;
-  }
-}
-
 void CameraState::set_camera_exposure(const Os04AeSample &ae_sample) {
   if (!camera.enabled) return;
-
-  const float dt = 0.05;
-  const float ts_grey = 10.0;
-  const float ts_ev = 0.05;
-  const float k_grey = (dt / ts_grey) / (1.0 + dt / ts_grey);
-  const float k_ev = (dt / ts_ev) / (1.0 + dt / ts_ev);
-
-  const auto &sens = camera.sensor;
   const int old_exp_t = exposure_time;
   const int old_gain_idx = gain_idx;
-
-  const float cur_ev_ =
-      os04_ev_history[(frame_id + OS04_AE_HISTORY_SIZE - OS04_EXPOSURE_DELAY_FRAMES) %
-                      OS04_AE_HISTORY_SIZE];
-  const float scaled_ev = cur_ev_ * sens->ev_scale;
-  const float new_target_grey = std::clamp(
-      0.4f - 0.3f * std::log2(1.0f + sens->target_grey_factor * scaled_ev) / std::log2(6000.0f),
-      0.1f, 0.4f);
-  float target_grey = (1.0f - k_grey) * target_grey_fraction + k_grey * new_target_grey;
-
-  const float grey_frac = std::clamp(ae_sample.grey_frac, 1.0f / 256.0f, 1.0f);
-  float desired_ev = std::clamp(cur_ev_ * target_grey / grey_frac, sens->min_ev, sens->max_ev);
-  float history_ev = 0.0f;
-  for (int i = 0; i < 3; i++) {
-    history_ev += os04_ev_history[(frame_id + OS04_AE_HISTORY_SIZE - 1 - i) % OS04_AE_HISTORY_SIZE] / 3.0f;
-  }
-  desired_ev = (1.0f - k_ev) * history_ev + k_ev * desired_ev;
-
-  best_ev_score = 1e6;
-  new_exp_g = 0;
-  new_exp_t = 0;
-
-  constexpr int gain_step = 4;
-  int min_g = std::max(gain_idx - gain_step, sens->analog_gain_min_idx);
-  int max_g = std::min(gain_idx + gain_step, sens->analog_gain_max_idx);
-  for (int g = min_g; g <= max_g; g++) {
-    float gain = sens->sensor_analog_gains[g];
-    int t = std::clamp((int)std::round(desired_ev / gain), sens->exposure_time_min, sens->exposure_time_max);
-    update_exposure_score(desired_ev, t, g, gain);
-  }
-
-  measured_grey_fraction = grey_frac;
-  target_grey_fraction = target_grey;
-  gain_idx = new_exp_g;
-  exposure_time = new_exp_t;
-
-  const float new_ev = exposure_time * sens->sensor_analog_gains[gain_idx];
-  current_ev = new_ev;
-  os04_ev_history[frame_id % OS04_AE_HISTORY_SIZE] = new_ev;
+  update(std::max(ae_sample.grey_frac, 1.0f / 256.0f), frame_id);
   if (exposure_time != old_exp_t || gain_idx != old_gain_idx) {
-    camera.set_exposure(exposure_time, gain_idx);
+    camera.set_exposure(exposure_time, gain_idx, dc_gain_enabled);
   }
 }
 
@@ -1302,7 +882,7 @@ void CameraState::process_pix_frame(int buf_idx, uint64_t timestamp) {
   if (capture != nullptr && vb != nullptr) {
     capture->sync(VISIONBUF_SYNC_FROM_DEVICE);
     const uint8_t *nv12 = (const uint8_t *)capture->addr;
-    set_camera_exposure(calculate_os04_ae_sample_nv12(nv12, camera.stride, ae_xywh, 4, 4));
+    set_camera_exposure(calculate_os04_ae_sample_nv12(nv12, camera.stride, ae_xywh, 2, camera.cc.stream_type != VISION_STREAM_CABIN ? 2 : 4));
 
     uint8_t *published = (uint8_t *)vb->addr;
     for (uint32_t y = 0; y < camera.output_height; y++) {
@@ -1326,11 +906,12 @@ void CameraState::process_pix_frame(int buf_idx, uint64_t timestamp) {
   framed.setTimestampEof(timestamp_eof);
   framed.setTimestampSof(timestamp);
   framed.setIntegLines(exposure_time);
-  framed.setGain(camera.sensor->sensor_analog_gains[gain_idx]);
+  framed.setGain(camera.sensor->sensor_analog_gains[gain_idx] * get_gain_factor());
+  framed.setHighConversionGain(dc_gain_enabled);
   framed.setSensor(camera.sensor->image_sensor);
   framed.setMeasuredGreyFraction(measured_grey_fraction);
   framed.setTargetGreyFraction(target_grey_fraction);
-  framed.setExposureValPercent(util::map_val(current_ev,
+  framed.setExposureValPercent(util::map_val(cur_ev[frame_id % 3],
     camera.sensor->min_ev, camera.sensor->max_ev, 0.0f, 100.0f));
   pm->send(camera.cc.publish_name, msg);
 }
