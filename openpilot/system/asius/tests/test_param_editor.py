@@ -103,20 +103,17 @@ def test_atomic_chunks_conflicts_and_peer_isolation(editor):
   assert 'Long' not in params.values
 
 
-def test_protected_and_onroad_writes_rejected_even_mid_upload(editor):
+def test_protected_and_stale_writes_rejected_but_driving_edits_allowed(editor):
   api, params = editor
   with pytest.raises(ValueError, match='Managed'):
     write(api, 'Secret', 'new')
   revision = entry(api, 'ForkOnly')['revision']
   api.write('peer', 'ForkOnly', revision, 'pending', 0, 'MTIz', False)
   params.values['IsOffroad'] = False
-  with pytest.raises(ValueError, match='Park'):
-    api.write('peer', 'ForkOnly', revision, 'pending', 3, '', True)
-  assert params.values['ForkOnly'] == 2**60
-  params.values['IsOffroad'] = True
-  params.values['ForkOnly'] = 5
+  api.write('peer', 'ForkOnly', revision, 'pending', 3, '', True)
+  assert params.values['ForkOnly'] == 123
   with pytest.raises(ValueError, match='changed'):
-    api.write('peer', 'ForkOnly', revision, 'pending', 3, '', True)
+    api.write('peer', 'ForkOnly', revision, 'pending', 0, '', True)
 
 
 @pytest.mark.parametrize('kind,text', [('bool', 'yes'), ('int', '1.2'), ('float', 'NaN'),

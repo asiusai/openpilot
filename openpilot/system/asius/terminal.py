@@ -4,6 +4,7 @@ import fcntl
 import os
 import pty
 import pwd
+import select
 import signal
 import struct
 import subprocess
@@ -12,6 +13,10 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 from collections.abc import Callable
+
+
+from openpilot.common.params import Params
+from openpilot.system.asius.access_policy import require_ignition_off
 
 
 MAX_INPUT_BYTES = 16 * 1024
@@ -35,8 +40,9 @@ def _size(value: Any, default: int) -> int:
 
 
 class TerminalManager:
-  def __init__(self, send: Send):
+  def __init__(self, send: Send, params=None):
     self.send = send
+    self.params = params if params is not None else Params()
     self.sessions: dict[str, TerminalSession] = {}
     self.lock = threading.Lock()
 
@@ -90,7 +96,12 @@ class TerminalManager:
 
   def _read(self, peer: str, session: TerminalSession) -> None:
     try:
-      while data := os.read(session.fd, 4096):
+      while self.params.get_bool("AppTerminalEnabled"):
+        if not select.select([session.fd], [], [], 0.25)[0]:
+          continue
+        data = os.read(session.fd, 4096)
+        if not data:
+          break
         self._send(peer, session.id, "data", data=base64.b64encode(data).decode())
     except OSError:
       pass  # PTYs raise EIO when the child exits.
@@ -101,7 +112,10 @@ class TerminalManager:
     with self.lock:
       if peer in self.sessions:
         raise ValueError("terminal session limit reached")
+      if not self.params.get_bool("AppTerminalEnabled"):
+        require_ignition_off()
       fd, process = self._spawn(cols, rows)
+      self.params.put_bool("AppTerminalEnabled", True, block=True)
       session = TerminalSession(session_id, fd, process, threading.Timer(SESSION_TIMEOUT_SECONDS, lambda: self._close(peer, session)))
       session.timeout.daemon = True
       self.sessions[peer] = session
@@ -123,6 +137,9 @@ class TerminalManager:
         session = self.sessions.get(peer)
       if session is None or session.id != session_id:
         raise ValueError("terminal session not found")
+      if action != "close" and not self.params.get_bool("AppTerminalEnabled"):
+        self._close(peer, session)
+        raise PermissionError("App terminal permission was reset. Open it again with ignition off.")
       if action == "input":
         encoded = payload.get("data")
         if not isinstance(encoded, str) or len(encoded) > MAX_INPUT_BYTES * 2:
