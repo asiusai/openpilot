@@ -41,6 +41,9 @@ rm -rf .git/modules/
 
 source "$SOURCE_DIR/tools/release/setup_lfs.sh"
 
+# Include patched sources in the release commit so its build stays clean.
+python3 openpilot/system/asius/apply_patches.py
+
 # include source commit hash and build date in commit
 GIT_HASH=$(git --git-dir="$SOURCE_DIR/.git" rev-parse HEAD)
 GIT_COMMIT_DATE=$(git --git-dir="$SOURCE_DIR/.git" show --no-patch --format='%ct %ci' HEAD)
