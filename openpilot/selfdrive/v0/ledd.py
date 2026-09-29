@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import math
 import os
 import signal
 import time
@@ -8,8 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openpilot.selfdrive.v0.led_control import manual_led_channels
-from openpilot.selfdrive.v0.led_patterns import ORANGE_RGB, WHITE_RGB, STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels
+from openpilot.selfdrive.v0.led_control import manual_led_channels, report_automatic_brightness
+from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB, WHITE_RGB,
+                                                STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
 
 STARTUP_GRACE = 30.
 RUNTIME_HZ = 30.
@@ -19,9 +21,6 @@ CAM_LED_BUSES = (16, 18, 20)
 CAM_LED_STATUS_CAMERAS = (2, 3)
 CAM_LED_RETRY_INTERVAL = 5.
 CAM_LED_SYSFS_ROOT = Path("/sys/class/leds")
-CAM_LED_STARTUP_BRIGHTNESS = 26
-CAM_LED_MIN_BRIGHTNESS_PERCENT = 5.
-CAM_LED_MAX_BRIGHTNESS_PERCENT = 10.
 CAM_LED_CHANNELS = (
   ("red", 0), ("green", 0), ("blue", 0),
   ("red", 1), ("green", 1), ("blue", 1),
@@ -68,6 +67,7 @@ class LedState:
 
 WHITE = LedState("white", *WHITE_RGB)
 GREEN = LedState("green", 0, 180, 0)
+BLUE = LedState("blue", 0, 0, 180)
 ORANGE = LedState("orange", *ORANGE_RGB)
 RED = LedState("red", 180, 0, 0)
 DM_WARNING = LedState("dm_warning", 180, 0, 180)
@@ -97,7 +97,7 @@ def max_brightness(state: LedState, brightness: int = 255) -> LedState:
   peak = max(state.red, state.green, state.blue)
   if peak <= 0:
     return OFF
-  brightness = int(clamp(brightness, 0, 255))
+  brightness = int(clamp(brightness, 0, MAX_AUTO_BRIGHTNESS))
   scale = brightness / peak
   return LedState(
     state.name,
@@ -344,7 +344,7 @@ def persistent_error(sm) -> bool:
 
 
 def engaged_warning(sm) -> LedState | None:
-  if not sm.seen['selfdriveState'] or not sm.alive['selfdriveState']:
+  if not selfdrive_state_available(sm):
     return None
 
   selfdrive_state = sm['selfdriveState']
@@ -362,11 +362,22 @@ def engaged_warning(sm) -> LedState | None:
   if dm_alert:
     return DM_WARNING
 
-  if sm.seen['driverMonitoringState'] and sm.alive['driverMonitoringState']:
-    if sm['driverMonitoringState'].alertLevel != log.DriverMonitoringState.AlertLevel.none:
-      return DM_WARNING
+  if driver_monitoring_warning(sm):
+    return DM_WARNING
 
   return None
+
+
+def driver_monitoring_warning(sm) -> bool:
+  if not (sm.seen['driverMonitoringState'] and sm.alive['driverMonitoringState'] and sm.valid['driverMonitoringState']):
+    return False
+  dm = sm['driverMonitoringState']
+  if dm.alertLevel != log.DriverMonitoringState.AlertLevel.none or dm.lockout or dm.alwaysOnLockout:
+    return True
+  # Missing faces switch DM to wheeltouch, so activePolicy alone cannot detect
+  # this. Do not mistake the intentional NO_DCAM neutral state for a lost driver.
+  return (os.getenv('NO_DCAM') != '1' and process_should_run(sm, 'dmonitoringmodeld') and
+          not dm.visionPolicyState.faceDetected)
 
 
 def calibration_state(sm) -> LedState | None:
@@ -387,7 +398,10 @@ def blinking(state: LedState, now: float | None = None) -> LedState:
 def camera_led_brightness(sm) -> int:
   service = "wideRoadCameraState"
   if not sm.seen[service] or not sm.alive[service] or not sm.valid[service]:
-    return CAM_LED_STARTUP_BRIGHTNESS
+    return BOOT_BRIGHTNESS
+
+  if not math.isfinite(sm[service].exposureValPercent):
+    return BOOT_BRIGHTNESS
 
   light_sensor = clamp(100. - sm[service].exposureValPercent, 0., 100.)
   if light_sensor <= 8.:
@@ -395,15 +409,14 @@ def camera_led_brightness(sm) -> int:
   else:
     normalized_light = ((light_sensor + 16.) / 116.) ** 3.
 
-  brightness_percent = interp(normalized_light, 0., 1., CAM_LED_MIN_BRIGHTNESS_PERCENT, CAM_LED_MAX_BRIGHTNESS_PERCENT)
-  return round(255. * brightness_percent / 100.)
+  return round(interp(normalized_light, 0., 1., MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS))
 
 
-def pairing_led_channels(brightness: int = 255) -> dict[int, list[int]] | None:
+def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[int]] | None:
   if not pairing_mode_active():
     return None
 
-  state = max_brightness(GREEN if int(time.monotonic() * 2) % 2 == 0 else OFF, brightness)
+  state = max_brightness(BLUE if int(time.monotonic() * 2) % 2 == 0 else OFF, brightness)
   channels = [state.red, state.green, state.blue, round(state.red * 0.1), round(state.green * 0.1),
               round(state.blue * 0.1), state.red, state.green, state.blue]
 
@@ -415,15 +428,18 @@ def pairing_led_channels(brightness: int = 255) -> dict[int, list[int]] | None:
 
 
 def led_state(sm, now: float | None = None) -> LedState:
-  if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started:
-    return WHITE
-
   if persistent_error(sm):
-    return RED
+    return blinking(RED, now) if selfdrive_state_available(sm) and sm['selfdriveState'].active else RED
+
+  if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
+    return WHITE
 
   warning = engaged_warning(sm)
   if warning is not None:
     return blinking(warning, now)
+
+  if driver_monitoring_warning(sm):
+    return blinking(DM_WARNING, now)
 
   calibrating = calibration_state(sm)
   if calibrating is not None:
@@ -437,8 +453,7 @@ def led_state(sm, now: float | None = None) -> LedState:
 
 def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[int]] | None:
   state = led_state(sm, now)
-  if (sm.seen['deviceState'] and sm.alive['deviceState'] and sm['deviceState'].started and
-      not persistent_error(sm) and engaged_warning(sm) is not None):
+  if state in (RED, DM_WARNING, OFF):
     state = max_brightness(state, brightness)
     rgb = [state.red, state.green, state.blue]
     return camera_channels([rgb] * 6)
@@ -448,7 +463,7 @@ def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[in
   # statuses, manual control and Bluetooth pairing take priority immediately.
   if (now - STARTED_AT < STARTUP_PERIOD and state == WHITE and
       (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
-    return startup_channels(now)
+    return startup_channels(now, brightness)
   return None
 
 
@@ -495,10 +510,17 @@ def main() -> None:
   ], ignore_avg_freq=['managerState'])
   rk = Ratekeeper(RUNTIME_HZ)
   params = Params()
+  last_brightness_report = 0.
 
   while not done:
     sm.update(0)
     brightness = camera_led_brightness(sm)
+    if time.monotonic() - last_brightness_report >= 1.:
+      try:
+        report_automatic_brightness(brightness)
+      except OSError:
+        cloudlog_exception('failed to report automatic LED brightness')
+      last_brightness_report = time.monotonic()
     manual_channels = manual_led_channels(sm, params)
     pairing_channels = pairing_led_channels(brightness)
     if pairing_channels is not None:
