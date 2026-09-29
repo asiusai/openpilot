@@ -259,13 +259,20 @@ common = [_common, 'json11', 'zmq']
 Export('common')
 
 # Build messaging (cereal + msgq + socketmaster + their dependencies)
-from openpilot.system.asius.apply_patches import apply_msgq_patch
+from openpilot.system.asius.apply_patches import patched_msgq_source
 
-apply_msgq_patch(Path(Dir('#').abspath))
+msgq_visionbuf = patched_msgq_source(Path(Dir('#').abspath))
 
 # Enable swaglog include in submodules
 env_swaglog = env.Clone()
 env_swaglog['CXXFLAGS'].append('-DSWAGLOG="\\"common/swaglog.h\\""')
+# Redirect only this compilation unit to its patched build copy.
+msgq_shared_object = env_swaglog.SharedObject
+def msgq_objects(_env, sources):
+  original = File('#msgq_repo/msgq/visionipc/visionbuf.cc').abspath
+  return msgq_shared_object([str(msgq_visionbuf) if File(source).abspath == original else source for source in sources])
+
+env_swaglog.AddMethod(msgq_objects, 'SharedObject')
 SConscript(['msgq_repo/SConscript'], exports={'env': env_swaglog})
 
 SConscript(['openpilot/cereal/SConscript'])
