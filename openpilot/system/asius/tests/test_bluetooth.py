@@ -1,3 +1,4 @@
+import pytest
 import json
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -101,3 +102,8 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(response['error']['code'], -32601)
     await self.engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 'echo', 'method': 'echo', 'params': {'s': 'still connected'}})
     self.assertEqual(self.engine.send_body.call_args.args[1]['result'], 'still connected')
+
+
+@pytest.fixture(autouse=True)
+def ignition_off_for_bluetooth_tests(monkeypatch):
+  monkeypatch.setattr('openpilot.system.asius.access_policy.ignition_state', lambda: False)

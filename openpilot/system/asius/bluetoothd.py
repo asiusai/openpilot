@@ -22,6 +22,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.system.asius import methods
 from openpilot.system.asius.identity import is_dongle_id
 from openpilot.system.asius.terminal import TerminalManager
+from openpilot.system.asius.access_policy import ignition_state, require_ignition_off
 from openpilot.system.asius.relayd import (
   authorize_peer,
   load_authorized_peers,
@@ -162,6 +163,7 @@ def variant_value(value: Any) -> Any:
 
 
 def enable_pairing_mode(duration_seconds: int = PAIRING_MODE_SECONDS) -> int:
+  require_ignition_off()
   pairing_until = int(time.time()) + duration_seconds  # noqa: TID251
   Params().put(BLUETOOTH_PAIRING_UNTIL_PARAM, pairing_until, block=True)
   return pairing_until
@@ -172,6 +174,9 @@ def disable_pairing_mode() -> None:
 
 
 def pairing_mode_active() -> bool:
+  if ignition_state() is not False:
+    disable_pairing_mode()
+    return False
   pairing_until = Params().get(BLUETOOTH_PAIRING_UNTIL_PARAM)
   return isinstance(pairing_until, int) and pairing_until >= int(time.time())  # noqa: TID251
 
@@ -490,6 +495,7 @@ class BlePeerEngine:
     self.active_peers[sender] = time.monotonic()
     message_type = body.get("type")
     if message_type == "ble-pair-request":
+      require_ignition_off()
       disable_pairing_mode()
       await self.send_body(sender, {
         "type": "pair-response",

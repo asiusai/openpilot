@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from typing import Any
 
+from openpilot.system.asius.access_policy import ignition_state
 from openpilot.system.webrtc.helpers import StreamRequestBody
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
@@ -328,6 +329,8 @@ class StreamSession:
               track.timing_sei_enabled = bool(payload["data"]["enabled"])
           case _:
             if msg_type not in self.incoming_bridge_services:
+              return
+            if msg_type == "testJoystick" and ignition_state() is not False:
               return
             if self.incoming_bridge is not None:
               self.incoming_bridge.send(message)

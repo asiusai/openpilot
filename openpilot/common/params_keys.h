@@ -16,6 +16,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BluetoothdPid", {PERSISTENT, INT}},
     {"RelayHost", {PERSISTENT, STRING, "wss://relay.asius.ai"}},
     {"RelayPid", {PERSISTENT, INT}},
+    {"AppTerminalEnabled", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     {"AppAuthorizedKeys", {PERSISTENT, JSON}},
     {"BluetoothPairingUntil", {PERSISTENT, INT}},
     {"AthenadUploadQueue", {PERSISTENT, JSON}},

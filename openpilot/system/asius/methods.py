@@ -21,6 +21,7 @@ from websocket import ABNF, WebSocket, WebSocketTimeoutException
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
 from openpilot.system.asius.clock import ClockChallenges
+from openpilot.system.asius.access_policy import check_param_write, ignition_state, require_ignition_off
 from openpilot.system.asius.identity import get_device_public_key
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.basedir import BASEDIR
@@ -58,11 +59,11 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "AccessToken",
   "ApiCache_Device",
   "AppAuthorizedKeys",
+  "AppTerminalEnabled",
   "HasAcceptedTerms",
   "CompletedTrainingVersion",
   "BluetoothPairingUntil",
   "AthenadUploadQueue",
-  "DoUninstall",
   "DongleId",
   "CloudUploadState",
   "GithubSshKeys",
@@ -103,6 +104,7 @@ LIVE_STATE_PARAM_KEYS = [
   "RecordAudio",
   "IsMetric",
   "SshEnabled",
+  "AppTerminalEnabled",
   "AdbEnabled",
   "JoystickDebugMode",
   "LongitudinalManeuverMode",
@@ -221,13 +223,12 @@ def saveParams(params_to_update: dict[str, str | bool | int | float | dict | lis
       if key in SAVE_PARAMS_BLOCKED_KEYS:
         results[key] = "error: blocked"
         continue
+      check_param_write(key)
       if value is None:
         params.remove(key)
         results[key] = "ok: removed"
       else:
-        if not isinstance(value, (str, bool, int, float)):
-          value = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-        params.put(key, value)
+        params.put(key, value, block=True)
         results[key] = "ok"
     except Exception as e:
       results[key] = f"error: {e}"
@@ -280,6 +281,7 @@ def removeAuthorizedPeer(publicKey: str) -> dict[str, Any]:
 
 @dispatcher.add_method
 def getPairingUrl() -> str:
+  require_ignition_off()
   params = Params()
   dongle_id = params.get("DongleId") or ""
   return pairing_url(dongle_id)
@@ -287,6 +289,7 @@ def getPairingUrl() -> str:
 
 @dispatcher.add_method
 def setGithubUsername(username: str) -> dict[str, str]:
+  require_ignition_off()
   params = Params()
   username = username.strip()
   if not username:
@@ -300,6 +303,7 @@ def setGithubUsername(username: str) -> dict[str, str]:
   if not keys:
     raise Exception(f"No SSH keys found for user '{username}'")
 
+  require_ignition_off()
   params.put("GithubUsername", username, block=True)
   params.put("GithubSshKeys", keys, block=True)
   return {"GithubUsername": "ok", "GithubSshKeys": "ok"}
@@ -811,6 +815,7 @@ def downloadSoftwareUpdate() -> dict[str, int | str]:
 
 @dispatcher.add_method
 def setUpdateBranch(branch: str) -> dict[str, int | str]:
+  require_ignition_off()
   branch = branch.strip()
   if not branch:
     return {"success": 0, "error": "branch is required"}
@@ -820,6 +825,7 @@ def setUpdateBranch(branch: str) -> dict[str, int | str]:
 
 @dispatcher.add_method
 def installSoftwareUpdate() -> dict[str, int]:
+  require_ignition_off()
   Params().put_bool("DoReboot", True, block=True)
   return {"success": 1}
 
@@ -899,6 +905,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
                              "severity": alert.get("severity", 0)})
 
   snapshot = {
+    "ignition": ignition_state(),
     "ts": time.time(),  # noqa: TID251
     "dongleId": params.get("DongleId"),
     "deviceName": getDeviceName(),

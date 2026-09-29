@@ -145,8 +145,11 @@ def main() -> None:
   while not done:
     for action in button.poll():
       if action == ButtonAction.PAIR:
-        pairing_until = enable_pairing_mode()
-        cloudlog.event("asius.button.pairing_mode", pairing_until=pairing_until)
+        try:
+          pairing_until = enable_pairing_mode()
+          cloudlog.event("asius.button.pairing_mode", pairing_until=pairing_until)
+        except PermissionError:
+          cloudlog.info("asius.button.pairing_ignition_blocked")
     rk.keep_time()
 
   button.close()
