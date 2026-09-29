@@ -17,8 +17,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import get_upload_stream
-from openpilot.system.app.identity import get_device_private_key, is_dongle_id
-from openpilot.system.app.relayd import load_authorized_peers
+from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
+from openpilot.system.asius.relayd import load_authorized_peers
 from openpilot.system.loggerd.data_api import (
   DataApiClient,
   access_document,

@@ -3,7 +3,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import PC
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.app.identity import get_or_create_device_identity
+from openpilot.system.asius.identity import get_or_create_device_identity
 
 
 UNREGISTERED_DONGLE_ID = "UnregisteredDevice"
