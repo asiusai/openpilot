@@ -24,7 +24,7 @@ from openpilot.system.asius.clock import ClockChallenges
 from openpilot.system.asius.identity import get_device_public_key
 from openpilot.common.params import Params
 from openpilot.common.basedir import BASEDIR
-from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
+from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.system.athena import athenad as upstream_athena
@@ -57,11 +57,11 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "AccessToken",
   "ApiCache_Device",
   "AppAuthorizedKeys",
-  "AppPairingUntil",
+  "BluetoothPairingUntil",
   "AthenadUploadQueue",
   "DoUninstall",
   "DongleId",
-  "DataUploadState",
+  "CloudUploadState",
   "GithubSshKeys",
   "GithubUsername",
   "HardwareSerial",
@@ -85,8 +85,8 @@ LIVE_STATE_SERVICES = [
 parameter_editor = ParameterEditor(SAVE_PARAMS_BLOCKED_KEYS)
 LIVE_STATE_PARAM_KEYS = [
   "DongleId",
-  "DataApiHost",
-  "DataUploadEnabled",
+  "CloudHost",
+  "CloudUploadEnabled",
   "ShareDrivingData",
   "HardwareSerial",
   "LastAthenaPingTime",
@@ -842,7 +842,7 @@ def startStream(sdp: str, enabled: bool = True, inCar: bool = False) -> dict:
 def requestRouteUpload(paths: list[str]) -> dict:
   from openpilot.common.hardware.hw import Paths
   from openpilot.system.loggerd.data_upload_queue import request_uploads
-  if not Params().get_bool("DataUploadEnabled"):
+  if not Params().get_bool("CloudUploadEnabled"):
     raise ValueError("Device cloud uploads are disabled")
   return request_uploads(Paths.log_root(), paths)
 

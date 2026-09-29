@@ -39,7 +39,7 @@ from openpilot.system.loggerd.data_upload_queue import (
 from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep, force_wifi
 
 UPLOAD_ATTR_VALUE = b"1"
-STATE_PARAM = "DataUploadState"
+STATE_PARAM = "CloudUploadState"
 CENC_FILES = {"qcamera.mp4", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 
@@ -59,7 +59,7 @@ class AsiusUploader(Uploader):
     self.immediate_folders = []
     self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.mp4": 1}
     self.params = params or self.params
-    self.client = client or DataApiClient(self.params.get("DataApiHost", return_default=True), self.private_key)
+    self.client = client or DataApiClient(self.params.get("CloudHost", return_default=True), self.private_key)
     self.retry_after: dict[str, float] = {}
 
   def list_upload_files(self, metered: bool) -> Iterator[tuple[str, str, str]]:
