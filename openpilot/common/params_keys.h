@@ -5,13 +5,8 @@
 
 #include "openpilot/cereal/gen/cpp/log.capnp.h"
 
-#ifdef __ASIUS_HARDWARE__
 inline constexpr char COMPLETED_TRAINING_VERSION_DEFAULT[] = "0.2.0";
 inline constexpr char ACCEPTED_TERMS_VERSION_DEFAULT[] = "2";
-#else
-inline constexpr char COMPLETED_TRAINING_VERSION_DEFAULT[] = "0";
-inline constexpr char ACCEPTED_TERMS_VERSION_DEFAULT[] = "0";
-#endif
 
 inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AccessToken", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
@@ -22,11 +17,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AssistNowToken", {PERSISTENT, STRING}},
     {"AthenadPid", {PERSISTENT, INT}},
     {"BluetoothdPid", {PERSISTENT, INT}},
-    {"WebsocketHost", {PERSISTENT, STRING, "wss://relay.asius.ai"}},
-    {"WebsocketdPid", {PERSISTENT, INT}},
+    {"RelayHost", {PERSISTENT, STRING, "wss://relay.asius.ai"}},
+    {"RelayPid", {PERSISTENT, INT}},
     {"AppAuthorizedKeys", {PERSISTENT, JSON}},
     {"AppPairingUntil", {PERSISTENT, INT}},
-    {"ManualLedState", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"AthenadUploadQueue", {PERSISTENT, JSON}},
     {"AthenadRecentlyViewedRoutes", {PERSISTENT, STRING}},
     {"BootCount", {PERSISTENT, INT}},
