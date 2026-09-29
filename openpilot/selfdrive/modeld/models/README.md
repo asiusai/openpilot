@@ -9,3 +9,7 @@ is available, Asius retains the last public Cinque v2 ONNX from upstream
 `6fee5937923c74848df4a63f6239eb6331c6274dd4bdb7a5d6ec0388a8b543d5`.
 It includes the history queues required by the current model runner.
 The native build runs the compiler's output and pickle reload checks.
+
+Asius also builds `big_driving_asius_warp_<width>x<height>_tinygrad.pkl` for
+its Chestnut GPU. These stay separate from comma's precompiled
+`big_driving_warp_<width>x<height>_tinygrad.pkl` files.
