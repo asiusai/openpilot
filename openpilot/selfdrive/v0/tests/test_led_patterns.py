@@ -7,7 +7,7 @@ from openpilot.cereal import log
 
 
 @pytest.mark.parametrize(('percent', 'road', 'wide'), [
-  (0, [0] * 9, [0] * 9),
+  (0, [0] * 9, [0, 0, 0, 0, 0, 0, 255, 32, 0]),
   (25, [0] * 9, [0, 0, 0, 13, 2, 0, 255, 32, 0]),
   (50, [0] * 9, [255, 32, 0, 26, 3, 0, 255, 32, 0]),
   (75, [0, 0, 0, 13, 2, 0, 255, 32, 0], [255, 32, 0, 26, 3, 0, 255, 32, 0]),
@@ -18,32 +18,41 @@ def test_calibration_fills_in_physical_order(percent, road, wide):
 
 
 def test_calibration_partial_progress_and_zero_brightness():
-  assert calibration_channels(12.5, 255)[3][-3:] == [128, 16, 0]
+  assert calibration_channels(12.5, 255)[3][-3:] == [255, 32, 0]
+  assert calibration_channels(37.5, 255)[3][:3] == [128, 16, 0]
+  assert calibration_channels(0, 13)[3][-3:] == [13, 2, 0]
+  assert calibration_channels(0, 0) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
   assert calibration_channels(100, 0) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
 
 
-def test_sweep_timing_follows_physical_spacing_and_has_bright_ends():
-  for elapsed, index in ((0., 0), (0.1875, 1), (0.375, 2), (1.125, 3), (1.3125, 4), (1.5, 5)):
-    assert startup_levels(elapsed)[index] == 1.
-  assert startup_levels(0.)[2] < 0.02
-  assert startup_levels(1.5)[3] < 0.02
-  assert startup_channels(0.1875)[3][3:6] == [26, 20, 12]
-  assert startup_channels(1.3125)[2][3:6] == [26, 20, 12]
+def test_startup_fades_together_smoothly_with_dim_centers():
+  assert startup_levels(0.) == [0.] * 6
+  assert startup_levels(1.5) == [1.] * 6
+  rising = [startup_levels(frame / 30.)[0] for frame in range(46)]
+  falling = [startup_levels(frame / 30.)[0] for frame in range(45, 91)]
+  assert rising == sorted(rising)
+  assert falling == sorted(falling, reverse=True)
+  assert max(b - a for a, b in zip(rising[:-1], rising[1:], strict=True)) < 0.04
+  assert startup_channels(1.5)[3][3:6] == [26, 20, 12]
   for frame in range(90):
     elapsed = frame / 30.
     channels = startup_channels(elapsed)
+    assert len(set(startup_levels(elapsed))) == 1
     assert channels == startup_channels(elapsed + 3.)
     assert channels[1] == [0] * 9
+    assert channels[2] == channels[3]
+    assert channels[2][:3] == channels[2][6:]
     assert all(value <= 26 for camera in (2, 3) for value in channels[camera][3:6])
 
 
-def test_live_calibration_uses_percentage_and_returns_to_normal_without_success_flash(monkeypatch):
+@pytest.mark.parametrize('percent', [0, 25, 100])
+def test_live_calibration_uses_percentage_and_returns_to_normal_without_success_flash(monkeypatch, percent):
   ledd.log = log
   monkeypatch.setattr(ledd, 'STARTED_AT', 0.)
   sm = healthy_sm()
   sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.uncalibrated
-  sm['extrinsicsCalibration'].calPerc = 25
-  assert ledd.automatic_led_channels(sm, 255, 100.) == calibration_channels(25, 255)
+  sm['extrinsicsCalibration'].calPerc = percent
+  assert ledd.automatic_led_channels(sm, 255, 100.) == calibration_channels(percent, 255)
   sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.calibrated
   assert ledd.automatic_led_channels(sm, 255, 101.) is None
   assert ledd.led_state(sm, 101.) == ledd.WHITE
@@ -66,7 +75,7 @@ def test_stale_calibration_and_safety_alerts_do_not_render_progress(monkeypatch)
   assert ledd.led_state(sm, 100.) == ledd.RED
 
 
-def test_startup_sweep_only_while_parked(monkeypatch):
+def test_startup_fade_only_while_parked(monkeypatch):
   ledd.log = log
   monkeypatch.setattr(ledd, 'STARTED_AT', 100.)
   sm = healthy_sm(started=False)
