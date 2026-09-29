@@ -65,7 +65,7 @@ def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
 def asius_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return not PC and params.get_bool("DataUploadEnabled")
+  return not PC and params.get_bool("CloudUploadEnabled")
 
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
