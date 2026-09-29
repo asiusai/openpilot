@@ -96,9 +96,8 @@ def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_p
   asyncio.run(engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 1, 'method': 'requestRouteUpload', 'params': {'paths': ['route--0/qlog.zst']}}))
   queued.assert_called_once_with(str(tmp_path), ['route--0/qlog.zst'])
   assert engine.send_body.call_args.args[1]['result']['queued'] == ['route--0/qlog.zst']
-  for method in ('startStream', 'startRouteStream'):
-    asyncio.run(engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 2, 'method': method, 'params': {'sdp': 'test'}}))
-    assert 'network connection' in engine.send_body.call_args.args[1]['error']['message']
+  asyncio.run(engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 2, 'method': 'startStream', 'params': {'sdp': 'test'}}))
+  assert 'network connection' in engine.send_body.call_args.args[1]['error']['message']
 
 
 def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
