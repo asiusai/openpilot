@@ -68,7 +68,6 @@ class LedState:
 
 WHITE = LedState("white", *WHITE_RGB)
 GREEN = LedState("green", 0, 180, 0)
-YELLOW = LedState("yellow", 180, 130, 0)
 ORANGE = LedState("orange", *ORANGE_RGB)
 RED = LedState("red", 180, 0, 0)
 DM_WARNING = LedState("dm_warning", 180, 0, 180)
@@ -430,16 +429,8 @@ def led_state(sm, now: float | None = None) -> LedState:
   if calibrating is not None:
     return calibrating
 
-  selfdrive_available = selfdrive_state_available(sm)
-  if selfdrive_available:
-    selfdrive_state = sm['selfdriveState']
-    if selfdrive_state.active:
-      return GREEN
-    if sm['deviceState'].started and (
-      not selfdrive_state.engageable or
-      selfdrive_state.state == log.SelfdriveState.OpenpilotState.preEnabled
-    ):
-      return YELLOW
+  if selfdrive_state_available(sm) and sm['selfdriveState'].active:
+    return GREEN
 
   return WHITE
 
@@ -453,7 +444,7 @@ def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[in
     return camera_channels([rgb] * 6)
   if state == ORANGE:
     return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
-  # Continue the kernel sweep for one cycle while userspace starts. Driving
+  # Continue the kernel fade for one cycle while userspace starts. Driving
   # statuses, manual control and Bluetooth pairing take priority immediately.
   if (now - STARTED_AT < STARTUP_PERIOD and state == WHITE and
       (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
