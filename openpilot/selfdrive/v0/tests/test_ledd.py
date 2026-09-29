@@ -53,14 +53,14 @@ def test_white_when_ready():
   assert ledd.led_state(healthy_sm()) == ledd.WHITE
 
 
-def test_yellow_when_not_engageable_or_waiting_for_brake_release():
+def test_white_when_not_engageable_or_waiting_for_brake_release():
   sm = healthy_sm()
   sm['selfdriveState'].engageable = False
-  assert ledd.led_state(sm) == ledd.YELLOW
+  assert ledd.led_state(sm) == ledd.WHITE
 
   sm['selfdriveState'].engageable = True
   sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.preEnabled
-  assert ledd.led_state(sm) == ledd.YELLOW
+  assert ledd.led_state(sm) == ledd.WHITE
 
 
 def test_red_immediately_when_started_without_selfdrive_state():
@@ -174,7 +174,7 @@ def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
 
 def test_runtime_brightness_reaches_requested_peak():
   assert ledd.max_brightness(ledd.WHITE, 26) == ledd.LedState("white", 26, 20, 12)
-  assert ledd.max_brightness(ledd.YELLOW, 26) == ledd.LedState("yellow", 26, 19, 0)
+  assert ledd.max_brightness(ledd.ORANGE, 26) == ledd.LedState("orange", 26, 3, 0)
 
 
 def test_status_colors_dim_leds_two_and_five_to_ten_percent(monkeypatch):
@@ -182,7 +182,7 @@ def test_status_colors_dim_leds_two_and_five_to_ten_percent(monkeypatch):
     board = ledd.CameraLedBoard("test", camera_num=camera_num, bus_num=0)
     sent = []
     monkeypatch.setattr(board, "set_channels", sent.append)
-    for state in (ledd.WHITE, ledd.GREEN, ledd.YELLOW, ledd.ORANGE, ledd.RED, ledd.DM_WARNING, ledd.OFF):
+    for state in (ledd.WHITE, ledd.GREEN, ledd.ORANGE, ledd.RED, ledd.DM_WARNING, ledd.OFF):
       board.set(state)
       rgb = [state.red, state.green, state.blue]
       assert sent[-1] == rgb + [round(channel * 0.1) for channel in rgb] + rgb
