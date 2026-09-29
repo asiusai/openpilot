@@ -231,7 +231,6 @@ def main(exit_event: threading.Event | None = None):
 
   params = Params()
   dongle_id = params.get("DongleId")
-  methods.UploadQueueCache.initialize(methods.upload_queue)
 
   conn_start = None
   conn_retries = 0
@@ -264,7 +263,6 @@ def main(exit_event: threading.Event | None = None):
       conn_start = None
 
       conn_retries = 0
-      methods.cur_upload_items.clear()
 
       methods.handle_long_poll(ws, exit_event)
     except (KeyboardInterrupt, SystemExit):
