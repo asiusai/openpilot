@@ -98,7 +98,7 @@ public:
 constexpr char MAIN_ROAD_FILENAME[] = "fcamera.mp4";
 constexpr char MAIN_WIDE_ROAD_FILENAME[] = "ecamera.mp4";
 constexpr char MAIN_CABIN_FILENAME[] = "dcamera.mp4";
-constexpr char QCAM_FILENAME[] = "qcamera.ts";
+constexpr char QCAM_FILENAME[] = "qcamera.mp4";
 
 const EncoderInfo main_road_encoder_info = {
   .publish_name = "narrowRoadEncodeData",

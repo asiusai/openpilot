@@ -2,6 +2,8 @@ import base64
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -190,12 +192,14 @@ def make_policy_uploader(root):
   uploader.root = str(root)
   uploader.params = SimpleNamespace(get=lambda _: None)
   uploader.immediate_folders = []
-  uploader.immediate_priority = {'qlog': 0, 'qlog.zst': 0, 'qcamera.mp4': 1, 'qcamera.ts': 1}
+  uploader.immediate_priority = {'qlog': 0, 'qlog.zst': 0, 'qcamera.mp4': 1}
   return uploader
 
 
 def test_only_preview_and_qlog_are_automatic_on_all_networks(tmp_path):
   from openpilot.system.loggerd.data_upload_queue import ROUTE_FILES, AUTO_UPLOAD_FILES
+  assert AUTO_UPLOAD_FILES == {'qlog', 'qlog.zst', 'qcamera.mp4'}
+  assert ROUTE_FILES == AUTO_UPLOAD_FILES | {'rlog', 'rlog.zst', 'fcamera.mp4', 'ecamera.mp4', 'dcamera.mp4'}
   segment = tmp_path / '00000001--abc--0'
   segment.mkdir()
   for name in ROUTE_FILES:
@@ -291,15 +295,17 @@ def test_transient_upload_failure_defers_only_that_file(tmp_path):
   assert uploader.next_file_to_upload(False)[0] == 'qlog.zst'
 
 
-def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_route(tmp_path):
+@pytest.mark.parametrize('name,codec', [('qcamera.mp4', 'libx264'), ('fcamera.mp4', 'libx265'),
+                                       ('ecamera.mp4', 'libx265'), ('dcamera.mp4', 'libx265')])
+def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_route(tmp_path, name, codec):
   import os
   from pathlib import Path
   from openpilot.system.loggerd.tests.media_fixture import make_video
   root = tmp_path / 'logs'
   segment = root / '00000001--abc--0'
   segment.mkdir(parents=True)
-  source = segment / 'qcamera.mp4'
-  make_video(source, 1)
+  source = segment / name
+  make_video(source, 1, codec=codec)
   os.utime(source, (1700000000, 1700000000))
   directory_mtime = segment.stat().st_mtime_ns
   uploader = make_policy_uploader(root)
@@ -310,9 +316,15 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
   def upload_file(path, filename, **options):
     assert Path(filename).parent == tmp_path
     assert options['route_start_time'] == 1700000000000
-    assert options['media']['owner'] == uploader.owner
+    media = options['media']
+    assert path == f'routes/00000001--abc--0/{name}'
+    assert media['owner'] == uploader.owner
+    assert media['alg'] == 'CENC-AES-CTR'
+    assert media['codec'].startswith('avc1.' if name == 'qcamera.mp4' else ('hvc1.', 'hev1.'))
+    unsigned = {key: value for key, value in media.items() if key != 'signature'}
+    uploader.private_key.public_key().verify(decode64(media['signature']), canonical_json(unsigned).encode())
     return SimpleNamespace(status_code=200)
 
   uploader.client = SimpleNamespace(upload_file=upload_file)
-  assert uploader.do_upload('00000001--abc--0/qcamera.mp4', str(source)).status_code == 200
+  assert uploader.do_upload(f'00000001--abc--0/{name}', str(source)).status_code == 200
   assert segment.stat().st_mtime_ns == directory_mtime
