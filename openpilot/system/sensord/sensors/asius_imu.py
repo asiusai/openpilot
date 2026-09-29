@@ -11,7 +11,7 @@ def transform_asius_imu(v: list[float]) -> list[float]:
   V0 Panda's IMU is on B.Cu at 0 degrees. The case holds the road-camera
   optical axis 27 degrees from the Panda plane (63 from its normal).
   After the driver's raw [y, -x, z] mapping, rotate +117 degrees about sensor
-  Y. locationd's [-z, -y, -x] conversion makes this a -118 degree device-frame
+  Y. locationd's [-z, -y, -x] conversion makes this a -117 degree device-frame
   pitch correction. Apply the same rotation to acceleration and angular rate.
   """
   x, y, z = v
