@@ -24,10 +24,10 @@ SEGMENT_LENGTH = 2
 FULL_SIZE = 2507572
 def hevc_size(w): return FULL_SIZE // 2 if w <= 1344 else FULL_SIZE
 CAMERAS = [
-  (f"fcamera.{('mp4' if ASIUS_HARDWARE else 'hevc')}", 20, hevc_size, "narrowRoadEncodeIdx"),
-  (f"dcamera.{('mp4' if ASIUS_HARDWARE else 'hevc')}", 20, hevc_size, "cabinEncodeIdx"),
-  (f"ecamera.{('mp4' if ASIUS_HARDWARE else 'hevc')}", 20, hevc_size, "wideRoadEncodeIdx"),
-  (f"qcamera.{('mp4' if ASIUS_HARDWARE else 'ts')}", 20, lambda x: 130000, None),
+  ("fcamera.mp4", 20, hevc_size, "narrowRoadEncodeIdx"),
+  ("dcamera.mp4", 20, hevc_size, "cabinEncodeIdx"),
+  ("ecamera.mp4", 20, hevc_size, "wideRoadEncodeIdx"),
+  ("qcamera.mp4", 20, lambda x: 130000, None),
 ]
 WARMUP_SEGMENTS = 1 if ASIUS_HARDWARE else 0
 
