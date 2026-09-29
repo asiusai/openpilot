@@ -22,7 +22,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
 from openpilot.system.asius.clock import ClockChallenges
 from openpilot.system.asius.identity import get_device_public_key
-from openpilot.common.params import Params
+from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
@@ -146,10 +146,6 @@ for method in (
   upstream_athena.getMessage,
   upstream_athena.getVersion,
   upstream_athena.listDataDirectory,
-  upstream_athena.uploadFileToUrl,
-  upstream_athena.uploadFilesToUrls,
-  upstream_athena.listUploadQueue,
-  upstream_athena.cancelUpload,
   upstream_athena.setRouteViewed,
   upstream_athena.getSshAuthorizedKeys,
   upstream_athena.getGithubUsername,
@@ -160,9 +156,6 @@ for method in (
   dispatcher.add_method(method)
 
 send_queue: Queue[str] = queue.Queue()
-upload_queue = upstream_athena.upload_queue
-cur_upload_items = upstream_athena.cur_upload_items
-UploadQueueCache = upstream_athena.UploadQueueCache
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
@@ -172,10 +165,6 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
     threading.Thread(target=upstream_athena.ws_manage, args=(ws, end_event), name='ws_manage'),
     threading.Thread(target=ws_recv, args=(ws, end_event), name='ws_recv'),
     threading.Thread(target=ws_send, args=(ws, end_event), name='ws_send'),
-    threading.Thread(target=upstream_athena.upload_handler, args=(end_event,), name='upload_handler'),
-    threading.Thread(target=upstream_athena.upload_handler, args=(end_event,), name='upload_handler2'),
-    threading.Thread(target=upstream_athena.upload_handler, args=(end_event,), name='upload_handler3'),
-    threading.Thread(target=upstream_athena.upload_handler, args=(end_event,), name='upload_handler4'),
     threading.Thread(target=live_state_handler, args=(end_event,), name='live_state_handler'),
   ]
 
@@ -195,15 +184,14 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
 
 
 @dispatcher.add_method
-def getAllParams() -> dict[str, str | bool | int | float | None]:
-  from openpilot.common.params_pyx import ParamKeyType
+def getAllParams() -> dict[str, Any]:
   import datetime
 
   params = Params()
-  result: dict[str, str | bool | int | float | None] = {}
+  result: dict[str, Any] = {}
 
-  for key in [k.decode('utf-8') for k in params.all_keys()]:
-    if params.get_type(key) == ParamKeyType.BYTES:
+  for key in (key.decode('utf-8') for key in params.all_keys()):
+    if key in SAVE_PARAMS_BLOCKED_KEYS or params.get_type(key) == ParamKeyType.BYTES:
       continue
     value = params.get(key)
     if isinstance(value, datetime.datetime):
