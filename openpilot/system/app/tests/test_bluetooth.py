@@ -23,7 +23,7 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
 
   def test_discoverable_without_allowing_new_bonds_outside_pairing_mode(self):
     with patch('openpilot.system.app.bluetoothd.pairing_mode_active', return_value=False), \
-         patch('openpilot.system.app.bluetoothd.get_device_name', return_value="Asius v0"):
+         patch('openpilot.system.app.bluetoothd.methods.getDeviceName', return_value="Asius v0"):
       advertisement = Advertisement()
       self.assertEqual(advertisement.ServiceUUIDs, [BLE_SERVICE_UUID])
       self.assertEqual(advertisement.LocalName, 'Asius v0')
@@ -38,13 +38,13 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
     bus = MagicMock()
     with patch('openpilot.system.app.bluetoothd.connected_device_count', new=AsyncMock(return_value=0)), \
          patch('openpilot.system.app.bluetoothd.pairing_mode_active', side_effect=[True, False]), \
-         patch('openpilot.system.app.bluetoothd.get_device_name', return_value='Asius v0'), \
+         patch('openpilot.system.app.bluetoothd.methods.getDeviceName', return_value='Asius v0'), \
          patch('openpilot.system.app.bluetoothd.set_adapter_property', new=AsyncMock()) as set_property, \
          patch('openpilot.system.app.bluetoothd.refresh_advertisement', new=AsyncMock()) as refresh:
       await keep_advertising(bus, '/adapter', stop)
     refresh.assert_awaited_once_with(bus, '/adapter')
-    self.assertEqual([call.args[2] for call in set_property.call_args_list], ['Pairable', 'Pairable'])
-    self.assertEqual([call.args[3].value for call in set_property.call_args_list], [True, False])
+    self.assertEqual([call.args[2] for call in set_property.call_args_list], ['Pairable', 'Alias', 'Pairable'])
+    self.assertEqual([call.args[3].value for call in set_property.call_args_list], [True, 'Asius v0', False])
 
 
 class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
@@ -58,7 +58,7 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
     self.engine.unpack_body = lambda _: ("app", {"type": "ble-pair-request", "requestId": "pair"}, False)
     with patch('openpilot.system.app.bluetoothd.load_authorized_peers', return_value={"app": {}}), \
          patch('openpilot.system.app.bluetoothd.disable_pairing_mode') as close, \
-         patch('openpilot.system.app.bluetoothd.get_device_name', return_value="Asius v0"):
+         patch('openpilot.system.app.bluetoothd.methods.getDeviceName', return_value="Asius v0"):
       await self.engine.handle_encrypted(b'')
     close.assert_called_once()
     self.assertEqual(self.engine.send_body.call_args.args[1]['type'], 'pair-response')
@@ -85,7 +85,7 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
          patch('openpilot.system.app.bluetoothd.disable_pairing_mode', side_effect=close), \
          patch('openpilot.system.app.bluetoothd.authorize_peer', side_effect=authorize), \
          patch('openpilot.system.app.bluetoothd.is_dongle_id', return_value=True), \
-         patch('openpilot.system.app.bluetoothd.get_device_name', return_value="Asius v0"):
+         patch('openpilot.system.app.bluetoothd.methods.getDeviceName', return_value="Asius v0"):
       self.engine.unpack_body = lambda _: ("first", {"type": "ble-pair-request", "publicKey": "first", "requestId": "one"}, False)
       await self.engine.handle_encrypted(b'')
       self.engine.unpack_body = lambda _: ("second", {"type": "ble-pair-request", "publicKey": "second", "requestId": "two"}, False)

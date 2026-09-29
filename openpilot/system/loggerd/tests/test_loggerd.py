@@ -199,7 +199,7 @@ class TestLoggerd(OpenpilotTestCase):
     Params().put("RecordFront", True, block=True)
 
     camera_extension = "mp4" if ASIUS_HARDWARE else "hevc"
-    qcamera_filename = "qcamera.mp4" if ASIUS_HARDWARE else "qcamera.ts"
+    qcamera_filename = "qcamera.ts"
     expected_files = {"rlog.zst", "qlog.zst", qcamera_filename, *(f"{camera}.{camera_extension}" for camera in ("fcamera", "dcamera", "ecamera"))}
 
     num_segs = random.randint(2, 3)
@@ -335,7 +335,7 @@ class TestLoggerd(OpenpilotTestCase):
 
     self._publish_camera_and_audio_messages()
 
-    qcamera_file = 'qcamera.mp4' if ASIUS_HARDWARE else 'qcamera.ts'
+    qcamera_file = 'qcamera.ts'
     ffprobe_cmd = f"ffprobe -i {os.path.join(self._get_latest_log_dir(), qcamera_file)} -show_streams -select_streams a -loglevel error"
     has_audio_stream = subprocess.run(ffprobe_cmd, shell=True, capture_output=True).stdout.strip() != b''
     assert has_audio_stream == record_audio
