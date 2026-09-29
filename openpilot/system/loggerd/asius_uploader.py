@@ -43,7 +43,7 @@ STATE_PARAM = "DataUploadState"
 CENC_FILES = {"qcamera.mp4", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 
-class DataUploader(Uploader):
+class AsiusUploader(Uploader):
   upload_attr_name = UPLOAD_ATTR_NAME
   upload_attr_value = UPLOAD_ATTR_VALUE
   max_file_size = MAX_FILE_BYTES
@@ -225,7 +225,7 @@ def main(exit_event: threading.Event | None = None) -> None:
 
   sm = messaging.SubMaster(["deviceState"])
   sm.update(1000)
-  uploader = DataUploader(dongle_id, Paths.log_root(), params=params)
+  uploader = AsiusUploader(dongle_id, Paths.log_root(), params=params)
   backoff = 0.1
   while not exit_event.is_set():
     sm.update(0)
