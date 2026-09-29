@@ -95,15 +95,9 @@ public:
   std::vector<EncoderInfo> encoder_infos;
 };
 
-#ifdef __ASIUS_HARDWARE__
 constexpr char MAIN_ROAD_FILENAME[] = "fcamera.mp4";
 constexpr char MAIN_WIDE_ROAD_FILENAME[] = "ecamera.mp4";
 constexpr char MAIN_CABIN_FILENAME[] = "dcamera.mp4";
-#else
-constexpr char MAIN_ROAD_FILENAME[] = "fcamera.hevc";
-constexpr char MAIN_WIDE_ROAD_FILENAME[] = "ecamera.hevc";
-constexpr char MAIN_CABIN_FILENAME[] = "dcamera.hevc";
-#endif
 constexpr char QCAM_FILENAME[] = "qcamera.ts";
 
 const EncoderInfo main_road_encoder_info = {
