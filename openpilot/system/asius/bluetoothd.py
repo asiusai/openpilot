@@ -58,7 +58,7 @@ TERMINAL_OUTPUT_QUEUE_SIZE = 64
 NOTIFICATION_FRAME_DELAY_SECONDS = 0.004
 REGISTER_RETRY_SECONDS = 3.
 DEVICE_TYPE = "asius-v0"
-APP_PAIRING_UNTIL_PARAM = "AppPairingUntil"
+BLUETOOTH_PAIRING_UNTIL_PARAM = "BluetoothPairingUntil"
 
 BLE_SERVICE_UUID = "84a48ccf-5c26-56f7-91b8-5c39abd40cb9"
 BLE_RX_UUID = "756e901e-4d8e-53ca-a196-41927498a27d"
@@ -163,16 +163,16 @@ def variant_value(value: Any) -> Any:
 
 def enable_pairing_mode(duration_seconds: int = PAIRING_MODE_SECONDS) -> int:
   pairing_until = int(time.time()) + duration_seconds  # noqa: TID251
-  Params().put(APP_PAIRING_UNTIL_PARAM, pairing_until, block=True)
+  Params().put(BLUETOOTH_PAIRING_UNTIL_PARAM, pairing_until, block=True)
   return pairing_until
 
 
 def disable_pairing_mode() -> None:
-  Params().remove(APP_PAIRING_UNTIL_PARAM)
+  Params().remove(BLUETOOTH_PAIRING_UNTIL_PARAM)
 
 
 def pairing_mode_active() -> bool:
-  pairing_until = Params().get(APP_PAIRING_UNTIL_PARAM)
+  pairing_until = Params().get(BLUETOOTH_PAIRING_UNTIL_PARAM)
   return isinstance(pairing_until, int) and pairing_until >= int(time.time())  # noqa: TID251
 
 
