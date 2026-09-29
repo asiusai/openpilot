@@ -36,7 +36,7 @@ def device(monkeypatch):
   sm.__getitem__.side_effect = lambda service: SimpleNamespace(to_dict=lambda: copy.deepcopy(services[service]))
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
-  monkeypatch.setattr(methods, 'get_device_name', lambda: 'Asius v0')
+  monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')
   monkeypatch.setattr(methods, 'load_authorized_peers', lambda: {'app': {}})
   monkeypatch.setattr(methods, '_read_vamos_update_state', lambda: None)
   return sm, params, values
@@ -109,7 +109,7 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
-  monkeypatch.setattr(methods, 'get_device_name', lambda: 'Asius v0')
+  monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')
   monkeypatch.setattr(methods, 'load_authorized_peers', dict)
   monkeypatch.setattr(methods, '_software_update_state', lambda _: {})
   assert methods._live_state_snapshot(sm, params)['services']['gpsLocation'] == {'hasFix': False}
