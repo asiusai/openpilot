@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-import argparse
 import math
-import os
 import signal
 import time
 from collections.abc import Callable
@@ -9,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openpilot.selfdrive.v0.led_control import manual_led_channels, report_automatic_brightness
 from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB, WHITE_RGB,
                                                 STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
 
@@ -198,10 +195,8 @@ class CameraLedBoard:
 
 class CameraLeds:
   def __init__(self) -> None:
-    self.boards = []
-    if os.getenv("NO_DCAM") != "1":
-      self.boards.append(CameraLedBoard("driver", camera_num=1, bus_num=CAM_LED_BUSES[0]))
-    self.boards += [
+    self.boards = [
+      CameraLedBoard("driver", camera_num=1, bus_num=CAM_LED_BUSES[0]),
       CameraLedBoard("road", camera_num=2, bus_num=CAM_LED_BUSES[1]),
       CameraLedBoard("wide", camera_num=3, bus_num=CAM_LED_BUSES[2]),
     ]
@@ -374,10 +369,8 @@ def driver_monitoring_warning(sm) -> bool:
   dm = sm['driverMonitoringState']
   if dm.alertLevel != log.DriverMonitoringState.AlertLevel.none or dm.lockout or dm.alwaysOnLockout:
     return True
-  # Missing faces switch DM to wheeltouch, so activePolicy alone cannot detect
-  # this. Do not mistake the intentional NO_DCAM neutral state for a lost driver.
-  return (os.getenv('NO_DCAM') != '1' and process_should_run(sm, 'dmonitoringmodeld') and
-          not dm.visionPolicyState.faceDetected)
+  # Missing faces switch DM to wheeltouch, so activePolicy alone cannot detect this.
+  return process_should_run(sm, 'dmonitoringmodeld') and not dm.visionPolicyState.faceDetected
 
 
 def calibration_state(sm) -> LedState | None:
@@ -460,7 +453,7 @@ def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[in
   if state == ORANGE:
     return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
   # Continue the kernel fade for one cycle while userspace starts. Driving
-  # statuses, manual control and Bluetooth pairing take priority immediately.
+  # statuses and Bluetooth pairing take priority immediately.
   if (now - STARTED_AT < STARTUP_PERIOD and state == WHITE and
       (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
     return startup_channels(now)
@@ -468,18 +461,10 @@ def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[in
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser()
-  parser.add_argument("--clear", action="store_true")
-  args = parser.parse_args()
-
   led = CameraLeds()
-  if args.clear:
-    led.clear()
-    return
 
   global Ratekeeper, log, messaging, pairing_mode_active
   from openpilot.common.realtime import Ratekeeper as OpenpilotRatekeeper
-  from openpilot.common.params import Params
   from openpilot.system.app.bluetoothd import pairing_mode_active as app_pairing_mode_active
   try:
     from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
@@ -509,24 +494,13 @@ def main() -> None:
     'wideRoadCameraState',
   ], ignore_avg_freq=['managerState'])
   rk = Ratekeeper(RUNTIME_HZ)
-  params = Params()
-  last_brightness_report = 0.
 
   while not done:
     sm.update(0)
     brightness = BOOT_BRIGHTNESS if time.monotonic() - STARTED_AT < STARTUP_PERIOD else camera_led_brightness(sm)
-    if time.monotonic() - last_brightness_report >= 1.:
-      try:
-        report_automatic_brightness(brightness)
-      except OSError:
-        cloudlog_exception('failed to report automatic LED brightness')
-      last_brightness_report = time.monotonic()
-    manual_channels = manual_led_channels(sm, params)
     pairing_channels = pairing_led_channels(brightness)
     if pairing_channels is not None:
       led.set_channels(pairing_channels)
-    elif manual_channels is not None:
-      led.set_channels(manual_channels)
     else:
       now = time.monotonic()
       animated_channels = automatic_led_channels(sm, brightness, now)

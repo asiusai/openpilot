@@ -215,16 +215,12 @@ def test_offroad_fault_is_red_and_engaged_fault_blinks(monkeypatch):
 
 
 @pytest.mark.parametrize('engaged', [False, True])
-def test_missing_driver_blinks_magenta_without_dcam_false_alarms(monkeypatch, engaged):
-  monkeypatch.delenv('NO_DCAM', raising=False)
+def test_missing_driver_blinks_magenta_when_monitoring_is_running(engaged):
   sm = healthy_sm()
   sm['selfdriveState'].active = engaged
   sm['driverMonitoringState'].visionPolicyState.faceDetected = False
   assert ledd.led_state(sm, now=0.) == ledd.DM_WARNING
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
-  monkeypatch.setenv('NO_DCAM', '1')
-  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.WHITE)
-  monkeypatch.delenv('NO_DCAM')
   sm['managerState'].processes = [SimpleNamespace(name='dmonitoringmodeld', shouldBeRunning=False, running=False)]
   assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.WHITE)
   sm['deviceState'].started = False

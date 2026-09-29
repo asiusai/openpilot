@@ -27,7 +27,7 @@ invalid or stale exposure readings use the same 10% fallback as boot.
 The fade, blink and calibration progress phases can go below that peak or off.
 LEDs 2 and 5 sit midway
 across the 15 mm gaps and always run at 10% output, including startup,
-calibration, warning indications and manual control.
+calibration and warning indications.
 
 Calibration fills LEDs 1 through 6 in deep orange using fresh
 `extrinsicsCalibration.calPerc`: the four outer LEDs mark 25% intervals, with
@@ -40,13 +40,7 @@ Engagement blockers, including a held brake or pre-enabled state, leave the LEDs
 white. Faults are also shown while parked; processes intentionally stopped while
 parked are not faults. A fault blinks red when engaged. Driver monitoring uses
 fresh valid data; missing drivers also blink magenta before engagement, but
-an intentionally disabled driver camera does not raise that warning.
-
-Manual control remains parked-only, retains its full 0%-100% range, and addresses all six LEDs in the
-same logical order as the app. Bluetooth pairing takes priority over manual
-control; manual overrides clear when driving begins.
-The app reports the daemon's current automatic brightness instead of a fixed
-10% default. This is the selected peak brightness, not an animation's instant value.
+monitoring processes intentionally stopped while parked do not raise that warning.
 
 The VamOS kernel table and this startup curve should stay in sync. Run the LED
 tests with `python -m pytest openpilot/selfdrive/v0/tests/test_led*.py`.
