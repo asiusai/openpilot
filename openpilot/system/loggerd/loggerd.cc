@@ -138,12 +138,8 @@ int handle_encoder_msg(LoggerdState *s, Message *msg, std::string &name, struct 
       // if we aren't actually recording, don't create the writer
       if (encoder_info.record) {
         assert(encoder_info.filename != NULL);
-        bool remuxing = idx.getType() != cereal::EncodeIndex::Type::FULL_H_E_V_C;
-#ifdef __ASIUS_HARDWARE__
-        remuxing = true;
-#endif
         re.writer.reset(new VideoWriter(s->logger.segmentPath().c_str(),
-                                        encoder_info.filename, remuxing,
+                                        encoder_info.filename, true,
                                         edata.getWidth(), edata.getHeight(), encoder_info.fps, idx.getType()));
         re.recording = false;
         re.audio_initialized = false;
