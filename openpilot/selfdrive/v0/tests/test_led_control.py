@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.common.params import ParamKeyFlag, Params
+from openpilot.selfdrive.v0 import led_control
 from openpilot.selfdrive.v0.led_control import MANUAL_LED_PARAM, get_led_state, manual_led_channels, set_led_state
 from openpilot.selfdrive.v0.tests.test_ledd import FakeSubMaster
 from openpilot.system.app import methods
@@ -152,3 +153,19 @@ def test_invalid_stored_settings_are_cleared(params, value):
   params.put(MANUAL_LED_PARAM, value, block=True)
   assert manual_led_channels(parked_sm(), params) is None
   assert params.get(MANUAL_LED_PARAM) is None
+
+
+def test_automatic_brightness_reports_live_value_and_manual_keeps_full_range(params, monkeypatch, tmp_path):
+  monkeypatch.setattr(led_control, 'AUTOMATIC_BRIGHTNESS_PATH', tmp_path / 'brightness.json')
+  monkeypatch.setattr(led_control.time, 'monotonic', lambda: 100.)
+  assert get_led_state(params, True)['brightness'] == 10
+  led_control.report_automatic_brightness(125)
+  assert get_led_state(params, True)['brightness'] == 49
+  led_control.report_automatic_brightness(13)
+  assert get_led_state(params, True)['brightness'] == 5
+  set_led_state(params, True, True, ['#ffffff'] * 6, 100)
+  assert get_led_state(params, True)['brightness'] == 100
+  assert max(manual_led_channels(parked_sm(), params)[2]) == 255
+  params.remove(MANUAL_LED_PARAM)
+  monkeypatch.setattr(led_control.time, 'monotonic', lambda: 106.)
+  assert get_led_state(params, True)['brightness'] == 10
