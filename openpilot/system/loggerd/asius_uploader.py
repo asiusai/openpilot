@@ -57,7 +57,7 @@ class AsiusUploader(Uploader):
 
     super().__init__(dongle_id, root)
     self.immediate_folders = []
-    self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.mp4": 1, "qcamera.ts": 1}
+    self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.mp4": 1}
     self.params = params or self.params
     self.client = client or DataApiClient(self.params.get("DataApiHost", return_default=True), self.private_key)
     self.retry_after: dict[str, float] = {}

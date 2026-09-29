@@ -14,10 +14,10 @@ from openpilot.tools.lib.helpers import RE
 class FileName:
   RLOG = ("rlog.zst", "rlog.bz2")
   QLOG = ("qlog.zst", "qlog.bz2")
-  QCAMERA = ('qcamera.mp4', 'qcamera.ts')
-  FCAMERA = ('fcamera.mp4', 'fcamera.hevc')
-  ECAMERA = ('ecamera.mp4', 'ecamera.hevc')
-  DCAMERA = ('dcamera.mp4', 'dcamera.hevc')
+  QCAMERA = ('qcamera.mp4',)
+  FCAMERA = ('fcamera.mp4',)
+  ECAMERA = ('ecamera.mp4',)
+  DCAMERA = ('dcamera.mp4',)
   BOOTLOG = ('bootlog.zst', 'bootlog.bz2')
 
 

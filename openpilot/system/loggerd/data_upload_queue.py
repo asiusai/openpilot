@@ -9,9 +9,8 @@ UPLOAD_ATTR_NAME = "user.asius_upload"
 REQUEST_ATTR_NAME = "user.asius_upload_requested"
 ERROR_ATTR_NAME = "user.asius_upload_error"
 ATTR_VALUE = b"1"
-AUTO_UPLOAD_FILES = {"qlog", "qlog.zst", "qcamera.mp4", "qcamera.ts"}
-ROUTE_FILES = AUTO_UPLOAD_FILES | {"rlog", "rlog.zst", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4",
-                                  "fcamera.hevc", "ecamera.hevc", "dcamera.hevc"}
+AUTO_UPLOAD_FILES = {"qlog", "qlog.zst", "qcamera.mp4"}
+ROUTE_FILES = AUTO_UPLOAD_FILES | {"rlog", "rlog.zst", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 MAX_FILE_BYTES = 128 * 1024 * 1024
 ROUTE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+--[0-9]+$")
 
