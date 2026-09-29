@@ -20,7 +20,6 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 import openpilot.cereal.messaging as messaging
 from openpilot.system.app import methods
-from openpilot.system.app.device_name import get_device_name
 from openpilot.system.app.identity import is_dongle_id
 from openpilot.system.app.terminal import TerminalManager
 from openpilot.system.app.relayd import (
@@ -295,7 +294,7 @@ class Advertisement(ServiceInterface):
 
   @dbus_property(access=PropertyAccess.READ)
   def LocalName(self) -> DBusStr:
-    return get_device_name()
+    return methods.getDeviceName()
 
   @dbus_property(access=PropertyAccess.READ)
   def Discoverable(self) -> DBusBool:
@@ -427,7 +426,7 @@ class BlePeerEngine:
       "v": 1,
       "publicKey": self.dongle_id,
       "deviceType": DEVICE_TYPE,
-      "name": get_device_name(),
+      "name": methods.getDeviceName(),
       "maxFrameBytes": MAX_FRAME_BYTES,
     }
     await self.tx.send_text(json.dumps(response, separators=(",", ":")), initial=True)
@@ -456,7 +455,7 @@ class BlePeerEngine:
       "type": "pair-response",
       "publicKey": self.dongle_id,
       "device-type": DEVICE_TYPE,
-      "name": get_device_name(),
+      "name": methods.getDeviceName(),
     })
     cloudlog.event("asius.bluetooth.paired", sender=sender, request_id=request_id)
 
@@ -496,7 +495,7 @@ class BlePeerEngine:
         "type": "pair-response",
         "publicKey": self.dongle_id,
         "device-type": DEVICE_TYPE,
-        "name": get_device_name(),
+        "name": methods.getDeviceName(),
       })
     elif message_type == "ble-session":
       await self.send_body(sender, {"type": "ble-session", "ready": True, "requestId": body.get("requestId")})
@@ -602,7 +601,7 @@ async def set_adapter_property(bus: MessageBus, adapter: str, name: str, value: 
 
 async def register_bluez(bus: MessageBus, adapter: str) -> None:
   await set_adapter_property(bus, adapter, "Powered", Variant("b", True))
-  await set_adapter_property(bus, adapter, "Alias", Variant("s", get_device_name()))
+  await set_adapter_property(bus, adapter, "Alias", Variant("s", methods.getDeviceName()))
   await set_adapter_property(bus, adapter, "Pairable", Variant("b", pairing_mode_active()))
   await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RegisterAgent", "os", [AGENT_PATH, "NoInputNoOutput"]))
   await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RequestDefaultAgent", "o", [AGENT_PATH]))
@@ -649,10 +648,12 @@ async def keep_advertising(bus: MessageBus, adapter: str, stop: asyncio.Event) -
     try:
       current = await connected_device_count(bus, adapter)
       current_pairing = pairing_mode_active()
-      current_name = get_device_name()
+      current_name = methods.getDeviceName()
       if current_pairing != pairing:
         await set_adapter_property(bus, adapter, "Pairable", Variant("b", current_pairing))
         pairing = current_pairing
+      if current_name != name:
+        await set_adapter_property(bus, adapter, "Alias", Variant("s", current_name))
       if current != connected or current_name != name:
         await refresh_advertisement(bus, adapter)
         connected = current
