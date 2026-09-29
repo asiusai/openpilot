@@ -5,6 +5,9 @@ WHITE_RGB = (255, 195, 120)
 ORANGE_RGB = (255, 32, 0)
 LED_BRIGHTNESS = (1., 0.1, 1., 1., 0.1, 1.)
 STARTUP_PERIOD = 3.
+BOOT_BRIGHTNESS = 25  # At most 10% before camera exposure is available.
+MIN_AUTO_BRIGHTNESS = 13  # At least 5% for a fully lit outer LED.
+MAX_AUTO_BRIGHTNESS = 125  # 49%, strictly below 50%.
 
 
 def camera_channels(colors: list[list[int]]) -> dict[int, list[int]]:
@@ -20,12 +23,14 @@ def startup_levels(elapsed: float) -> list[float]:
   return [(1. - math.cos(math.tau * phase)) / 2.] * 6
 
 
-def startup_channels(elapsed: float, brightness: int = 255) -> dict[int, list[int]]:
+def startup_channels(elapsed: float, brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[int]]:
+  brightness = max(0, min(MAX_AUTO_BRIGHTNESS, brightness))
   return camera_channels([[round(channel * level * brightness / 255.) for channel in WHITE_RGB]
                           for level in startup_levels(elapsed)])
 
 
 def calibration_channels(percent: float, brightness: int) -> dict[int, list[int]]:
+  brightness = max(0, min(MAX_AUTO_BRIGHTNESS, brightness))
   percent = max(0., min(100., percent)) if math.isfinite(percent) else 0.
   colors = [[0, 0, 0] for _ in range(6)]
   # Center LEDs fill halfway between their neighbors, at 10% output.
