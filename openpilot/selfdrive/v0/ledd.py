@@ -463,7 +463,7 @@ def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[in
   # statuses, manual control and Bluetooth pairing take priority immediately.
   if (now - STARTED_AT < STARTUP_PERIOD and state == WHITE and
       (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
-    return startup_channels(now, brightness)
+    return startup_channels(now)
   return None
 
 
@@ -514,7 +514,7 @@ def main() -> None:
 
   while not done:
     sm.update(0)
-    brightness = camera_led_brightness(sm)
+    brightness = BOOT_BRIGHTNESS if time.monotonic() - STARTED_AT < STARTUP_PERIOD else camera_led_brightness(sm)
     if time.monotonic() - last_brightness_report >= 1.:
       try:
         report_automatic_brightness(brightness)

@@ -6,8 +6,8 @@ ORANGE_RGB = (255, 32, 0)
 LED_BRIGHTNESS = (1., 0.1, 1., 1., 0.1, 1.)
 STARTUP_PERIOD = 3.
 BOOT_BRIGHTNESS = 25  # At most 10% before camera exposure is available.
-MIN_AUTO_BRIGHTNESS = 13  # At least 5% for a fully lit outer LED.
-MAX_AUTO_BRIGHTNESS = 125  # 49%, strictly below 50%.
+MIN_AUTO_BRIGHTNESS = 26  # 10%, rounded up to the next 8-bit PWM level.
+MAX_AUTO_BRIGHTNESS = 127  # 50%, rounded down to stay within the cap.
 
 
 def camera_channels(colors: list[list[int]]) -> dict[int, list[int]]:
