@@ -169,17 +169,17 @@ def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
   assert ledd.camera_led_brightness(sm) == 25
 
   sm.set('wideRoadCameraState', SimpleNamespace(exposureValPercent=100.))
-  assert ledd.camera_led_brightness(sm) == 13
+  assert ledd.camera_led_brightness(sm) == 26
 
   sm['wideRoadCameraState'].exposureValPercent = 0.
-  assert ledd.camera_led_brightness(sm) == 125
+  assert ledd.camera_led_brightness(sm) == 127
 
   values = []
   for exposure in range(101):
     sm['wideRoadCameraState'].exposureValPercent = exposure
     values.append(ledd.camera_led_brightness(sm))
   assert values == sorted(values, reverse=True)
-  assert all(5 <= value / 255 * 100 < 50 for value in values)
+  assert all(10 <= value / 255 * 100 <= 50 for value in values)
   sm['wideRoadCameraState'].exposureValPercent = float('nan')
   assert ledd.camera_led_brightness(sm) == 25
   sm.valid['wideRoadCameraState'] = False
@@ -241,4 +241,4 @@ def test_stale_driver_state_is_not_a_driver_warning():
 @pytest.mark.parametrize('state', [ledd.WHITE, ledd.GREEN, ledd.BLUE, ledd.ORANGE, ledd.RED, ledd.DM_WARNING])
 def test_automatic_states_cannot_exceed_brightness_cap(state):
   limited = ledd.max_brightness(state, 255)
-  assert max(limited.red, limited.green, limited.blue) == 125
+  assert max(limited.red, limited.green, limited.blue) == 127
