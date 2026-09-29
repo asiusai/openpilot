@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from collections.abc import Callable
 
 from openpilot.common.params import Params
+from openpilot.system.asius.access_policy import IGNITION_RESTRICTED_PARAMS, check_param_write
 
 CHUNK_BYTES = 8192
 MAX_VALUE_BYTES = 16 * 1024 * 1024
@@ -85,14 +86,15 @@ class ParameterEditor:
       reason = 'This parameter type is not supported by this device editor.'
     if reason:
       return {'name': name, 'type': kind, 'value': None, 'defaultValue': None, 'isSet': None,
-              'size': 0, 'revision': '', 'readOnlyReason': reason}, b''
+              'size': 0, 'revision': '', 'readOnlyReason': reason, 'requiresIgnitionOff': name in IGNITION_RESTRICTED_PARAMS}, b''
     value = encode_value(params.get(name), kind)
     default = encode_value(params.get_default_value(name), kind)
     data = (value if value is not None else default or '').encode('utf-8')
     revision = hashlib.sha256(json.dumps([kind, value, default], ensure_ascii=False).encode()).hexdigest()
     return {'name': name, 'type': kind, 'value': value if len(data) <= 256 else None,
             'defaultValue': default if default is None or len(default.encode('utf-8')) <= 256 else None,
-            'isSet': value is not None, 'size': len(data), 'revision': revision, 'readOnlyReason': None}, data
+            'isSet': value is not None, 'size': len(data), 'revision': revision, 'readOnlyReason': None,
+            'requiresIgnitionOff': name in IGNITION_RESTRICTED_PARAMS}, data
 
   def catalog(self, after: str = '', limit: int = 24):
     if not isinstance(after, str) or type(limit) is not int or not 1 <= limit <= 40:
@@ -109,7 +111,7 @@ class ParameterEditor:
         entries.append({'name': name, 'type': params.get_type(name).name.lower(), 'value': None, 'defaultValue': None,
                         'isSet': None, 'size': 0, 'revision': '', 'readOnlyReason': 'The device could not read this value.'})
     return {'params': entries, 'next': names[-1] if start + len(names) < len(keys) else None, 'total': len(keys),
-            'canEdit': params.get_bool('IsOffroad')}
+            'canEdit': True}
 
   def read(self, name: str, revision: str, offset: int = 0):
     entry, data = self._value(self.params(), name)
@@ -130,8 +132,7 @@ class ParameterEditor:
       entry, _ = self._value(params, name)
       if entry['readOnlyReason']:
         raise ValueError(entry['readOnlyReason'])
-      if not params.get_bool('IsOffroad'):
-        raise ValueError('Park the car before editing parameters.')
+      check_param_write(name)
       if revision != entry['revision']:
         raise ValueError('This value changed on the device. Refresh it before saving.')
       if not isinstance(uploadId, str) or not 1 <= len(uploadId) <= 64 or type(offset) is not int or offset < 0:
@@ -164,6 +165,7 @@ class ParameterEditor:
         value = decode_value(pending.data.decode('utf-8'), entry['type']) if not clear else None
       except UnicodeDecodeError:
         raise ValueError('Value must be valid UTF-8 text.') from None
+      check_param_write(name)
       # No partially received value reaches Params, even if Bluetooth disconnects.
       if clear:
         params.remove(name)
