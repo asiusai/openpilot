@@ -63,7 +63,7 @@ WS_FRAME_SIZE = 4096
 DEVICE_STATE_UPDATE_INTERVAL = 1.0  # in seconds
 DEFAULT_UPLOAD_PRIORITY = 99  # higher number = lower priority
 CLIP_CHUNK_SIZE = 512 * 1024
-CLIP_CAMERAS = {"fcamera.hevc", "ecamera.hevc", "dcamera.hevc", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
+CLIP_CAMERAS = {"fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 SEND_PRIORITY_HIGH = 0
 SEND_PRIORITY_LOW = 1
