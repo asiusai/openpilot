@@ -23,7 +23,7 @@ from openpilot.system.app import methods
 from openpilot.system.app.device_name import get_device_name
 from openpilot.system.app.identity import is_dongle_id
 from openpilot.system.app.terminal import TerminalManager
-from openpilot.system.app.websocketd import (
+from openpilot.system.app.relayd import (
   authorize_peer,
   load_authorized_peers,
   pack_peer_message,
@@ -463,7 +463,7 @@ class BlePeerEngine:
   async def handle_rpc(self, sender: str, body: dict[str, Any]) -> None:
     if body.get("method") in methods.NETWORK_ONLY_METHODS:
       await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
-                                    "error": {"code": -32000, "message": "Video and route playback require a network connection"}})
+                                    "error": {"code": -32000, "message": "Live video requires a network connection"}})
       return
     response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
     await self.send_body(sender, response)
