@@ -1,5 +1,7 @@
 # Asius v0 LEDs
 
+The status behavior is defined in [SPEC.md](SPEC.md).
+
 | Appearance | Meaning |
 | --- | --- |
 | Fading white | Starting up |
@@ -20,7 +22,7 @@ The OS smoothly fades all six warm-white LEDs in and out together during boot.
 `ledd` continues the same three-second curve during startup, then takes over with
 steady warm white. Kernel startup peaks below 10% before camera exposure is
 available. Automatic lighting uses the wide road camera's exposure to choose
-an outer-LED peak from 5% in the dark to 49% in bright conditions. Missing,
+an outer-LED peak from 10% in the dark to 50% in bright conditions. Missing,
 invalid or stale exposure readings use the same 10% fallback as boot.
 The fade, blink and calibration progress phases can go below that peak or off.
 LEDs 2 and 5 sit midway
