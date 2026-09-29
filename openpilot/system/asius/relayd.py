@@ -18,7 +18,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.athenad import backoff
-from openpilot.system.app.identity import get_device_private_key, identity_to_bytes, is_dongle_id
+from openpilot.system.asius.identity import get_device_private_key, identity_to_bytes, is_dongle_id
 
 
 APP_AUTHORIZED_KEYS_PARAM = "AppAuthorizedKeys"
@@ -222,7 +222,7 @@ def peer_message_timestamp(data: str) -> int | None:
 
 
 def main(exit_event: threading.Event | None = None):
-  from openpilot.system.app import methods
+  from openpilot.system.asius import methods
 
   try:
     set_core_affinity([0, 1, 2, 3])

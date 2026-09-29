@@ -20,8 +20,8 @@ from websocket import ABNF, WebSocket, WebSocketTimeoutException
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
-from openpilot.system.app.clock import ClockChallenges
-from openpilot.system.app.identity import get_device_public_key
+from openpilot.system.asius.clock import ClockChallenges
+from openpilot.system.asius.identity import get_device_public_key
 from openpilot.common.params import Params
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
@@ -29,9 +29,9 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, handle
-from openpilot.system.app.terminal import TerminalManager
-from openpilot.system.app.param_editor import ParameterEditor
-from openpilot.system.app.relayd import (
+from openpilot.system.asius.terminal import TerminalManager
+from openpilot.system.asius.param_editor import ParameterEditor
+from openpilot.system.asius.relayd import (
   authorize_peer,
   load_authorized_peers,
   pack_peer_message,
@@ -849,8 +849,8 @@ def requestRouteUpload(paths: list[str]) -> dict:
 
 @dispatcher.add_method
 def authorizeRoutePublication(routeId: str, enabled: bool, files: list[dict], timestamp: int) -> dict:
-  from openpilot.system.app.identity import get_device_private_key
-  from openpilot.system.app.route_sharing import authorize_publication
+  from openpilot.system.asius.identity import get_device_private_key
+  from openpilot.system.asius.route_sharing import authorize_publication
   # Only authenticated, device-authorized peers reach this dispatcher. The app
   # sends this narrowly scoped request over its internet connection, including
   # when the device has Bluetooth only or an unset wall clock.

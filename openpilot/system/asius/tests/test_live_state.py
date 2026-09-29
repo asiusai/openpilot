@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
-from openpilot.system.app import methods
+from openpilot.system.asius import methods
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def test_home_vehicle_readings_require_live_valid_car_data(device, compact):
 
 def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_path):
   import asyncio
-  from openpilot.system.app.bluetoothd import BlePeerEngine
+  from openpilot.system.asius.bluetoothd import BlePeerEngine
   from openpilot.system.loggerd import data_upload_queue
   from openpilot.common.hardware.hw import Paths
 
