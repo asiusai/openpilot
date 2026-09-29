@@ -259,10 +259,19 @@ common = [_common, 'json11', 'zmq']
 Export('common')
 
 # Build messaging (cereal + msgq + socketmaster + their dependencies)
-from openpilot.system.asius.apply_patches import apply_msgq_patch
+from openpilot.system.asius.apply_patches import patched_msgq_source
 
-apply_msgq_patch(Path(Dir('#').abspath))
-SConscript(['msgq_repo/SConscript'])
+msgq_visionbuf = patched_msgq_source(Path(Dir('#').abspath))
+
+env_msgq = env.Clone()
+# Redirect only this compilation unit to its patched build copy.
+msgq_shared_object = env_msgq.SharedObject
+def msgq_objects(_env, sources):
+  original = File('#msgq_repo/msgq/visionipc/visionbuf.cc').abspath
+  return msgq_shared_object([str(msgq_visionbuf) if File(source).abspath == original else source for source in sources])
+
+env_msgq.AddMethod(msgq_objects, 'SharedObject')
+SConscript(['msgq_repo/SConscript'], exports={'env': env_msgq})
 
 SConscript(['openpilot/cereal/SConscript'])
 
