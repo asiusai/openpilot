@@ -29,7 +29,6 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, handle
-from openpilot.system.app.device_name import get_device_name, set_device_name
 from openpilot.system.app.terminal import TerminalManager
 from openpilot.system.app.param_editor import ParameterEditor
 from openpilot.system.app.relayd import (
@@ -251,12 +250,16 @@ def getPublicKey() -> str | None:
 
 @dispatcher.add_method
 def getDeviceName() -> str:
-  return get_device_name()
+  return Params().get("DeviceName", return_default=True)
 
 
 @dispatcher.add_method
 def setDeviceName(name: str) -> dict[str, str]:
-  return {"name": set_device_name(name)}
+  name = name.strip()
+  if not name or len(name) > 40 or not name.isprintable():
+    raise ValueError("device name must be 1-40 printable characters")
+  Params().put("DeviceName", name, block=True)
+  return {"name": name}
 
 
 @dispatcher.add_method
@@ -906,7 +909,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
   snapshot = {
     "ts": time.time(),  # noqa: TID251
     "dongleId": params.get("DongleId"),
-    "deviceName": get_device_name(),
+    "deviceName": getDeviceName(),
     "serial": params.get("HardwareSerial"),
     "version": {
       "version": build_metadata.openpilot.version,
@@ -1025,7 +1028,7 @@ def handle_peer_message(data: str) -> bool:
         "type": "pair-response",
         "publicKey": dongle_id,
         "device-type": HARDWARE.get_device_type(),
-        "name": get_device_name(),
+        "name": getDeviceName(),
       })
       return True
 
