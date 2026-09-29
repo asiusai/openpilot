@@ -68,7 +68,7 @@ def save_authorized_peers(peers: dict[str, dict[str, str | int]]) -> None:
 
 def authorize_peer(public_key: str, label: str | None = None) -> dict[str, str | int]:
   if not is_dongle_id(public_key):
-    raise ValueError("invalid Athena peer key")
+    raise ValueError("invalid app peer key")
 
   peers = load_authorized_peers()
   peer = peers.get(public_key, {"publicKey": public_key, "createdAt": int(wall_time())})
@@ -270,11 +270,11 @@ def main(exit_event: threading.Event | None = None):
     except (KeyboardInterrupt, SystemExit):
       break
     except (ConnectionError, TimeoutError, WebSocketException):
-      cloudlog.exception("athenad.main.websocket_exception")
+      cloudlog.exception("relayd.main.websocket_exception")
       conn_retries += 1
       params.remove("LastAthenaPingTime")
     except Exception:
-      cloudlog.exception("athenad.main.exception")
+      cloudlog.exception("relayd.main.exception")
 
       conn_retries += 1
       params.remove("LastAthenaPingTime")

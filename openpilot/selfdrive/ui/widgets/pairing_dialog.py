@@ -1,7 +1,7 @@
 import pyray as rl
 import time
 
-from openpilot.system.app.websocketd import pairing_url
+from openpilot.system.app.relayd import pairing_url
 from openpilot.common.qrcode import make_texture
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
