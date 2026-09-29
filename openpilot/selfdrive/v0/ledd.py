@@ -64,6 +64,7 @@ class LedState:
 
 WHITE = LedState("white", *WHITE_RGB)
 GREEN = LedState("green", 0, 180, 0)
+SETUP_PENDING = LedState("setup_pending", 180, 0, 180)
 BLUE = LedState("blue", 0, 0, 180)
 ORANGE = LedState("orange", *ORANGE_RGB)
 RED = LedState("red", 180, 0, 0)
@@ -420,12 +421,12 @@ def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[in
   }
 
 
-def led_state(sm, now: float | None = None) -> LedState:
+def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedState:
   if persistent_error(sm):
     return blinking(RED, now) if selfdrive_state_available(sm) and sm['selfdriveState'].active else RED
 
   if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
-    return WHITE
+    return WHITE if setup_complete else SETUP_PENDING
 
   warning = engaged_warning(sm)
   if warning is not None:
@@ -433,6 +434,9 @@ def led_state(sm, now: float | None = None) -> LedState:
 
   if driver_monitoring_warning(sm):
     return blinking(DM_WARNING, now)
+
+  if not setup_complete:
+    return SETUP_PENDING
 
   calibrating = calibration_state(sm)
   if calibrating is not None:
@@ -444,8 +448,8 @@ def led_state(sm, now: float | None = None) -> LedState:
   return WHITE
 
 
-def automatic_led_channels(sm, brightness: int, now: float) -> dict[int, list[int]] | None:
-  state = led_state(sm, now)
+def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool = True) -> dict[int, list[int]] | None:
+  state = led_state(sm, now, setup_complete)
   if state in (RED, DM_WARNING, OFF):
     state = max_brightness(state, brightness)
     rgb = [state.red, state.green, state.blue]
@@ -466,6 +470,9 @@ def main() -> None:
   global Ratekeeper, log, messaging, pairing_mode_active
   from openpilot.common.realtime import Ratekeeper as OpenpilotRatekeeper
   from openpilot.system.asius.bluetoothd import pairing_mode_active as app_pairing_mode_active
+  from openpilot.system.asius.onboarding import setup_status
+  from openpilot.common.params import Params
+  params = Params()
   try:
     from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
   except ModuleNotFoundError:
@@ -503,11 +510,12 @@ def main() -> None:
       led.set_channels(pairing_channels)
     else:
       now = time.monotonic()
-      animated_channels = automatic_led_channels(sm, brightness, now)
+      setup_complete = setup_status(params)["complete"]
+      animated_channels = automatic_led_channels(sm, brightness, now, setup_complete)
       if animated_channels is not None:
         led.set_channels(animated_channels)
       else:
-        led.set(led_state(sm, now), brightness=brightness)
+        led.set(led_state(sm, now, setup_complete), brightness=brightness)
     rk.keep_time()
 
   led.clear()
