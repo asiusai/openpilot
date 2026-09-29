@@ -12,16 +12,16 @@ rlogs contain all the messages passed amongst openpilot's processes. See [openpi
 
 ## camera video files
 
-Each camera stream is H.265 encoded and written to its respective file.
+Each full-resolution camera stream is H.265 encoded in a fragmented MP4 file.
 
-* `fcamera.hevc` is the narrow road camera (the main forward camera)
-* `ecamera.hevc` is the wide road camera
-* `dcamera.hevc` is the cabin camera
+* `fcamera.mp4` is the narrow road camera (the main forward camera)
+* `ecamera.mp4` is the wide road camera
+* `dcamera.mp4` is the cabin camera
 
-## qlog.zst & qcamera.ts
+## qlog.zst & qcamera.mp4
 
 qlogs are a decimated subset of the rlogs. Check out [openpilot/cereal/services.py](https://github.com/commaai/openpilot/blob/master/openpilot/cereal/services.py) for the decimation.
 
-qcameras are H.264 encoded, lower res versions of the fcamera.hevc. The video shown in [comma connect](https://connect.comma.ai/) is from the qcameras.
+qcameras are H.264 encoded, lower res versions of fcamera.mp4, also stored in fragmented MP4. The video shown in [comma connect](https://connect.comma.ai/) is from the qcameras.
 
 qlogs and qcameras are designed to be small enough to upload instantly on slow internet, yet useful enough for most analysis and debugging.
