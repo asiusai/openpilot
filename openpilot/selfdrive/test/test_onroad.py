@@ -99,7 +99,7 @@ TIMINGS = {
 LOGS_SIZE = {  # MB per segment
   "qlog.zst": 0.5,
   "rlog.zst": 8.1,
-  "qcamera.ts": 2.3,
+  "qcamera.mp4": 2.3,
 }
 EXT = "mp4"
 LOGS_SIZE.update(dict.fromkeys([f'ecamera.{EXT}', f'fcamera.{EXT}', f'dcamera.{EXT}'], 76.5))

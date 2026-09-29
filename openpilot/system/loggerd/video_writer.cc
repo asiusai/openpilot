@@ -28,6 +28,7 @@ VideoWriter::VideoWriter(const char *path, const char *filename, bool remuxing, 
     this->codec_ctx = avcodec_alloc_context3(avcodec);
     assert(this->codec_ctx);
     this->codec_ctx->codec_id = codec_id;
+    if (fragmented_mp4 && codec_id == AV_CODEC_ID_HEVC) this->codec_ctx->codec_tag = MKTAG('h', 'v', 'c', '1');
     this->codec_ctx->codec_type = AVMEDIA_TYPE_VIDEO;
     this->codec_ctx->width = width;
     this->codec_ctx->height = height;
@@ -232,7 +233,7 @@ VideoWriter::~VideoWriter() {
       avcodec_free_context(&this->audio_codec_ctx);
     }
     int err = av_write_trailer(this->ofmt_ctx);
-    if (err != 0) LOGE("av_write_trailer failed %d", err);
+    if (err < 0) LOGE("av_write_trailer failed %d", err);
     avcodec_free_context(&this->codec_ctx);
     if (this->audio_frame) av_frame_free(&this->audio_frame);
     err = avio_closep(&this->ofmt_ctx->pb);
