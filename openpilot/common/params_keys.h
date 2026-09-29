@@ -5,9 +5,6 @@
 
 #include "openpilot/cereal/gen/cpp/log.capnp.h"
 
-inline constexpr char COMPLETED_TRAINING_VERSION_DEFAULT[] = "0.2.0";
-inline constexpr char ACCEPTED_TERMS_VERSION_DEFAULT[] = "2";
-
 inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AccessToken", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
     {"AdbEnabled", {PERSISTENT, BOOL}},
@@ -32,7 +29,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarParamsCache", {CLEAR_ON_MANAGER_START, BYTES}},
     {"CarParamsPersistent", {PERSISTENT, BYTES}},
     {"CarParamsPrevRoute", {PERSISTENT, BYTES}},
-    {"CompletedTrainingVersion", {PERSISTENT, STRING, COMPLETED_TRAINING_VERSION_DEFAULT}},
+    {"CompletedTrainingVersion", {PERSISTENT, STRING, "0.2.0"}},
     {"ControlsReady", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"CurrentBootlog", {PERSISTENT, STRING}},
     {"CurrentRoute", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
@@ -66,7 +63,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GsmMetered", {PERSISTENT, BOOL, "1"}},
     {"GsmRoaming", {PERSISTENT, BOOL}},
     {"HardwareSerial", {PERSISTENT, STRING}},
-    {"HasAcceptedTerms", {PERSISTENT, STRING, ACCEPTED_TERMS_VERSION_DEFAULT}},
+    {"HasAcceptedTerms", {PERSISTENT, STRING, "2"}},
     {"InstallDate", {PERSISTENT, TIME}},
     {"IsDriverViewEnabled", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsEngaged", {PERSISTENT, BOOL}},
