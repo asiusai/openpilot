@@ -58,21 +58,18 @@ class TestChestnutReadiness(unittest.TestCase):
 
 
 class TestChestnutModelFiles(unittest.TestCase):
-  @parameterized.expand([(False, 'big_driving'), (True, 'big_driving_asius')])
-  def test_requires_model_and_matching_camera_warps(self, asius, prefix):
+  @parameterized.expand([False, True])
+  def test_requires_upstream_model_and_camera_warps(self, asius):
     with TemporaryDirectory() as directory, patch.object(helpers, 'MODELS_DIR', Path(directory)), \
          patch.object(helpers, 'ASIUS_HARDWARE', asius):
       root = Path(directory)
       self.assertFalse(helpers.chestnut_compiled())
+      self.assertEqual(helpers.modeld_pkl_path(True), root / 'big_driving_tinygrad.pkl')
       helpers.modeld_pkl_path(True).touch()
-      other = 'big_driving' if asius else 'big_driving_asius'
-      for width, height in ((1344, 760), (1928, 1208)):
-        (root / f'{other}_warp_{width}x{height}_tinygrad.pkl').touch()
+      for size in ('1344x760', '1928x1208'):
+        (root / f'driving_warp_{size}_tinygrad.pkl').touch()
       self.assertFalse(helpers.chestnut_compiled())
-      first = helpers.modeld_warp_path(1344, 760, True)
-      self.assertEqual(first.name, f'{prefix}_warp_1344x760_tinygrad.pkl')
-      first.touch()
+      (root / 'big_driving_warp_1344x760_tinygrad.pkl').touch()
       self.assertFalse(helpers.chestnut_compiled())
-      helpers.modeld_warp_path(1928, 1208, True).touch()
+      (root / 'big_driving_warp_1928x1208_tinygrad.pkl').touch()
       self.assertTrue(helpers.chestnut_compiled())
-      self.assertEqual(helpers.modeld_warp_path(1344, 760, False).name, 'driving_warp_1344x760_tinygrad.pkl')
