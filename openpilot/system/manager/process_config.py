@@ -61,7 +61,7 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
-def data_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
+def asius_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not PC and params.get_bool("DataUploadEnabled")
 
 def or_(*fns):
@@ -123,7 +123,7 @@ procs = [
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
-  PythonProcess("data_uploader", "openpilot.system.loggerd.data_uploader", data_upload),
+  PythonProcess("asius_uploader", "openpilot.system.loggerd.asius_uploader", asius_upload),
   # debug procs
   NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),
   PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", always_run),

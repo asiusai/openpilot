@@ -21,7 +21,7 @@ from openpilot.system.loggerd.data_api import (
   x25519_private,
   x25519_public,
 )
-from openpilot.system.loggerd.data_uploader import DataUploader
+from openpilot.system.loggerd.asius_uploader import AsiusUploader
 from openpilot.system.loggerd.uploader import Uploader
 from openpilot.system.app.identity import bytes_to_identity
 
@@ -83,10 +83,10 @@ def test_rejects_low_order_x25519_recipient() -> None:
   assert not can_wrap_for(device_key, low_order_identity)
 
 
-def test_data_uploader_reuses_default_uploader_flow() -> None:
-  assert issubclass(DataUploader, Uploader)
-  assert DataUploader.step is Uploader.step
-  assert DataUploader.upload is Uploader.upload
+def test_asius_uploader_reuses_default_uploader_flow() -> None:
+  assert issubclass(AsiusUploader, Uploader)
+  assert AsiusUploader.step is Uploader.step
+  assert AsiusUploader.upload is Uploader.upload
 
 
 def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
@@ -119,8 +119,8 @@ def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
     def put_access(self, document):
       published.update(document)
 
-  monkeypatch.setattr("openpilot.system.loggerd.data_uploader.load_authorized_peers", lambda: {app_reader})
-  uploader = DataUploader.__new__(DataUploader)
+  monkeypatch.setattr("openpilot.system.loggerd.asius_uploader.load_authorized_peers", lambda: {app_reader})
+  uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.private_key = device_key
   uploader.owner = public_identity(device_key)
   uploader.params = FakeParams()
@@ -145,7 +145,7 @@ def test_custom_upload_step_only_adds_compression_encryption_and_transport(tmp_p
       captured.update(path=path, encrypted=encrypted, plaintext_length=plaintext_length, route_start_time=route_start_time)
       return SimpleNamespace(status_code=204)
 
-  uploader = DataUploader.__new__(DataUploader)
+  uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.owner = owner
   uploader.client = Client()
   uploader.sync_access = lambda: state
@@ -170,7 +170,7 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
   conflict.status_code = 409
   existing = requests.Response()
   existing.status_code = 200
-  uploader = DataUploader.__new__(DataUploader)
+  uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.owner = 'owner'
 
   def upload(*_):
@@ -186,7 +186,7 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
 
 
 def make_policy_uploader(root):
-  uploader = DataUploader.__new__(DataUploader)
+  uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.root = str(root)
   uploader.params = SimpleNamespace(get=lambda _: None)
   uploader.immediate_folders = []
