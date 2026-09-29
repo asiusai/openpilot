@@ -159,10 +159,10 @@ def test_automatic_brightness_reports_live_value_and_manual_keeps_full_range(par
   monkeypatch.setattr(led_control, 'AUTOMATIC_BRIGHTNESS_PATH', tmp_path / 'brightness.json')
   monkeypatch.setattr(led_control.time, 'monotonic', lambda: 100.)
   assert get_led_state(params, True)['brightness'] == 10
-  led_control.report_automatic_brightness(125)
-  assert get_led_state(params, True)['brightness'] == 49
-  led_control.report_automatic_brightness(13)
-  assert get_led_state(params, True)['brightness'] == 5
+  led_control.report_automatic_brightness(127)
+  assert get_led_state(params, True)['brightness'] == 50
+  led_control.report_automatic_brightness(26)
+  assert get_led_state(params, True)['brightness'] == 10
   set_led_state(params, True, True, ['#ffffff'] * 6, 100)
   assert get_led_state(params, True)['brightness'] == 100
   assert max(manual_led_channels(parked_sm(), params)[2]) == 255
