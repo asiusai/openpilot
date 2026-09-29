@@ -1,7 +1,7 @@
 import pyray as rl
 import time
 
-from openpilot.system.app.websocketd import pairing_url
+from openpilot.system.app.relayd import pairing_url
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, GreyBigButton
