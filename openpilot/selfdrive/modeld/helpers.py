@@ -20,15 +20,8 @@ def tensor_from_dma_buf(ptr: int, fd: int | None, size: int, device: str) -> Ten
 
 
 def modeld_pkl_path(chestnut: bool):
-  if chestnut and ASIUS_HARDWARE:
-    return MODELS_DIR / 'big_driving_asius_tinygrad.pkl'
   prefix = 'big_' if chestnut else ''
   return MODELS_DIR / f'{prefix}driving_tinygrad.pkl'
-
-def modeld_warp_path(cam_w: int, cam_h: int, chestnut: bool) -> Path:
-  prefix = 'big_driving_asius' if chestnut and ASIUS_HARDWARE else 'big_driving' if chestnut else 'driving'
-  return MODELS_DIR / f'{prefix}_warp_{cam_w}x{cam_h}_tinygrad.pkl'
-
 
 def load_oob(path, chestnut=False):
   from tinygrad import Context
@@ -69,4 +62,4 @@ def chestnut_compiled() -> bool:
   path = modeld_pkl_path(chestnut=True)
   # the big model is only built for releases, in a dev checkout it's a git LFS pointer
   return path.is_file() and path.stat().st_size > 1024 and all(
-    modeld_warp_path(width, height, chestnut=True).is_file() for width, height in ((1344, 760), (1928, 1208)))
+    (MODELS_DIR / f'big_driving_warp_{size}_tinygrad.pkl').is_file() for size in ('1344x760', '1928x1208'))

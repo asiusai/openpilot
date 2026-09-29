@@ -32,8 +32,7 @@ from openpilot.system.athena.rpc import Dispatcher, handle
 from openpilot.system.app.device_name import get_device_name, set_device_name
 from openpilot.system.app.terminal import TerminalManager
 from openpilot.system.app.param_editor import ParameterEditor
-from openpilot.selfdrive.v0.led_control import MANUAL_LED_PARAM, get_led_state, set_led_state
-from openpilot.system.app.websocketd import (
+from openpilot.system.app.relayd import (
   authorize_peer,
   load_authorized_peers,
   pack_peer_message,
@@ -48,7 +47,7 @@ class ParamsReader(Protocol):
   def get(self, key: str) -> Any: ...
 
 
-RELAY_HOST = Params().get("WebsocketHost", return_default=True)
+RELAY_HOST = Params().get("RelayHost", return_default=True)
 
 RECONNECT_TIMEOUT_S = 70
 WS_FRAME_SIZE = 4096
@@ -56,7 +55,6 @@ LIVE_STATE_INTERVAL_S = 1.0
 VAMOS_UPDATE_STATE_FILE = Path("/data/vamos-update/state.json")
 VAMOS_WIFI_COMMAND = Path("/usr/bin/vamos-wifi")
 SAVE_PARAMS_BLOCKED_KEYS = {
-  MANUAL_LED_PARAM,
   "AccessToken",
   "ApiCache_Device",
   "AppAuthorizedKeys",
@@ -73,7 +71,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "SecOCKey",
   "AthenadPid",
   "BluetoothdPid",
-  "WebsocketdPid",
+  "RelayPid",
 }
 LIVE_STATE_SERVICES = [
   "deviceState",
@@ -129,7 +127,7 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
-NETWORK_ONLY_METHODS = {"startStream", "startRouteStream"}
+NETWORK_ONLY_METHODS = {"startStream"}
 # Use the same active Params alerts as the device UI, including their extra text.
 OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/selfdrived/alerts_offroad.json").read_text()))
 BLUETOOTH_STATE_FIELDS = {
@@ -189,7 +187,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
     raise
   finally:
     for thread in threads:
-      cloudlog.debug(f"athena.joining {thread.name}")
+      cloudlog.debug(f"relay.joining {thread.name}")
       thread.join()
 
 
@@ -259,16 +257,6 @@ def getDeviceName() -> str:
 @dispatcher.add_method
 def setDeviceName(name: str) -> dict[str, str]:
   return {"name": set_device_name(name)}
-
-
-@dispatcher.add_method
-def getLedState() -> dict:
-  return get_led_state(Params(), ASIUS_HARDWARE)
-
-
-@dispatcher.add_method
-def setLedState(manual: bool, colors: list[str], brightness: int) -> dict:
-  return set_led_state(Params(), ASIUS_HARDWARE, manual, colors, brightness)
 
 
 @dispatcher.add_method
@@ -412,7 +400,7 @@ def _local_ips() -> list[dict[str, str]]:
       if addr.get("family") == "inet" and addr.get("local")
     ]
   except Exception:
-    cloudlog.exception("athena.local_ips.exception")
+    cloudlog.exception("relay.local_ips.exception")
     return []
 
 
@@ -861,16 +849,6 @@ def authorizeRoutePublication(routeId: str, enabled: bool, files: list[dict], ti
   return authorize_publication(get_device_private_key(), routeId, enabled, files, timestamp)
 
 
-def start_data_stream(sdp: str, peer: str, endpoint: str, **options) -> dict:
-  from openpilot.system.webrtc.helpers import WEBRTCD_PORT, wait_for_webrtcd
-  if peer not in load_authorized_peers():
-    raise PermissionError("device access required")
-  wait_for_webrtcd()
-  response = requests.post(f"http://127.0.0.1:{WEBRTCD_PORT}/{endpoint}", json={"sdp": sdp, "peer": peer, **options}, timeout=35)
-  response.raise_for_status()
-  return response.json()
-
-
 def _json_safe(value: Any) -> Any:
   if isinstance(value, bytes):
     return base64.b64encode(value).decode("utf-8")
@@ -901,7 +879,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
           # Home needs only these readings, including over the Bluetooth link.
           services[service] = {key: services[service][key] for key in ("vEgo", "vEgoCluster", "gearShifter", "canValid")}
     except Exception:
-      cloudlog.exception("athena.live_state.service_failed service=%s", service)
+      cloudlog.exception("relay.live_state.service_failed service=%s", service)
 
   if "deviceState" in services:
     services["deviceState"]["uptime"] = int(time.monotonic())
@@ -911,7 +889,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     try:
       param_values[key] = _json_safe(params.get(key, return_default=True))
     except Exception:
-      cloudlog.exception("athena.live_state.param_failed key=%s", key)
+      cloudlog.exception("relay.live_state.param_failed key=%s", key)
 
   offroad_alerts = []
   for key in OFFROAD_ALERT_KEYS:
@@ -981,7 +959,7 @@ def broadcast_peer_event(name: str, payload: Any) -> None:
     try:
       send_peer_payload(public_key, {"type": "event", "name": name, "payload": payload})
     except Exception:
-      cloudlog.exception("athena.websocket.broadcast_failed public_key=%s", public_key)
+      cloudlog.exception("relay.websocket.broadcast_failed public_key=%s", public_key)
 
 
 def live_state_handler(end_event: threading.Event) -> None:
@@ -994,7 +972,7 @@ def live_state_handler(end_event: threading.Event) -> None:
       if load_authorized_peers():
         broadcast_peer_event("liveState", _live_state_snapshot(sm, params))
     except Exception:
-      cloudlog.exception("athena.live_state_handler.exception")
+      cloudlog.exception("relay.live_state_handler.exception")
     end_event.wait(LIVE_STATE_INTERVAL_S)
 
 
@@ -1004,7 +982,6 @@ clock_challenges = ClockChallenges()
 def dispatcher_for_peer(sender: str):
   return dispatcher | {
     "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
-    "startRouteStream": lambda sdp: start_data_stream(sdp, sender, "routes"),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
   }
@@ -1029,7 +1006,7 @@ def handle_peer_message(data: str) -> bool:
     sender, body, decrypt_failed = peer_message
     if body is None:
       if decrypt_failed:
-        cloudlog.event("athena.websocket.decrypt_failed", sender=sender, error=True)
+        cloudlog.event("relay.websocket.decrypt_failed", sender=sender, error=True)
       return True
 
     if body.get("type") == "pair-request":
@@ -1038,7 +1015,7 @@ def handle_peer_message(data: str) -> bool:
       if not verify_pair_token(body.get("pairToken"), dongle_id):
         raise Exception("invalid pair token")
       authorize_peer(body["publicKey"], label=body.get("label") if isinstance(body.get("label"), str) else None)
-      cloudlog.event("athena.websocket.paired", sender=sender)
+      cloudlog.event("relay.websocket.paired", sender=sender)
       send_peer_payload(sender, {
         "type": "pair-response",
         "publicKey": dongle_id,
@@ -1048,19 +1025,19 @@ def handle_peer_message(data: str) -> bool:
       return True
 
     if sender not in load_authorized_peers():
-      cloudlog.event("athena.websocket.unauthorized", sender=sender, error=True)
+      cloudlog.event("relay.websocket.unauthorized", sender=sender, error=True)
       return True
 
     if body.get("type") == "event":
       if body.get("name") == "terminal":
         terminal_manager.handle(sender, body.get("payload"))
       else:
-        cloudlog.event("athena.websocket.event", sender=sender, name=body.get("name"), payload=body.get("payload"))
+        cloudlog.event("relay.websocket.event", sender=sender, name=body.get("name"), payload=body.get("payload"))
     elif body.get("method"):
       handle_rpc(sender, body)
     return True
   except Exception:
-    cloudlog.exception("athena.websocket.handle_peer_message_failed")
+    cloudlog.exception("relay.websocket.handle_peer_message_failed")
     return True
 
 
@@ -1096,10 +1073,10 @@ def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
     except WebSocketTimeoutException:
       ns_since_last_ping = int(time.monotonic() * 1e9) - last_ping
       if ns_since_last_ping > RECONNECT_TIMEOUT_S * 1e9:
-        cloudlog.exception("athenad.ws_recv.timeout")
+        cloudlog.exception("relayd.ws_recv.timeout")
         end_event.set()
     except Exception:
-      cloudlog.exception("athenad.ws_recv.exception")
+      cloudlog.exception("relayd.ws_recv.exception")
       end_event.set()
 
 
@@ -1125,5 +1102,5 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
     except queue.Empty:
       pass
     except Exception:
-      cloudlog.exception("athenad.ws_send.exception")
+      cloudlog.exception("relayd.ws_send.exception")
       end_event.set()
