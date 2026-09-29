@@ -683,10 +683,15 @@ def _signal_updated(signal_name: str) -> dict[str, int | str]:
   return {"success": 1 if result.returncode in (0, 1) else 0, "returncode": result.returncode}
 
 
+def _network_capabilities() -> dict[str, bool]:
+  supported = HARDWARE.get_device_type() in ("tici", "tizi", "mici")
+  return {"hotspot": supported, "cellular": supported}
+
+
 @dispatcher.add_method
 def getNetworkState() -> dict:
   params = Params()
-  capabilities = HARDWARE.get_network_capabilities()
+  capabilities = _network_capabilities()
   local_ips = [ip for ip in _local_ips() if ip["interface"] != "lo"]
   wifi_ip = next((ip["address"] for ip in local_ips if ip["interface"] == "wlan0"), "")
   wifi_state = _nmcli_wifi_state()
@@ -765,7 +770,7 @@ def forgetNetwork(ssid: str) -> dict[str, int | str]:
 
 @dispatcher.add_method
 def setTethering(enabled: bool) -> dict[str, int | str]:
-  if not HARDWARE.get_network_capabilities()["hotspot"]:
+  if not _network_capabilities()["hotspot"]:
     return {"success": 0, "error": "Hotspot is not supported on this device"}
   if enabled:
     _nmcli(["device", "wifi", "hotspot", "ifname", "wlan0", "ssid", _tethering_ssid(), "password", _tethering_password()], sensitive=True)
@@ -776,7 +781,7 @@ def setTethering(enabled: bool) -> dict[str, int | str]:
 
 @dispatcher.add_method
 def setTetheringPassword(password: str) -> dict[str, int | str]:
-  if not HARDWARE.get_network_capabilities()["hotspot"]:
+  if not _network_capabilities()["hotspot"]:
     return {"success": 0, "error": "Hotspot is not supported on this device"}
   if len(password) < 8:
     return {"success": 0, "error": "password must be at least 8 characters"}
