@@ -72,8 +72,8 @@ def and_(*fns):
 
 procs = [
   DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid", enabled=False),
-  DaemonProcess("manage_relayd", "openpilot.system.app.manage_relayd", "RelayPid"),
-  DaemonProcess("manage_bluetoothd", "openpilot.system.app.manage_bluetoothd", "BluetoothdPid", enabled=ASIUS_HARDWARE),
+  DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelayPid"),
+  DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=ASIUS_HARDWARE),
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),
   NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], logging, restart_delay=5.0 if ASIUS_HARDWARE else 0.0),

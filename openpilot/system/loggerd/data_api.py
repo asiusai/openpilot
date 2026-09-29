@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
-from openpilot.system.app.identity import bytes_to_identity, identity_to_bytes
+from openpilot.system.asius.identity import bytes_to_identity, identity_to_bytes
 
 PROTOCOL_VERSION = 1
 ENCRYPTION_MAGIC = b"ASIUSDATA1\n"

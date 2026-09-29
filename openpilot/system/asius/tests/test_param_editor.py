@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.common.params import Params
-from openpilot.system.app.param_editor import CHUNK_BYTES, ParameterEditor, decode_value, encode_value
+from openpilot.system.asius.param_editor import CHUNK_BYTES, ParameterEditor, decode_value, encode_value
 
 
 class ForkParams:

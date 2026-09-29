@@ -19,10 +19,10 @@ from dbus_fast.service import ServiceInterface, dbus_method, dbus_property
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 import openpilot.cereal.messaging as messaging
-from openpilot.system.app import methods
-from openpilot.system.app.identity import is_dongle_id
-from openpilot.system.app.terminal import TerminalManager
-from openpilot.system.app.relayd import (
+from openpilot.system.asius import methods
+from openpilot.system.asius.identity import is_dongle_id
+from openpilot.system.asius.terminal import TerminalManager
+from openpilot.system.asius.relayd import (
   authorize_peer,
   load_authorized_peers,
   pack_peer_message,
