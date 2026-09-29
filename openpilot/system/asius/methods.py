@@ -1130,17 +1130,6 @@ def acceptTerms(version: str) -> dict:
 
 
 @dispatcher.add_method
-def checkTrainingDriver() -> dict:
-  return onboarding.check_driver()
-
-
-@dispatcher.add_method
-def stopTrainingDriver() -> bool:
-  onboarding.stop_check()
-  return True
-
-
-@dispatcher.add_method
 def completeTraining(version: str, recordFront: bool, shareDrivingData: bool) -> dict:
   return onboarding.complete(version, recordFront, shareDrivingData)
 
