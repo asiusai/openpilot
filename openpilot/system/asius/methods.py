@@ -40,6 +40,7 @@ from openpilot.system.asius.relayd import (
   unpack_peer_message,
   verify_pair_token,
 )
+from openpilot.system.asius.onboarding import Onboarding, setup_status
 
 
 class ParamsReader(Protocol):
@@ -57,6 +58,8 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "AccessToken",
   "ApiCache_Device",
   "AppAuthorizedKeys",
+  "HasAcceptedTerms",
+  "CompletedTrainingVersion",
   "BluetoothPairingUntil",
   "AthenadUploadQueue",
   "DoUninstall",
@@ -126,6 +129,7 @@ LIVE_STATE_PARAM_KEYS = [
 NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
+onboarding = Onboarding()
 NETWORK_ONLY_METHODS = {"startStream"}
 # Use the same active Params alerts as the device UI, including their extra text.
 OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/selfdrived/alerts_offroad.json").read_text()))
@@ -918,6 +922,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
       "commit": build_metadata.openpilot.git_commit,
     },
     "params": param_values,
+    "onboarding": setup_status(params),
     "software": _software_update_state(params),
     "services": services,
     "offroadAlerts": offroad_alerts,
@@ -1112,3 +1117,34 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
     except Exception:
       cloudlog.exception("relayd.ws_send.exception")
       end_event.set()
+
+
+@dispatcher.add_method
+def getOnboardingStatus() -> dict:
+  return setup_status(Params())
+
+
+@dispatcher.add_method
+def acceptTerms(version: str) -> dict:
+  return onboarding.accept(version)
+
+
+@dispatcher.add_method
+def checkTrainingDriver() -> dict:
+  return onboarding.check_driver()
+
+
+@dispatcher.add_method
+def stopTrainingDriver() -> bool:
+  onboarding.stop_check()
+  return True
+
+
+@dispatcher.add_method
+def completeTraining(version: str, recordFront: bool, shareDrivingData: bool) -> dict:
+  return onboarding.complete(version, recordFront, shareDrivingData)
+
+
+@dispatcher.add_method
+def resetOnboarding() -> dict:
+  return onboarding.reset()

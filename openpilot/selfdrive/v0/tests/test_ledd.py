@@ -238,3 +238,12 @@ def test_stale_driver_state_is_not_a_driver_warning():
 def test_automatic_states_cannot_exceed_brightness_cap(state):
   limited = ledd.max_brightness(state, 255)
   assert max(limited.red, limited.green, limited.blue) == 127
+
+
+def test_pending_setup_is_solid_magenta_with_fault_priority(monkeypatch):
+  sm = healthy_sm(started=False)
+  assert ledd.led_state(sm, now=0., setup_complete=False) == ledd.SETUP_PENDING
+  assert ledd.led_state(sm, now=0.5, setup_complete=False) == ledd.SETUP_PENDING
+  assert ledd.led_state(sm, setup_complete=True) == ledd.WHITE
+  monkeypatch.setattr(ledd, 'persistent_error', lambda sm: True)
+  assert ledd.led_state(sm, setup_complete=False) == ledd.RED
