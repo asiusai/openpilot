@@ -105,11 +105,11 @@ def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
       return True
 
     def get(self, key):
-      assert key == "DataUploadState"
+      assert key == "CloudUploadState"
       return self.state
 
     def put(self, key, value, block=False):
-      assert key == "DataUploadState" and block
+      assert key == "CloudUploadState" and block
       self.state = value
 
   class Client:
