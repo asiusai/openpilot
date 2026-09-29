@@ -19,7 +19,6 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.timeout import Timeout
 from openpilot.common.params import Params
-from openpilot.common.hardware import ASIUS_HARDWARE
 from openpilot.selfdrive.selfdrived.events import EVENTS, ET
 from openpilot.selfdrive.test.helpers import set_params_enabled, release_only, processes_context, log_collector
 from openpilot.common.hardware import HARDWARE
@@ -102,7 +101,7 @@ LOGS_SIZE = {  # MB per segment
   "rlog.zst": 8.1,
   "qcamera.ts": 2.3,
 }
-EXT = "mp4" if ASIUS_HARDWARE else "hevc"
+EXT = "mp4"
 LOGS_SIZE.update(dict.fromkeys([f'ecamera.{EXT}', f'fcamera.{EXT}', f'dcamera.{EXT}'], 76.5))
 
 
