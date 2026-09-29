@@ -36,6 +36,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DataApiHost", {PERSISTENT, STRING, "https://storage.asius.ai"}},
     {"DataUploadEnabled", {PERSISTENT, BOOL, "1"}},
     {"DataUploadState", {PERSISTENT | DONT_LOG, JSON}},
+    {"DeviceName", {PERSISTENT, STRING, "Asius v0"}},
     {"DisableDriverCameraIR", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"DisableLogging", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"DisablePowerDown", {PERSISTENT, BOOL}},
