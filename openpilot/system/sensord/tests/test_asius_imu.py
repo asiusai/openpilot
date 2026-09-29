@@ -11,14 +11,14 @@ from openpilot.system.sensord.sensors.asius_imu import transform_asius_imu
 from openpilot.system.sensord.sensors import lsm6ds3_accel, lsm6ds3_gyro
 
 
-# Independent physical bases from the saved v5 assembly. Columns are axes in
+# Independent physical bases from the saved v0 assembly (hardware 9991afa). Columns are axes in
 # the case frame. U6 is at 0 degrees on B.Cu; the compute assembly is flipped.
-# The road lens points along camera-module -Y, after its -28 degree case tilt.
+# The road lens points along camera-module -Y, after its -27 degree case tilt.
 CASE_FROM_IMU = np.diag([-1.0, -1.0, 1.0])
 CASE_FROM_DEVICE = np.array([
   [0.0, -1.0, 0.0],
-  [-0.8829475928589292, 0.0, -0.4694715627858867],
-  [0.4694715627858867, 0.0, -0.8829475928589292],
+  [-0.8910065241883679, 0.0, -0.45399049973954675],
+  [0.45399049973954675, 0.0, -0.8910065241883679],
 ])
 
 
@@ -42,7 +42,7 @@ def test_asius_imu_device_frame_rotation():
   ])
 
   device_transform = device_from_sensor @ sensor_transform @ device_from_sensor.T
-  expected = rot_from_euler([0.0, np.radians(-118.0), 0.0])
+  expected = rot_from_euler([0.0, np.radians(-117.0), 0.0])
 
   np.testing.assert_allclose(device_transform, expected, atol=1e-12)
   np.testing.assert_allclose(sensor_transform.T @ sensor_transform, np.eye(3), atol=1e-12)
