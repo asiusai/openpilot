@@ -6,7 +6,7 @@ import json
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from openpilot.system.loggerd.data_api import canonical_json
 
-from openpilot.system.app.route_sharing import publication_request, authorize_publication
+from openpilot.system.asius.route_sharing import publication_request, authorize_publication
 
 
 class TestRouteSharing(unittest.TestCase):
