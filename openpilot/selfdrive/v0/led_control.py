@@ -1,11 +1,33 @@
 """Parked-only manual control of the six road-facing RGB LEDs."""
 
 import re
+import json
+import time
+from pathlib import Path
 
-from openpilot.selfdrive.v0.led_patterns import camera_channels
+from openpilot.selfdrive.v0.led_patterns import BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, camera_channels
 
 MANUAL_LED_PARAM = "ManualLedState"
 LED_COUNT = 6
+AUTOMATIC_BRIGHTNESS_PATH = Path('/dev/shm/asius-led-brightness.json')
+
+
+def report_automatic_brightness(brightness: int) -> None:
+  temporary = AUTOMATIC_BRIGHTNESS_PATH.with_suffix('.tmp')
+  temporary.write_text(json.dumps({'brightness': brightness, 'updated': time.monotonic()}))
+  temporary.replace(AUTOMATIC_BRIGHTNESS_PATH)
+
+
+def automatic_brightness_percent() -> int:
+  brightness = BOOT_BRIGHTNESS
+  try:
+    state = json.loads(AUTOMATIC_BRIGHTNESS_PATH.read_text())
+    if (0 <= time.monotonic() - state['updated'] < 5 and
+        type(state['brightness']) is int and MIN_AUTO_BRIGHTNESS <= state['brightness'] <= MAX_AUTO_BRIGHTNESS):
+      brightness = state['brightness']
+  except (OSError, ValueError, KeyError, TypeError):
+    pass
+  return round(brightness * 100 / 255)
 
 
 def validate_led_settings(colors, brightness) -> dict:
@@ -39,7 +61,7 @@ def get_led_state(params, supported: bool) -> dict:
     "supported": supported,
     "parked": parked,
     "manual": settings is not None,
-    **(settings or {"colors": ["#ffc378"] * LED_COUNT, "brightness": 10}),
+    **(settings or {"colors": ["#ffc378"] * LED_COUNT, "brightness": automatic_brightness_percent()}),
   }
 
 
