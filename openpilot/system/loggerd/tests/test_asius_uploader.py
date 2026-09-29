@@ -23,7 +23,7 @@ from openpilot.system.loggerd.data_api import (
 )
 from openpilot.system.loggerd.asius_uploader import AsiusUploader
 from openpilot.system.loggerd.uploader import Uploader
-from openpilot.system.app.identity import bytes_to_identity
+from openpilot.system.asius.identity import bytes_to_identity
 
 
 def decode64(value: str) -> bytes:
