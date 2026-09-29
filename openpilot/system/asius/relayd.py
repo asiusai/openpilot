@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption,
 from websocket import WebSocketException, create_connection
 
 from openpilot.common.params import Params
+from openpilot.system.asius.access_policy import require_ignition_off
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.athenad import backoff
@@ -67,6 +68,7 @@ def save_authorized_peers(peers: dict[str, dict[str, str | int]]) -> None:
 
 
 def authorize_peer(public_key: str, label: str | None = None) -> dict[str, str | int]:
+  require_ignition_off()
   if not is_dongle_id(public_key):
     raise ValueError("invalid app peer key")
 

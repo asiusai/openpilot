@@ -11,7 +11,7 @@ from openpilot.system.asius import methods
 @pytest.fixture
 def device(monkeypatch):
   values = {
-    "DongleId": "device", "ExperimentalMode": True,
+    "DongleId": "device", "ExperimentalMode": True, "AppTerminalEnabled": True,
     "UpdaterCurrentReleaseNotes": b"Release notes " * 12000,
     "UpdaterNewReleaseNotes": b"More release notes " * 12000,
     "UpdaterAvailableBranches": [f"branch-{i}" for i in range(2000)],
@@ -35,6 +35,7 @@ def device(monkeypatch):
                  recv_frame={service: int(service in services) for service in methods.LIVE_STATE_SERVICES})
   sm.__getitem__.side_effect = lambda service: SimpleNamespace(to_dict=lambda: copy.deepcopy(services[service]))
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
+  monkeypatch.setattr(methods, 'ignition_state', lambda: True)
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
   monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')
   monkeypatch.setattr(methods, 'load_authorized_peers', lambda: {'app': {}})
@@ -46,6 +47,8 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   sm, params, _ = device
   snapshot = methods._live_state_snapshot(sm, params, compact=True)
   assert len(json.dumps(snapshot).encode()) < 5000
+  assert snapshot['ignition'] is True
+  assert snapshot['params']['AppTerminalEnabled'] is True
   assert snapshot['params']['ExperimentalMode'] is True
   assert snapshot['software']['UpdaterProgress'] == 25
   assert snapshot['services']['extrinsicsCalibration']['calPerc'] == 42
@@ -108,6 +111,7 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   sm.valid = dict.fromkeys(methods.LIVE_STATE_SERVICES, True)
   sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
+  monkeypatch.setattr(methods, 'ignition_state', lambda: True)
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
   monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')
   monkeypatch.setattr(methods, 'load_authorized_peers', dict)
