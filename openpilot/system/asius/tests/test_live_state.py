@@ -23,7 +23,7 @@ def device(monkeypatch):
   services = {
     "deviceState": {"started": True, "cpuTempC": [85], "networkType": "none", "chestnutPresent": False},
     "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
-    "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android"},
+    "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android", "unixTimestampMillis": 1800000000000},
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
     "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical", "alertSize": "full"},
     "managerState": {"processes": [
@@ -54,6 +54,7 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   assert snapshot['services']['extrinsicsCalibration']['calPerc'] == 42
   assert snapshot['services']['selfdriveState']['alertText1'] == 'Take control'
   assert snapshot['services']['gpsLocation']['horizontalAccuracy'] == 3
+  assert snapshot['services']['gpsLocation']['unixTimestampMillis'] == 1800000000000
   assert snapshot['services']['managerState']['processes'] == [{'name': 'camerad', 'running': False, 'shouldBeRunning': True, 'exitCode': 1}]
   assert 'UpdaterCurrentReleaseNotes' not in snapshot['software']
   assert 'UpdaterAvailableBranches' not in snapshot['params']

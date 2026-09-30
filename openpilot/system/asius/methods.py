@@ -141,7 +141,7 @@ BLUETOOTH_STATE_FIELDS = {
                   "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "uptime"),
   "peripheralState": ("pandaType", "voltage", "current"),
   "extrinsicsCalibration": ("calStatus", "calPerc"),
-  "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source"),
+  "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
   "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize"),
 }
 dispatcher["echo"] = lambda s: s
