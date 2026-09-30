@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fstream>
 #include <map>
 #include <string>
 
@@ -16,6 +17,10 @@ public:
 
   static std::string get_serial() {
     return util::strip(util::read_file("/sys/devices/soc0/serial_number"));
+  }
+
+  static void set_ir_power(int percent) {
+    std::ofstream("/sys/class/leds/asius:ir/brightness") << std::clamp(percent, 0, 100) << "\n";
   }
 
   static std::map<std::string, std::string> get_init_logs(bool = false) {
