@@ -80,11 +80,38 @@ def test_missing_selfdrive_state_is_ignored_when_offroad():
   assert ledd.led_state(sm) == ledd.WHITE
 
 
-def test_orange_calibration_overrides_non_engageable():
+@pytest.mark.parametrize('status', ['uncalibrated', 'recalibrating'])
+def test_orange_calibration_overrides_non_engageable(status):
   sm = healthy_sm()
-  sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.uncalibrated
+  sm['extrinsicsCalibration'].calStatus = getattr(log.ExtrinsicsCalibration.Status, status)
   sm['selfdriveState'].engageable = False
   assert ledd.led_state(sm) == ledd.ORANGE
+
+
+@pytest.mark.parametrize('active', [False, True])
+def test_invalid_calibration_is_red_over_driver_monitoring_and_setup(active):
+  sm = healthy_sm()
+  sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.invalid
+  sm['selfdriveState'].active = active
+  sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
+  assert ledd.led_state(sm, now=0., setup_complete=False) == ledd.RED
+  assert ledd.led_state(sm, now=0.5, setup_complete=False) == (ledd.OFF if active else ledd.RED)
+  assert ledd.automatic_led_channels(sm, brightness=127, now=0.) == ledd.camera_channels([[127, 0, 0]] * 6)
+
+
+@pytest.mark.parametrize('service', ['extrinsicsCalibration', 'deviceState'])
+@pytest.mark.parametrize('field', ['seen', 'alive', 'valid'])
+def test_invalid_calibration_requires_current_valid_state(service, field):
+  sm = healthy_sm()
+  sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.invalid
+  getattr(sm, field)[service] = False
+  assert ledd.led_state(sm) == ledd.WHITE
+
+
+def test_invalid_calibration_is_ignored_offroad():
+  sm = healthy_sm(started=False)
+  sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.invalid
+  assert ledd.led_state(sm) == ledd.WHITE
 
 
 def test_green_when_engaged():
@@ -109,18 +136,19 @@ def test_driver_monitoring_blinks_magenta_while_engaged():
   sm = healthy_sm()
   sm['selfdriveState'].active = True
   sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.enabled
-  sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
-  assert ledd.led_state(sm, now=0.) == ledd.DM_WARNING
-  assert ledd.led_state(sm, now=0.5) == ledd.OFF
-
-
-def test_driver_monitoring_warning_also_shows_when_disengaged():
-  sm = healthy_sm()
-  sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
-  sm['selfdriveState'].alertType = 'driverDistracted1/warning'
+  sm['selfdriveState'].alertType = 'driverDistracted2/permanent'
   sm['selfdriveState'].alertSound.raw = 'promptDistracted'
   assert ledd.led_state(sm, now=0.) == ledd.DM_WARNING
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
+
+
+def test_audible_driver_monitoring_warning_is_ignored_when_disengaged():
+  sm = healthy_sm()
+  sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
+  sm['selfdriveState'].alertType = 'driverDistracted2/permanent'
+  sm['selfdriveState'].alertSound.raw = 'promptDistracted'
+  assert ledd.led_state(sm, now=0.) == ledd.WHITE
+  assert ledd.led_state(sm, now=0.5) == ledd.WHITE
 
 
 def test_soft_disabling_blinks_red_over_driver_monitoring_warning():
@@ -130,6 +158,28 @@ def test_soft_disabling_blinks_red_over_driver_monitoring_warning():
   sm['selfdriveState'].alertType = 'driverDistracted3/warning'
   assert ledd.led_state(sm, now=0.) == ledd.RED
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
+
+
+@pytest.mark.parametrize('status', ['uncalibrated', 'invalid'])
+def test_calibration_priority_over_no_face_and_audible_driver_warning(status):
+  sm = healthy_sm()
+  sm['extrinsicsCalibration'].calStatus = getattr(log.ExtrinsicsCalibration.Status, status)
+  calibration_color = ledd.RED if status == 'invalid' else ledd.ORANGE
+  sm['selfdriveState'].alertType = 'driverUnresponsive1/permanent'
+  for face_detected in [False, True, False]:
+    sm['driverMonitoringState'].visionPolicyState.faceDetected = face_detected
+    sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
+    for now in [0., 0.5]:
+      assert ledd.led_state(sm, now=now) == calibration_color
+
+  sm['selfdriveState'].active = True
+  assert ledd.led_state(sm, now=0.) == calibration_color  # Silent alert does not blink magenta.
+  sm['selfdriveState'].alertType = 'driverUnresponsive2/permanent'
+  sm['selfdriveState'].alertSound.raw = 'promptDistracted'
+  assert ledd.led_state(sm, now=0., setup_complete=False) == (ledd.RED if status == 'invalid' else ledd.DM_WARNING)
+  # A higher-priority blink stays off between flashes instead of revealing orange or setup magenta.
+  assert ledd.led_state(sm, now=0.5, setup_complete=False) == ledd.OFF
+  assert ledd.automatic_led_channels(sm, brightness=127, now=0.5) == ledd.camera_channels([[0, 0, 0]] * 6)
 
 
 def test_persistent_process_failure_is_solid_red(monkeypatch):
@@ -215,12 +265,12 @@ def test_offroad_fault_is_red_and_engaged_fault_blinks(monkeypatch):
 
 
 @pytest.mark.parametrize('engaged', [False, True])
-def test_missing_driver_blinks_magenta_when_monitoring_is_running(engaged):
+def test_missing_driver_without_audible_alert_does_not_change_led(engaged):
   sm = healthy_sm()
   sm['selfdriveState'].active = engaged
   sm['driverMonitoringState'].visionPolicyState.faceDetected = False
-  assert ledd.led_state(sm, now=0.) == ledd.DM_WARNING
-  assert ledd.led_state(sm, now=0.5) == ledd.OFF
+  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.WHITE)
+  assert ledd.led_state(sm, now=0.5) == (ledd.GREEN if engaged else ledd.WHITE)
   sm['managerState'].processes = [SimpleNamespace(name='dmonitoringmodeld', shouldBeRunning=False, running=False)]
   assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.WHITE)
   sm['deviceState'].started = False
