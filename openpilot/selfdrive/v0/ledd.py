@@ -353,32 +353,18 @@ def engaged_warning(sm) -> LedState | None:
   }
   if selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling:
     return RED
-  if selfdrive_state.alertSound.raw in WARNING_ALERT_SOUNDS and not dm_alert:
-    return RED
-  if dm_alert:
-    return DM_WARNING
-
-  if driver_monitoring_warning(sm):
-    return DM_WARNING
-
+  if selfdrive_state.alertSound.raw in WARNING_ALERT_SOUNDS:
+    return DM_WARNING if dm_alert else RED
   return None
-
-
-def driver_monitoring_warning(sm) -> bool:
-  if not (sm.seen['driverMonitoringState'] and sm.alive['driverMonitoringState'] and sm.valid['driverMonitoringState']):
-    return False
-  dm = sm['driverMonitoringState']
-  if dm.alertLevel != log.DriverMonitoringState.AlertLevel.none or dm.lockout or dm.alwaysOnLockout:
-    return True
-  # Missing faces switch DM to wheeltouch, so activePolicy alone cannot detect this.
-  return process_should_run(sm, 'dmonitoringmodeld') and not dm.visionPolicyState.faceDetected
 
 
 def calibration_state(sm) -> LedState | None:
   if not sm.seen['extrinsicsCalibration'] or not sm.alive['extrinsicsCalibration'] or not sm.valid['extrinsicsCalibration']:
     return None
-  if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started:
+  if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
     return None
+  if sm['extrinsicsCalibration'].calStatus == log.ExtrinsicsCalibration.Status.invalid:
+    return RED
   if sm['extrinsicsCalibration'].calStatus != log.ExtrinsicsCalibration.Status.calibrated:
     return ORANGE
   return None
@@ -422,7 +408,8 @@ def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[in
 
 
 def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedState:
-  if persistent_error(sm):
+  calibrating = calibration_state(sm)
+  if persistent_error(sm) or calibrating == RED:
     return blinking(RED, now) if selfdrive_state_available(sm) and sm['selfdriveState'].active else RED
 
   if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
@@ -432,13 +419,9 @@ def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedS
   if warning is not None:
     return blinking(warning, now)
 
-  if driver_monitoring_warning(sm):
-    return blinking(DM_WARNING, now)
-
   if not setup_complete:
     return SETUP_PENDING
 
-  calibrating = calibration_state(sm)
   if calibrating is not None:
     return calibrating
 
@@ -493,7 +476,6 @@ def main() -> None:
 
   sm = messaging.SubMaster([
     'deviceState',
-    'driverMonitoringState',
     'extrinsicsCalibration',
     'managerState',
     'pandaStates',
