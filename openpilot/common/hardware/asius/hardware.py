@@ -18,6 +18,10 @@ class HardwareAsius(HardwareComma):
     with open("/sys/devices/soc0/serial_number") as serial_file:
       return serial_file.read().strip()
 
+  def set_ir_power(self, percent: int):
+    with open("/sys/class/leds/asius:ir/brightness", "w") as brightness:
+      brightness.write(str(max(0, min(100, percent))))
+
   def get_thermal_config(self):
     return AsiusThermalConfig(cpu=[ThermalZone(f"cpu{i}-thermal") for i in range(8)],
                               gpu=[ThermalZone("gpuss0-thermal"), ThermalZone("gpuss1-thermal")],
@@ -32,3 +36,9 @@ class HardwareAsius(HardwareComma):
 
   def initialize_hardware(self):
     subprocess.run(["sudo", "/usr/bin/vamos-hardware", "initialize"], check=True)
+
+  def reset_internal_panda(self):
+    subprocess.run(["sudo", "/usr/bin/vamos-hardware", "panda-reset"], check=True)
+
+  def recover_internal_panda(self):
+    subprocess.run(["sudo", "/usr/bin/vamos-hardware", "panda-reset", "--bootloader"], check=True)

@@ -23,6 +23,7 @@ from openpilot.cereal import log
 from openpilot.system.asius.clock import ClockChallenges
 from openpilot.system.asius.access_policy import check_param_write, ignition_state, require_ignition_off
 from openpilot.system.asius.identity import get_device_public_key
+from openpilot.system.asius.device_name import device_hostname
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE
@@ -376,7 +377,7 @@ def configureTailscale(disconnect: bool = False) -> str | None:
     return cast(str, state["authUrl"])
 
   subprocess.run(
-    [*TAILSCALE_COMMAND, "login", "--accept-dns=false", "--ssh=false", "--timeout=1s"],
+    [*TAILSCALE_COMMAND, "login", f"--hostname={device_hostname(getDeviceName())}", "--accept-dns=false", "--ssh=false", "--timeout=1s"],
     check=False,
     stdout=subprocess.DEVNULL,
     stderr=subprocess.DEVNULL,
