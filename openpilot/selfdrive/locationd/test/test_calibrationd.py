@@ -1,4 +1,6 @@
 import random
+from importlib import reload
+from unittest.mock import patch
 
 import numpy as np
 
@@ -6,6 +8,7 @@ from openpilot.common.test import OpenpilotTestCase
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
 from openpilot.common.params import Params
+from openpilot.selfdrive.locationd import calibrationd
 from openpilot.selfdrive.locationd.calibrationd import Calibrator, INPUTS_NEEDED, INPUTS_WANTED, BLOCK_SIZE, MIN_SPEED_FILTER, \
                                                          MAX_YAW_RATE_FILTER, SMOOTH_CYCLES, HEIGHT_INIT, MAX_ALLOWED_PITCH_SPREAD, MAX_ALLOWED_YAW_SPREAD
 
@@ -31,6 +34,23 @@ def process_messages(c, cam_odo_calib, cycles,
                         [cam_odo_height_std, cam_odo_height_std, cam_odo_height_std])
 
 class TestCalibrationd(OpenpilotTestCase):
+
+  def test_calibration_mounting_yaw_limits(self):
+    try:
+      for device_type in ('mici', 'v0', 'tici', 'tizi', 'pc'):
+        with self.subTest(device_type=device_type), patch.object(calibrationd.HARDWARE, 'get_device_type', return_value=device_type):
+          reload(calibrationd)
+          for yaw, accepted in ((3.9, True), (4.5, device_type in ('mici', 'v0')),
+                                (4.99, device_type in ('mici', 'v0')), (5.01, False)):
+            for sign in (-1, 1):
+              with self.subTest(yaw=sign * yaw):
+                c = calibrationd.Calibrator(param_put=False)
+                c.reset(rpy_init=np.array([0., 0., np.radians(sign * yaw)]), valid_blocks=INPUTS_NEEDED)
+                c.update_status()
+                expected = log.ExtrinsicsCalibration.Status.calibrated if accepted else log.ExtrinsicsCalibration.Status.invalid
+                assert c.cal_status == expected
+    finally:
+      reload(calibrationd)
 
   def test_read_saved_params(self):
     msg = messaging.new_message('extrinsicsCalibration')
