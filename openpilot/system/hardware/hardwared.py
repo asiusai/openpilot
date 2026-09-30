@@ -18,7 +18,8 @@ from openpilot.common.params import Params
 from openpilot.common.gps import get_gps_location_service
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, PC
+from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, ASIUS_HARDWARE, PC
+from openpilot.system.asius.device_name import sync_device_hostname
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.git import get_short_branch
 from openpilot.common.hardware.usb import CHESTNUT_FW_VERSION, CHESTNUT_USB_PRODUCT, get_usb_state, get_usb_topology, is_chestnut_usb_id, set_usb_state
@@ -164,6 +165,11 @@ def hw_state_thread(end_event, hw_queue):
     # these are expensive calls. update every 10s or when USB devices change
     if (count % int(10. / DT_HW)) == 0 or usb_changed:
       prev_usb_topology = usb_topology
+      if ASIUS_HARDWARE:
+        try:
+          sync_device_hostname(Params().get("DeviceName", return_default=True))
+        except Exception:
+          cloudlog.exception("Error updating device hostname")
       try:
         network_type = HARDWARE.get_network_type()
         modem_temps = HARDWARE.get_modem_temperatures()

@@ -37,3 +37,50 @@ def test_rename_refreshes_bluetooth_alias_and_advertisement():
     asyncio.run(keep_advertising(bus, '/adapter', stop))
   assert [call.args[3].value for call in set_property.call_args_list if call.args[2] == 'Alias'] == ['Old name', 'New name']
   assert refresh.await_count == 2
+
+
+@pytest.mark.parametrize('name,expected', [
+  ('Asius v0 2', 'asius-v0-2'),
+  ('  My Car!! ', 'my-car'),
+  ('$(touch /tmp/nope); CAR', 'touch-tmp-nope-car'),
+  ('My\nCar', 'my-car'),
+  ('🚗', 'asius-v0'),
+  ('', 'asius-v0'),
+  ('a' * 62 + ' - tail', 'a' * 62),
+])
+def test_hostname_normalization(name, expected):
+  from openpilot.system.asius.device_name import device_hostname
+  assert device_hostname(name) == expected
+
+
+def test_hostname_updates_only_when_changed():
+  from openpilot.system.asius import device_name
+  with patch.object(device_name.socket, 'gethostname', return_value='my-car'), \
+       patch.object(device_name.subprocess, 'run') as run:
+    device_name.sync_device_hostname('My Car')
+    run.assert_not_called()
+    device_name.sync_device_hostname('Other Car')
+    run.assert_called_once_with(['sudo', '-n', 'hostname', 'other-car'], check=True, timeout=5)
+
+
+@pytest.mark.parametrize('initial', [
+  {'connected': True},
+  {'connected': False, 'authUrl': 'https://example.com/existing-login'},
+  {'connected': False},
+])
+def test_tailscale_name_is_set_only_when_starting_login(tmp_path, monkeypatch, initial):
+  socket = tmp_path / 'tailscaled.sock'
+  socket.touch()
+  monkeypatch.setattr(methods, 'TAILSCALE_SOCKET', socket)
+  monkeypatch.setattr(methods, 'TAILSCALE_ENABLED', tmp_path / 'enabled')
+  monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0 2')
+  with patch.object(methods, 'getTailscaleState', side_effect=[initial, {'authUrl': 'https://example.com/new-login'}]), \
+       patch.object(methods.subprocess, 'run') as run:
+    methods.configureTailscale()
+  logins = [call.args[0] for call in run.call_args_list if 'login' in call.args[0]]
+  if initial.get('connected') or initial.get('authUrl'):
+    assert logins == []
+  else:
+    assert len(logins) == 1
+    assert '--hostname=asius-v0-2' in logins[0]
+  assert not any('set' in call.args[0] for call in run.call_args_list)
