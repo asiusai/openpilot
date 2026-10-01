@@ -1,10 +1,10 @@
 """Asius v0 LEDs, numbered left to right when facing the light windows."""
 import math
 
-WHITE_RGB = (255, 195, 120)
 ORANGE_RGB = (255, 32, 0)
-LED_BRIGHTNESS = (1., 0.1, 1., 1., 0.1, 1.)
+LED_BRIGHTNESS = (1., 0., 1., 1., 0., 1.)
 STARTUP_PERIOD = 3.
+STARTUP_RISE = 1.2
 BOOT_BRIGHTNESS = 25  # At most 10% before camera exposure is available.
 MIN_AUTO_BRIGHTNESS = 26  # 10%, rounded up to the next 8-bit PWM level.
 MAX_AUTO_BRIGHTNESS = 127  # 50%, rounded down to stay within the cap.
@@ -18,23 +18,26 @@ def camera_channels(colors: list[list[int]]) -> dict[int, list[int]]:
 
 
 def startup_levels(elapsed: float) -> list[float]:
-  """Fade all six LEDs in and out together over three seconds."""
-  phase = (elapsed % STARTUP_PERIOD) / STARTUP_PERIOD
-  return [(1. - math.cos(math.tau * phase)) / 2.] * 6
+  """Breathe in for 1.2s and out for 1.8s, retaining a faint blue glow."""
+  phase = elapsed % STARTUP_PERIOD
+  if phase < STARTUP_RISE:
+    level = (1. - math.cos(math.pi * phase / STARTUP_RISE)) / 2.
+  else:
+    level = (1. + math.cos(math.pi * (phase - STARTUP_RISE) / (STARTUP_PERIOD - STARTUP_RISE))) / 2.
+  return [(2. + 23. * level) / 25.] * 6
 
 
 def startup_channels(elapsed: float, brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[int]]:
   brightness = max(0, min(MAX_AUTO_BRIGHTNESS, brightness))
-  return camera_channels([[round(channel * level * brightness / 255.) for channel in WHITE_RGB]
-                          for level in startup_levels(elapsed)])
+  return camera_channels([[0, 0, math.floor(level * brightness + .5 + 1e-9)] for level in startup_levels(elapsed)])
 
 
 def calibration_channels(percent: float, brightness: int) -> dict[int, list[int]]:
   brightness = max(0, min(MAX_AUTO_BRIGHTNESS, brightness))
   percent = max(0., min(100., percent)) if math.isfinite(percent) else 0.
   colors = [[0, 0, 0] for _ in range(6)]
-  # Center LEDs fill halfway between their neighbors, at 10% output.
-  for index, step in enumerate((0., 0.5, 1., 2., 2.5, 3.)):
+  # Only the four outer LEDs participate, in logical order 1, 3, 4, 6.
+  for step, index in enumerate((0, 2, 3, 5)):
     level = max(0., min(1., percent / 25. - step))
     # The first orange light identifies calibration even before it progresses.
     if index == 0:
