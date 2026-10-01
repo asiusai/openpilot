@@ -5,12 +5,14 @@ import sysconfig
 import platform
 import shlex
 import importlib
+from pathlib import Path
 import numpy as np
 
 import SCons.Errors
 from SCons.Defaults import _stripixes
 
 COMMA_HARDWARE = os.path.isfile('/AGNOS')
+ASIUS_HARDWARE = os.path.isfile('/ASIUS')
 
 SCons.Warnings.warningAsException(True)
 
@@ -24,7 +26,7 @@ release = not os.path.exists(File('#.gitmodules').abspath) # file absent on rele
 AddOption('--minimal',
           action='store_false',
           dest='extras',
-          default=(not COMMA_HARDWARE and not release),
+          default=(not (COMMA_HARDWARE or ASIUS_HARDWARE) and not release),
           help='the minimum build to run openpilot. no tests, tools, etc.')
 
 submodule_python_paths = [
@@ -46,7 +48,7 @@ if external_pythonpath := os.environ.get("PYTHONPATH"):
 arch = subprocess.check_output(["uname", "-m"], encoding='utf8').rstrip()
 if platform.system() == "Darwin":
   arch = "Darwin"
-elif arch == "aarch64" and COMMA_HARDWARE:
+elif arch == "aarch64" and (COMMA_HARDWARE or ASIUS_HARDWARE):
   arch = "comma_arm64"
 assert arch in [
   "comma_arm64",  # linux comma hardware (AGNOS) arm64
@@ -181,7 +183,8 @@ if arch == "comma_arm64":
   env.Append(LIBPATH=[
     "/usr/lib/aarch64-linux-gnu",
   ])
-  arch_flags = ["-D__COMMA_HARDWARE__", "-mcpu=cortex-a57"]
+  hardware_flag = "-D__ASIUS_HARDWARE__" if ASIUS_HARDWARE else "-D__COMMA_HARDWARE__"
+  arch_flags = [hardware_flag, "-mcpu=cortex-a57"]
   env.Append(CCFLAGS=arch_flags)
   env.Append(CXXFLAGS=arch_flags)
 elif arch == "Darwin":
@@ -230,7 +233,7 @@ else:
 np_version = SCons.Script.Value(np.__version__)
 Export('envCython', 'np_version')
 
-Export('env', 'arch', 'acados', 'ffmpeg_libs')
+Export('env', 'arch', 'acados', 'ffmpeg_libs', 'ASIUS_HARDWARE')
 
 # Setup cache dir
 cache_dir = '/data/scons_cache' if arch == "comma_arm64" else '/tmp/scons_cache'
@@ -256,9 +259,20 @@ common = [_common, 'json11', 'zmq']
 Export('common')
 
 # Build messaging (cereal + msgq + socketmaster + their dependencies)
+from openpilot.system.asius.apply_patches import patched_msgq_source
+
+msgq_visionbuf = patched_msgq_source(Path(Dir('#').abspath))
+
 # Enable swaglog include in submodules
 env_swaglog = env.Clone()
 env_swaglog['CXXFLAGS'].append('-DSWAGLOG="\\"common/swaglog.h\\""')
+# Redirect only this compilation unit to its patched build copy.
+msgq_shared_object = env_swaglog.SharedObject
+def msgq_objects(_env, sources):
+  original = File('#msgq_repo/msgq/visionipc/visionbuf.cc').abspath
+  return msgq_shared_object([str(msgq_visionbuf) if File(source).abspath == original else source for source in sources])
+
+env_swaglog.AddMethod(msgq_objects, 'SharedObject')
 SConscript(['msgq_repo/SConscript'], exports={'env': env_swaglog})
 
 SConscript(['openpilot/cereal/SConscript'])
@@ -288,8 +302,10 @@ SConscript([
   'openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/SConscript',
   'openpilot/selfdrive/locationd/SConscript',
   'openpilot/selfdrive/modeld/SConscript',
-  'openpilot/selfdrive/ui/SConscript',
 ])
+
+if not ASIUS_HARDWARE:
+  SConscript(['openpilot/selfdrive/ui/SConscript'])
 
 # Build desktop-only tools
 if GetOption('extras') and arch != "comma_arm64":

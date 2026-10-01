@@ -313,14 +313,14 @@ class HardwareComma(HardwareBase):
       val = '0' if powersave_enabled else '1'
       sudo_write(val, f'/sys/devices/system/cpu/cpu{i}/online')
 
-    for n in ('0', '4'):
-      if powersave_enabled and n == '4':
+    for policy in Path('/sys/devices/system/cpu/cpufreq').glob('policy*'):
+      if powersave_enabled and policy.name != 'policy0':
         continue
       gov = 'ondemand' if powersave_enabled else 'performance'
-      sudo_write(gov, f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_governor')
+      sudo_write(gov, str(policy / 'scaling_governor'))
       if not powersave_enabled:
         # cap max core freq to 1689 Mhz
-        sudo_write('1689600', f'/sys/devices/system/cpu/cpufreq/policy{n}/scaling_max_freq')
+        sudo_write('1689600', str(policy / 'scaling_max_freq'))
 
     # *** IRQ config ***
 
