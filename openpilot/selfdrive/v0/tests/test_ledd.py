@@ -51,18 +51,18 @@ def setup_module():
   ledd.log = log
 
 
-def test_white_when_ready():
-  assert ledd.led_state(healthy_sm()) == ledd.WHITE
+def test_blue_when_ready():
+  assert ledd.led_state(healthy_sm()) == ledd.BLUE
 
 
-def test_white_when_not_engageable_or_waiting_for_brake_release():
+def test_blue_when_not_engageable_or_waiting_for_brake_release():
   sm = healthy_sm()
   sm['selfdriveState'].engageable = False
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
   sm['selfdriveState'].engageable = True
   sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.preEnabled
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
 
 def test_red_immediately_when_started_without_selfdrive_state():
@@ -77,7 +77,7 @@ def test_missing_selfdrive_state_is_ignored_when_offroad():
   sm.seen['selfdriveState'] = False
   sm.alive['selfdriveState'] = False
   sm['deviceState'].started = False
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
 
 @pytest.mark.parametrize('status', ['uncalibrated', 'recalibrating'])
@@ -105,13 +105,13 @@ def test_invalid_calibration_requires_current_valid_state(service, field):
   sm = healthy_sm()
   sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.invalid
   getattr(sm, field)[service] = False
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
 
 def test_invalid_calibration_is_ignored_offroad():
   sm = healthy_sm(started=False)
   sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.invalid
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
 
 def test_green_when_engaged():
@@ -124,7 +124,7 @@ def test_green_when_engaged():
 def test_warning_sound_blinks_red_only_while_engaged():
   sm = healthy_sm()
   sm['selfdriveState'].alertSound.raw = 'promptRepeat'
-  assert ledd.led_state(sm, now=0.) == ledd.WHITE
+  assert ledd.led_state(sm, now=0.) == ledd.BLUE
 
   sm['selfdriveState'].active = True
   sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.enabled
@@ -147,8 +147,8 @@ def test_audible_driver_monitoring_warning_is_ignored_when_disengaged():
   sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
   sm['selfdriveState'].alertType = 'driverDistracted2/permanent'
   sm['selfdriveState'].alertSound.raw = 'promptDistracted'
-  assert ledd.led_state(sm, now=0.) == ledd.WHITE
-  assert ledd.led_state(sm, now=0.5) == ledd.WHITE
+  assert ledd.led_state(sm, now=0.) == ledd.BLUE
+  assert ledd.led_state(sm, now=0.5) == ledd.BLUE
 
 
 def test_soft_disabling_blinks_red_over_driver_monitoring_warning():
@@ -190,11 +190,11 @@ def test_persistent_process_failure_is_solid_red(monkeypatch):
   assert ledd.led_state(sm, now=0.5) == ledd.RED
 
 
-def test_offroad_stays_white_when_processes_are_intentionally_stopped(monkeypatch):
+def test_offroad_stays_blue_when_processes_are_intentionally_stopped(monkeypatch):
   sm = healthy_sm(started=False)
   sm['managerState'].processes = [SimpleNamespace(name='camerad', shouldBeRunning=False, running=False)]
   monkeypatch.setattr(ledd, 'STARTED_AT', time.monotonic() - ledd.STARTUP_GRACE - 1.)
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
 
 def test_pairing_blinks_blue_without_driver_camera(monkeypatch):
@@ -203,8 +203,8 @@ def test_pairing_blinks_blue_without_driver_camera(monkeypatch):
   channels = ledd.pairing_led_channels(26)
   assert channels == {
     1: [0] * 9,
-    2: [0, 0, 26, 0, 0, 3, 0, 0, 26],
-    3: [0, 0, 26, 0, 0, 3, 0, 0, 26],
+    2: [0, 0, 26, 0, 0, 0, 0, 0, 26],
+    3: [0, 0, 26, 0, 0, 0, 0, 0, 26],
   }
 
   monkeypatch.setattr(ledd.time, 'monotonic', lambda: 0.5)
@@ -237,19 +237,35 @@ def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
 
 
 def test_runtime_brightness_reaches_requested_peak():
-  assert ledd.max_brightness(ledd.WHITE, 26) == ledd.LedState("white", 26, 20, 12)
+  assert ledd.max_brightness(ledd.BLUE, 26) == ledd.LedState("blue", 0, 0, 26)
   assert ledd.max_brightness(ledd.ORANGE, 26) == ledd.LedState("orange", 26, 3, 0)
 
 
-def test_status_colors_dim_leds_two_and_five_to_ten_percent(monkeypatch):
+def test_status_colors_leave_leds_two_and_five_off(monkeypatch):
   for camera_num in ledd.CAM_LED_STATUS_CAMERAS:
     board = ledd.CameraLedBoard("test", camera_num=camera_num, bus_num=0)
     sent = []
     monkeypatch.setattr(board, "set_channels", sent.append)
-    for state in (ledd.WHITE, ledd.GREEN, ledd.BLUE, ledd.ORANGE, ledd.RED, ledd.DM_WARNING, ledd.OFF):
+    for state in (ledd.BLUE, ledd.GREEN, ledd.ORANGE, ledd.RED, ledd.DM_WARNING, ledd.OFF):
       board.set(state)
       rgb = [state.red, state.green, state.blue]
-      assert sent[-1] == rgb + [round(channel * 0.1) for channel in rgb] + rgb
+      assert sent[-1] == rgb + [0, 0, 0] + rgb
+
+
+@pytest.mark.parametrize('kernel_leds', [False, True])
+def test_direct_channel_writes_cannot_enable_middle_led(monkeypatch, tmp_path, kernel_leds):
+  monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
+  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0, initialized=True, kernel_leds=kernel_leds)
+  writes = {}
+  monkeypatch.setattr(board, 'write', lambda register, value: writes.update({register: value}))
+  if kernel_leds:
+    for path in board.channel_paths:
+      path.mkdir()
+      (path / 'brightness').write_text('99')
+  board.set_channels([255] * 9)
+  actual = ([int((path / 'brightness').read_text()) for path in board.channel_paths] if kernel_leds else
+            [writes[ledd.IS31FL3199_PWM_BASE + i] for i in range(9)])
+  assert actual == [255, 255, 255, 0, 0, 0, 255, 255, 255]
 
 
 def test_offroad_fault_is_red_and_engaged_fault_blinks(monkeypatch):
@@ -269,22 +285,22 @@ def test_missing_driver_without_audible_alert_does_not_change_led(engaged):
   sm = healthy_sm()
   sm['selfdriveState'].active = engaged
   sm['driverMonitoringState'].visionPolicyState.faceDetected = False
-  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.WHITE)
-  assert ledd.led_state(sm, now=0.5) == (ledd.GREEN if engaged else ledd.WHITE)
+  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.BLUE)
+  assert ledd.led_state(sm, now=0.5) == (ledd.GREEN if engaged else ledd.BLUE)
   sm['managerState'].processes = [SimpleNamespace(name='dmonitoringmodeld', shouldBeRunning=False, running=False)]
-  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.WHITE)
+  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if engaged else ledd.BLUE)
   sm['deviceState'].started = False
-  assert ledd.led_state(sm, now=0.) == ledd.WHITE
+  assert ledd.led_state(sm, now=0.) == ledd.BLUE
 
 
 def test_stale_driver_state_is_not_a_driver_warning():
   sm = healthy_sm()
   sm['driverMonitoringState'].visionPolicyState.faceDetected = False
   sm.valid['driverMonitoringState'] = False
-  assert ledd.led_state(sm) == ledd.WHITE
+  assert ledd.led_state(sm) == ledd.BLUE
 
 
-@pytest.mark.parametrize('state', [ledd.WHITE, ledd.GREEN, ledd.BLUE, ledd.ORANGE, ledd.RED, ledd.DM_WARNING])
+@pytest.mark.parametrize('state', [ledd.BLUE, ledd.GREEN, ledd.ORANGE, ledd.RED, ledd.DM_WARNING])
 def test_automatic_states_cannot_exceed_brightness_cap(state):
   limited = ledd.max_brightness(state, 255)
   assert max(limited.red, limited.green, limited.blue) == 127
@@ -294,6 +310,6 @@ def test_pending_setup_is_solid_magenta_with_fault_priority(monkeypatch):
   sm = healthy_sm(started=False)
   assert ledd.led_state(sm, now=0., setup_complete=False) == ledd.SETUP_PENDING
   assert ledd.led_state(sm, now=0.5, setup_complete=False) == ledd.SETUP_PENDING
-  assert ledd.led_state(sm, setup_complete=True) == ledd.WHITE
+  assert ledd.led_state(sm, setup_complete=True) == ledd.BLUE
   monkeypatch.setattr(ledd, 'persistent_error', lambda sm: True)
   assert ledd.led_state(sm, setup_complete=False) == ledd.RED
