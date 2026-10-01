@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB, WHITE_RGB,
+from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB,
                                                 STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
 
 STARTUP_GRACE = 30.
-RUNTIME_HZ = 30.
+RUNTIME_HZ = 60.
 STARTED_AT = time.monotonic()
 CAM_LED_ADDR = 0x64
 CAM_LED_BUSES = (16, 18, 20)
@@ -62,7 +62,6 @@ class LedState:
   blue: int
 
 
-WHITE = LedState("white", *WHITE_RGB)
 GREEN = LedState("green", 0, 180, 0)
 SETUP_PENDING = LedState("setup_pending", 180, 0, 180)
 BLUE = LedState("blue", 0, 0, 180)
@@ -165,6 +164,8 @@ class CameraLedBoard:
       raise ValueError(f"expected {len(CAM_LED_CHANNELS)} LED channels, got {len(channels)}")
     if any(value < 0 or value > 255 for value in channels):
       raise ValueError("LED channel brightness must be between 0 and 255")
+    # The middle RGB package is unused, including for direct channel writes.
+    channels = channels[:3] + [0, 0, 0] + channels[6:]
     if not self.initialized:
       self.init()
 
@@ -186,10 +187,10 @@ class CameraLedBoard:
       self.write(IS31FL3199_SHUTDOWN, 0x00)
 
   def set(self, state: LedState) -> None:
-    # The middle LED in each window is less diffused than its two neighbors.
+    # Only the outer two LEDs in each window are used.
     self.set_channels([
       state.red, state.green, state.blue,
-      round(state.red * 0.1), round(state.green * 0.1), round(state.blue * 0.1),
+      0, 0, 0,
       state.red, state.green, state.blue,
     ])
 
@@ -397,14 +398,7 @@ def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[in
     return None
 
   state = max_brightness(BLUE if int(time.monotonic() * 2) % 2 == 0 else OFF, brightness)
-  channels = [state.red, state.green, state.blue, round(state.red * 0.1), round(state.green * 0.1),
-              round(state.blue * 0.1), state.red, state.green, state.blue]
-
-  return {
-    1: [0] * len(CAM_LED_CHANNELS),
-    2: channels,
-    3: channels,
-  }
+  return camera_channels([[state.red, state.green, state.blue]] * 6)
 
 
 def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedState:
@@ -413,7 +407,7 @@ def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedS
     return blinking(RED, now) if selfdrive_state_available(sm) and sm['selfdriveState'].active else RED
 
   if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
-    return WHITE if setup_complete else SETUP_PENDING
+    return BLUE if setup_complete else SETUP_PENDING
 
   warning = engaged_warning(sm)
   if warning is not None:
@@ -428,7 +422,7 @@ def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedS
   if selfdrive_state_available(sm) and sm['selfdriveState'].active:
     return GREEN
 
-  return WHITE
+  return BLUE
 
 
 def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool = True) -> dict[int, list[int]] | None:
@@ -441,7 +435,7 @@ def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool
     return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
   # Continue the kernel fade for one cycle while userspace starts. Driving
   # statuses and Bluetooth pairing take priority immediately.
-  if (now - STARTED_AT < STARTUP_PERIOD and state == WHITE and
+  if (now - STARTED_AT < STARTUP_PERIOD and state == BLUE and
       (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
     return startup_channels(now)
   return None
