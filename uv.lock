@@ -345,6 +345,21 @@ wheels = [
 ]
 
 [[package]]
+name = "dbus-fast"
+version = "5.0.22"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/db/b621610e50b1bc46ff63534d75239553c1bf33256de6096b58214fd9808a/dbus_fast-5.0.22.tar.gz", hash = "sha256:34dc67d7d21a12399828dd13e63b352750580beea54ea7c729e708f2d2905fef", size = 83224, upload-time = "2026-06-05T18:47:59.171Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/52/81/ffc155f700c45191673e7f7620a28cbbbf5f116ff74a99f765895baa6f9c/dbus_fast-5.0.22-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:f72b77be63f7bb24cf42936ad10994d40f43fed691f857f7854b5882d6a5227c", size = 690171, upload-time = "2026-06-05T18:56:01.151Z" },
+    { url = "https://files.pythonhosted.org/packages/24/06/233b0bc13919474f70320bf389cb81ce02811956d6cf86c45e84679b63c3/dbus_fast-5.0.22-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8f0bcad7f71d2304a68a5b0bc0d24c3fcc14710a2ffcf5f2a27521e3aece71ca", size = 799464, upload-time = "2026-06-05T18:56:02.617Z" },
+    { url = "https://files.pythonhosted.org/packages/68/e9/77bc23a6f5aebfb8f2c34489795e8517aed7eca31738438e1a4c4a4891d3/dbus_fast-5.0.22-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4ffcf16034f71a801bd2108aeffb6337d104c9459e8b1a218d16a917c8a2d2e9", size = 852687, upload-time = "2026-06-05T18:56:04.433Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/04/56769d0936d1273d1801ef574ec426ccb3f61f4b0a7a0eeb9eb2b8ccafa5/dbus_fast-5.0.22-cp312-cp312-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:98de6d2c200d8182e1fd0bdde3206fa556b8fa14ebb752a044cd8daa87b4658c", size = 833814, upload-time = "2026-06-05T18:56:05.87Z" },
+    { url = "https://files.pythonhosted.org/packages/06/ca/964f0d39a3be03b12a98f39519d34ad95b74360c7e3adf4cd4907dc25fd6/dbus_fast-5.0.22-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:b013437b66dc22b8d9aca5e0b0d46bf1980208a143409469fe482d9684a2a717", size = 806891, upload-time = "2026-06-05T18:56:07.623Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/25/57fe6ab509ad9da2e190498fa9c37f868e38ac521d940a9edb9ba6b6c657/dbus_fast-5.0.22-cp312-cp312-musllinux_1_2_riscv64.whl", hash = "sha256:855f15b7f7805171da2b82de1c317d01cfbb9fb8ac61fcc1e8dec54d8c69fab7", size = 830867, upload-time = "2026-06-05T18:56:09.473Z" },
+    { url = "https://files.pythonhosted.org/packages/be/2b/da036e9f4aeb776833139575fe0774544aa6cd13ba997eea7fbc4ab99852/dbus_fast-5.0.22-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:7d1c42963235cfc015a2d2b8c5fe42b65387493b4ad4ce0ec122601c805e6742", size = 860651, upload-time = "2026-06-05T18:56:10.952Z" },
+]
+
+[[package]]
 name = "fonttools"
 version = "4.65.0"
 source = { registry = "https://pypi.org/simple" }
@@ -377,6 +392,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e4/06/b56dfa750b44e86157093bc8fca0ab81dccbf5260510de4eaf1cb69b5b99/importlib_resources-7.1.0.tar.gz", hash = "sha256:0722d4c6212489c530f2a145a34c0a7a3b4721bc96a15fada5930e2a0b760708", size = 44985, upload-time = "2026-04-12T16:36:09.232Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8a/db/55a262f3606bebcae07cc14095338471ad7c0bbcaa37707e6f0ee49725b7/importlib_resources-7.1.0-py3-none-any.whl", hash = "sha256:1bd7b48b4088eddb2cd16382150bb515af0bd2c70128194392725f82ad2c96a1", size = 37232, upload-time = "2026-04-12T16:36:08.219Z" },
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503, upload-time = "2025-10-18T21:55:43.219Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484, upload-time = "2025-10-18T21:55:41.639Z" },
 ]
 
 [[package]]
@@ -590,6 +614,7 @@ dependencies = [
     { name = "comma-deps-json11" },
     { name = "comma-deps-raylib" },
     { name = "comma-deps-zstd" },
+    { name = "dbus-fast" },
     { name = "inputs" },
     { name = "jeepney" },
     { name = "numpy" },
@@ -616,6 +641,7 @@ submodules = [
 testing = [
     { name = "codespell" },
     { name = "coverage" },
+    { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -648,6 +674,7 @@ requires-dist = [
     { name = "comma-deps-raylib" },
     { name = "comma-deps-zstd" },
     { name = "coverage", marker = "extra == 'testing'" },
+    { name = "dbus-fast", specifier = "==5.0.22" },
     { name = "inputs" },
     { name = "jeepney" },
     { name = "matplotlib", marker = "extra == 'tools'" },
@@ -657,6 +684,7 @@ requires-dist = [
     { name = "pandacan", marker = "extra == 'submodules'", editable = "panda" },
     { name = "pycapnp", specifier = "==2.1.0" },
     { name = "pyjwt", extras = ["crypto"] },
+    { name = "pytest", marker = "extra == 'testing'", specifier = ">=9.1.1" },
     { name = "rednose", marker = "extra == 'submodules'", editable = "rednose_repo" },
     { name = "requests" },
     { name = "ruff", marker = "extra == 'testing'" },
@@ -725,6 +753,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
 name = "pycapnp"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -773,6 +810,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pygments"
+version = "2.21.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da6b31b0021b0f37d329e202d4169aeb164493778f25b/pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c", size = 5005329, upload-time = "2026-08-17T08:02:48.824Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147, upload-time = "2026-08-17T08:02:44.912Z" },
+]
+
+[[package]]
 name = "pyjwt"
 version = "2.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -793,6 +839,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f3/91/9c6ee907786a473bf81c5f53cf703ba0957b23ab84c264080fb5a450416f/pyparsing-3.3.2.tar.gz", hash = "sha256:c777f4d763f140633dcb6d8a3eda953bf7a214dc4eff598413c070bcdc117cbc", size = 6851574, upload-time = "2026-01-21T03:57:59.36Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl", hash = "sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d", size = 122781, upload-time = "2026-01-21T03:57:55.912Z" },
+]
+
+[[package]]
+name = "pytest"
+version = "9.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
 ]
 
 [[package]]

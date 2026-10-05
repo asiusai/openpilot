@@ -37,6 +37,7 @@ dependencies = [
   # athena
   "PyJWT[crypto]",
   "websocket_client",
+  "dbus-fast==5.0.22",  # Asius Bluetooth transport
 
   # joystickd
   "inputs",
@@ -52,6 +53,7 @@ dependencies = [
 
 [project.optional-dependencies]
 testing = [
+  "pytest>=9.1.1",
   "coverage",   # line coverage
   "ty",         # type checking
   "ruff",       # linting
