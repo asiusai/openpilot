@@ -9,6 +9,11 @@ from openpilot.common.params import Params
 from openpilot.system.asius import methods
 
 
+def test_version_includes_stable_fork_identity(monkeypatch):
+  monkeypatch.setattr(methods.upstream_athena, 'getVersion', lambda: {'version': 'test', 'remote': 'custom', 'branch': 'test', 'commit': 'abc'})
+  assert methods.getVersion() == {'version': 'test', 'remote': 'custom', 'branch': 'test', 'commit': 'abc', 'fork': 'openpilot'}
+
+
 def test_get_all_params_serializes_current_api_without_protected_values(tmp_path, monkeypatch):
   params = Params(str(tmp_path))
   values = {

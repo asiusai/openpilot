@@ -21,6 +21,7 @@ from websocket import ABNF, WebSocket, WebSocketTimeoutException
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
 from openpilot.system.asius.clock import ClockChallenges
+from openpilot.system.asius.fork import FORK
 from openpilot.system.asius.access_policy import check_param_write, ignition_state, require_ignition_off
 from openpilot.system.asius.identity import get_device_public_key
 from openpilot.system.asius.device_name import device_hostname
@@ -147,7 +148,6 @@ BLUETOOTH_STATE_FIELDS = {
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
-  upstream_athena.getVersion,
   upstream_athena.listDataDirectory,
   upstream_athena.setRouteViewed,
   upstream_athena.getSshAuthorizedKeys,
@@ -184,6 +184,11 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
     for thread in threads:
       cloudlog.debug(f"relay.joining {thread.name}")
       thread.join()
+
+
+@dispatcher.add_method
+def getVersion() -> dict[str, str]:
+  return {**upstream_athena.getVersion(), "fork": FORK}
 
 
 @dispatcher.add_method
@@ -912,6 +917,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     "deviceName": getDeviceName(),
     "serial": params.get("HardwareSerial"),
     "version": {
+      "fork": FORK,
       "version": build_metadata.openpilot.version,
       "remote": build_metadata.openpilot.git_normalized_origin,
       "branch": build_metadata.channel,
