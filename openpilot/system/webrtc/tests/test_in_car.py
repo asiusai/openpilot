@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
 from openpilot.cereal import messaging
@@ -101,11 +102,43 @@ def test_in_car_video_is_read_only_even_on_not_car_devices():
        patch('openpilot.system.webrtc.helpers.wait_for_webrtcd'), \
        patch('openpilot.system.webrtc.helpers.post_stream_request') as post:
     params.return_value.get.return_value = cp.to_bytes()
-    startStream('sdp', True, inCar=True)
+    startStream('sdp', ['driver'], [], inCar=True)
     request = post.call_args.args[0]
     assert request.in_car and request.bridge_services_in == [] and request.bridge_services_out == []
-    startStream('sdp', True)
+    assert request.cameras == ['driver']
+    startStream('sdp', ['wideRoad'], ['carState'])
     assert post.call_args.args[0].bridge_services_in == ['testJoystick']
+    startStream('sdp', [], ['can'])
+    assert post.call_args.args[0].bridge_services_in == []
+
+
+@pytest.mark.parametrize('cameras,services', [
+  ([], ['can']),
+  (['road', 'driver'], ['carState', 'deviceState']),
+  (['wideRoad'], []),
+])
+def test_stream_forwards_selected_cameras_and_services(cameras, services):
+  from openpilot.system.asius.methods import startStream
+  with patch('openpilot.system.athena.athenad.Params') as params, \
+       patch('openpilot.system.webrtc.helpers.wait_for_webrtcd'), \
+       patch('openpilot.system.webrtc.helpers.post_stream_request') as post:
+    params.return_value.get.return_value = None
+    startStream('sdp', cameras=cameras, bridge_services_out=services, enabled=False)
+    request = post.call_args.args[0]
+    assert request.cameras == cameras and request.bridge_services_out == services
+    assert request.bridge_services_in == [] and request.enabled is False
+
+
+@pytest.mark.parametrize('cameras,services', [
+  (['invalid'], []), (['road', 'road'], []), ('road', []),
+  ([], ['invalid']), ([], [None]), ([], 'can'),
+])
+def test_stream_rejects_invalid_selection_before_starting(cameras, services):
+  from openpilot.system.athena.athenad import startStream
+  with patch('openpilot.system.webrtc.helpers.wait_for_webrtcd') as wait:
+    with pytest.raises(ValueError):
+      startStream('sdp', cameras, services)
+    wait.assert_not_called()
 
 
 def test_in_car_video_waits_for_disconnection_without_five_minute_limit():

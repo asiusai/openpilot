@@ -1,4 +1,6 @@
 import asyncio
+import base64
+from collections import deque
 import json
 import logging
 from typing import Any
@@ -13,10 +15,16 @@ class CerealOutgoingMessageProxy:
     self.logger = logging.getLogger("webrtcd")
     self.services = list(services)
     self.raw = raw
+    self.can_sock = None
     if raw:
       self.socks = [messaging.sub_sock(s) for s in self.services]
     else:
-      self.sm = messaging.SubMaster(self.services)
+      # CAN is an event stream. Preserve all packets for the app's JSON bridge.
+      self.can_sock = messaging.sub_sock("can", conflate=False, timeout=0) if "can" in services else None
+      self.sm = messaging.SubMaster([s for s in services if s != "can"], frequency=100)
+    self.can_sequence = 0
+    self.can_pending: deque[tuple[int, int]] = deque()
+    self.can_pending_bytes = 0
     self.channels = []
     self._enabled = enabled
 
@@ -45,11 +53,41 @@ class CerealOutgoingMessageProxy:
           if channel.is_open() and len(dat) <= channel.max_message_size():
             channel.send(dat)
 
+  def acknowledge_can(self, sequence: int):
+    if type(sequence) is not int or not 0 < sequence <= self.can_sequence:
+      return
+    while self.can_pending and self.can_pending[0][0] <= sequence:
+      self.can_pending_bytes -= self.can_pending.popleft()[1]
+
   def update(self):
     if self.raw:
       self.update_raw()
       return
 
+    if self.can_sock is not None:
+      # Acknowledgements bound the queue even when the browser stops rendering.
+      # libdatachannel-py buffered_amount() crashes on the pinned native binding.
+      for _ in range(256):
+        if self.can_pending_bytes > 1024 * 1024:
+          for channel in self.channels:
+            if channel.is_open():
+              channel.close()
+          self._enabled = False
+          return
+        event = messaging.recv_one_or_none(self.can_sock)
+        if event is None:
+          break
+        self.can_sequence += 1
+        encoded = json.dumps({
+          "type": "can", "sequence": self.can_sequence, "logMonoTime": str(event.logMonoTime),
+          "valid": event.valid, "encoding": "base64",
+          "data": [{"address": m.address, "src": m.src, "dat": base64.b64encode(m.dat).decode("ascii")} for m in event.can],
+        }).encode()
+        self.can_pending.append((self.can_sequence, len(encoded)))
+        self.can_pending_bytes += len(encoded)
+        for channel in self.channels:
+          if channel.is_open():
+            channel.send(encoded)
     # this is blocking in async context...
     self.sm.update(0)
     for service, updated in self.sm.updated.items():
