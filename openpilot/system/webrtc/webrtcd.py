@@ -58,7 +58,7 @@ class StreamSession:
     # create video tracks and add to sdp
     from openpilot.system.webrtc.device.video import LiveStreamVideoStreamTrack
     self.video_enabled = body.enabled
-    self.session_timeout = None if body.in_car else SESSION_TIMEOUT_SECONDS
+    self.session_timeout = None if body.in_car or "can" in body.bridge_services_out else SESSION_TIMEOUT_SECONDS
     self.in_car_state = None
     self.in_car_request_id = 0
     self.in_car_request_at = 0.0
@@ -71,7 +71,9 @@ class StreamSession:
       self.video_tracks.append(track)
       builder.add_video_stream(camera, track)
     self.stream = builder.stream()
-    self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.video_enabled)
+    self.bitrate_controller = None
+    if body.cameras:
+      self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.video_enabled)
 
     # start proxies
     self.raw = body.raw
@@ -123,6 +125,9 @@ class StreamSession:
         msg_type = payload.get("type")
 
         match msg_type:
+          case "canAck":
+            if self.outgoing_bridge is not None:
+              self.outgoing_bridge.acknowledge_can(payload.get("sequence"))
           case "inCarState":
             identifier = payload.get("id")
             if (self.in_car_state is not None and type(identifier) is int and self.in_car_request_id < identifier < 2**32
@@ -147,7 +152,7 @@ class StreamSession:
               self.outgoing_bridge.enable(video_enabled)
             if self.bitrate_controller is not None:
               self.bitrate_controller.enable(video_enabled)
-            if not video_enabled:
+            if not video_enabled and self.video_tracks:
               self.params.put("LivestreamRequestKeyframe", True)
           case "clockSync":
             pong = json.dumps({"type": "clockSync", "data": {
@@ -182,7 +187,7 @@ class StreamSession:
 
   async def run(self):
     try:
-      if self.video_enabled:
+      if self.video_enabled and self.video_tracks:
         self.params.put("LivestreamRequestKeyframe", True)
 
       # avoid datachannel race by adding messange_handler immediately
@@ -219,7 +224,8 @@ class StreamSession:
       if self._cleanup_done:
         return
       self._cleanup_done = True
-      self.params.put("LivestreamRequestKeyframe", False)
+      if self.video_tracks:
+        self.params.put("LivestreamRequestKeyframe", False)
       for task in self.background_tasks:
         task.cancel()
       await asyncio.gather(*self.background_tasks, return_exceptions=True)
@@ -282,7 +288,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
       await s.stop()
       stream_dict.pop(sid, None)
 
-    Params().put_bool("IsLiveStreaming", True)
+    Params().put_bool("IsLiveStreaming", bool(body.cameras))
     schedule_teardown(state)
     session = StreamSession(body)
     stream_dict[session.identifier] = session
