@@ -837,9 +837,9 @@ def installSoftwareUpdate() -> dict[str, int]:
 
 
 @dispatcher.add_method
-def startStream(sdp: str, enabled: bool = True, inCar: bool = False) -> dict:
+def startStream(sdp: str, cameras: list[str], bridge_services_out: list[str], enabled: bool = True, inCar: bool = False) -> dict:
   from openpilot.system.athena.athenad import startStream as upstream_start_stream
-  return upstream_start_stream(sdp, enabled, inCar)
+  return upstream_start_stream(sdp, cameras, bridge_services_out, enabled, inCar)
 
 
 @dispatcher.add_method

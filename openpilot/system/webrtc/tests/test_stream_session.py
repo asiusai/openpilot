@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import time
 
@@ -39,6 +40,64 @@ class TestStreamSession(OpenpilotTestCase):
     proxy.update()
 
     channel.send.assert_called_once_with(expected_json)
+
+  def test_can_proxy_preserves_packets_and_binary_data(self, mocker):
+    packets = []
+    for index in range(3):
+      packet = messaging.new_message("can", 1)
+      packet.logMonoTime = 10000000000000000 + index
+      packet.valid = True
+      packet.can[0].address = 0x1fffffff
+      packet.can[0].src = 2
+      packet.can[0].dat = bytes([0, 128, 255, index])
+      packets.append(packet)
+    socket = mocker.patch.object(messaging, "sub_sock", return_value=object())
+    receive = mocker.patch.object(messaging, "recv_one_or_none", side_effect=[*packets, None])
+    proxy = CerealOutgoingMessageProxy(["can"])
+    channel = mocker.Mock()
+    channel.is_open.return_value = True
+    proxy.add_channel(channel)
+    proxy.update()
+    socket.assert_called_once_with("can", conflate=False, timeout=0)
+    assert receive.call_count == 4
+    assert "can" not in proxy.sm.services
+    assert channel.send.call_count == 3
+    for index, call in enumerate(channel.send.call_args_list):
+      received = json.loads(call.args[0])
+      assert received["sequence"] == index + 1
+      assert received["logMonoTime"] == str(packets[index].logMonoTime)
+      assert received["encoding"] == "base64"
+      assert base64.b64decode(received["data"][0]["dat"]) == bytes([0, 128, 255, index])
+
+  def test_can_ack_releases_only_received_packets(self, mocker):
+    mocker.patch.object(messaging, "sub_sock", return_value=object())
+    proxy = CerealOutgoingMessageProxy(["can"])
+    proxy.can_sequence = 3
+    proxy.can_pending.extend([(1, 100), (2, 150), (3, 200)])
+    proxy.can_pending_bytes = 450
+    proxy.acknowledge_can(4)
+    proxy.acknowledge_can(True)
+    assert proxy.can_pending_bytes == 450
+    proxy.acknowledge_can(2)
+    assert proxy.can_pending_bytes == 200
+    assert list(proxy.can_pending) == [(3, 200)]
+    proxy.acknowledge_can(1)
+    assert proxy.can_pending_bytes == 200
+    proxy.acknowledge_can(3)
+    assert proxy.can_pending_bytes == 0
+
+  def test_can_proxy_closes_slow_receiver(self, mocker):
+    mocker.patch.object(messaging, "sub_sock", return_value=object())
+    receive = mocker.patch.object(messaging, "recv_one_or_none")
+    proxy = CerealOutgoingMessageProxy(["can"])
+    channel = mocker.Mock()
+    channel.is_open.return_value = True
+    proxy.can_pending_bytes = 1024 * 1024 + 1
+    proxy.add_channel(channel)
+    proxy.update()
+    channel.close.assert_called_once()
+    receive.assert_not_called()
+    assert not proxy._enabled
 
   def test_incoming_proxy(self, mocker):
     tested_msgs = [
