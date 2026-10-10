@@ -7,6 +7,8 @@ import socket
 import time
 import capnp
 import argparse
+import base64
+from collections import deque
 import asyncio
 import contextlib
 import json
@@ -73,7 +75,12 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
   def __init__(self, services: list[str], enabled: bool = True):
     super().__init__()
     self.services = list(services)
-    self.sm = messaging.SubMaster(self.services)
+    # CAN is an event stream, not a state snapshot. SubMaster conflates packets.
+    self.can_sock = messaging.sub_sock("can", conflate=False, timeout=0) if "can" in services else None
+    self.sm = messaging.SubMaster([s for s in services if s != "can"], frequency=100)
+    self.can_sequence = 0
+    self.can_pending: deque[tuple[int, int]] = deque()
+    self.can_pending_bytes = 0
     self.channels = []
     self._enabled = enabled
 
@@ -95,7 +102,37 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
 
     return msg_dict
 
+  def acknowledge_can(self, sequence: int):
+    if type(sequence) is not int or not 0 < sequence <= self.can_sequence:
+      return
+    while self.can_pending and self.can_pending[0][0] <= sequence:
+      self.can_pending_bytes -= self.can_pending.popleft()[1]
+
   def update(self):
+    if self.can_sock is not None:
+      # Acknowledgements bound the queue even when the browser stops rendering.
+      # libdatachannel-py buffered_amount() crashes on the pinned native binding.
+      for _ in range(256):
+        if self.can_pending_bytes > 1024 * 1024:
+          for channel in self.channels:
+            if channel.is_open():
+              channel.close()
+          self._enabled = False
+          return
+        event = messaging.recv_one_or_none(self.can_sock)
+        if event is None:
+          break
+        self.can_sequence += 1
+        encoded = json.dumps({
+          "type": "can", "sequence": self.can_sequence, "logMonoTime": str(event.logMonoTime),
+          "valid": event.valid, "encoding": "base64",
+          "data": [{"address": m.address, "src": m.src, "dat": base64.b64encode(m.dat).decode("ascii")} for m in event.can],
+        }).encode()
+        self.can_pending.append((self.can_sequence, len(encoded)))
+        self.can_pending_bytes += len(encoded)
+        for channel in self.channels:
+          if channel.is_open():
+            channel.send(encoded)
     # this is blocking in async context...
     self.sm.update(0)
     for service, updated in self.sm.updated.items():
@@ -237,7 +274,7 @@ class StreamSession:
     builder = WebRTCAnswerBuilder(body.sdp, bind_address=_default_route_ip())
 
     self.enabled = body.enabled
-    self.session_timeout = None if body.in_car else SESSION_TIMEOUT_SECONDS
+    self.session_timeout = None if body.in_car or "can" in body.bridge_services_out else SESSION_TIMEOUT_SECONDS
     self.in_car_state = None
     self.in_car_request_id = 0
     self.in_car_request_at = 0.0
@@ -261,7 +298,8 @@ class StreamSession:
       self.incoming_bridge = CerealIncomingMessageProxy(self.shared_pub_master)
     if len(body.bridge_services_out) > 0:
       self.outgoing_bridge = CerealOutgoingMessageProxy(body.bridge_services_out, self.enabled)
-    self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.enabled)
+    if body.cameras:
+      self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.enabled)
 
     self.run_task: asyncio.Task | None = None
     self._cleanup_lock = asyncio.Lock()
@@ -293,6 +331,9 @@ class StreamSession:
         msg_type = payload.get("type")
 
         match msg_type:
+          case "canAck":
+            if self.outgoing_bridge is not None:
+              self.outgoing_bridge.acknowledge_can(payload.get("sequence"))
           case "inCarState":
             identifier = payload.get("id")
             if (self.in_car_state is not None and type(identifier) is int and self.in_car_request_id < identifier < 2**32
@@ -317,7 +358,7 @@ class StreamSession:
               self.outgoing_bridge.enable(enabled)
             if self.bitrate_controller is not None:
               self.bitrate_controller.enable(enabled)
-            if not enabled:
+            if not enabled and self.video_tracks:
               self.params.put("LivestreamRequestKeyframe", True)
           case "clockSync":
             pong = json.dumps({"type": "clockSync", "data": {
@@ -352,7 +393,8 @@ class StreamSession:
 
   async def run(self):
     try:
-      self.params.put("LivestreamRequestKeyframe", True)
+      if self.video_tracks:
+        self.params.put("LivestreamRequestKeyframe", True)
 
       # avoid datachannel race by adding messange_handler immediately
       self.stream.set_message_handler(self.message_handler)
@@ -388,7 +430,8 @@ class StreamSession:
       if self._cleanup_done:
         return
       self._cleanup_done = True
-      self.params.put("LivestreamRequestKeyframe", False)
+      if self.video_tracks:
+        self.params.put("LivestreamRequestKeyframe", False)
       if self.bitrate_controller is not None:
         await self.bitrate_controller.stop()
       if self.outgoing_bridge is not None:
@@ -451,7 +494,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
       await s.stop()
       stream_dict.pop(sid, None)
 
-    Params().put_bool("IsLiveStreaming", True)
+    Params().put_bool("IsLiveStreaming", bool(body.cameras))
     schedule_teardown(state)
     session = StreamSession(body)
     stream_dict[session.identifier] = session
