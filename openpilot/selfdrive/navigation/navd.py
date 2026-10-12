@@ -5,7 +5,7 @@ import numpy as np
 import requests
 
 import openpilot.cereal.messaging as messaging
-from openpilot.common.api import API_HOST, Api
+from openpilot.system.asius.mapbox import NAVIGATION_API, NavigationApi as Api
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
@@ -51,8 +51,8 @@ class RouteEngine:
     self.reroute_counter = 0
 
     self.mapbox_token = os.environ.get("MAPBOX_TOKEN")
-    self.api = Api(self.params.get("DongleId")) if self.mapbox_token is None else None
-    self.mapbox_host = "https://api.mapbox.com" if self.mapbox_token is not None else API_HOST.rstrip('/') + '/v1/nav'
+    self.api = Api() if self.mapbox_token is None else None
+    self.mapbox_host = "https://api.mapbox.com" if self.mapbox_token is not None else NAVIGATION_API
 
   def update(self):
     self.sm.update(0)
@@ -119,8 +119,12 @@ class RouteEngine:
 
     coords_str = ';'.join(f'{lon},{lat}' for lon, lat in (self.last_position, destination))
     url = self.mapbox_host + '/directions/v5/mapbox/driving-traffic/' + coords_str
+    headers = {}
+    if self.mapbox_token is None:
+      params.pop('access_token')
+      headers['Authorization'] = f'Bearer {token}'
     try:
-      resp = requests.get(url, params=params, timeout=10)
+      resp = requests.get(url, params=params, headers=headers, timeout=10)
       if resp.status_code != 200:
         cloudlog.event("API request failed", status_code=resp.status_code, text=resp.text, error=True)
       resp.raise_for_status()
