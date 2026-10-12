@@ -897,7 +897,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
                              if service == "onroadEvents" else data.to_dict())
         if service == "carState":
           # Home needs only these readings, including over the Bluetooth link.
-          services[service] = {key: services[service][key] for key in ("vEgo", "vEgoCluster", "gearShifter", "canValid")}
+          services[service] = {key: services[service][key] for key in ("vEgo", "vEgoCluster", "vCruiseCluster", "gearShifter", "canValid")}
     except Exception:
       cloudlog.exception("relay.live_state.service_failed service=%s", service)
 
