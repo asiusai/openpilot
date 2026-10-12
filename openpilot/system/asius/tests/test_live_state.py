@@ -22,7 +22,7 @@ def device(monkeypatch):
   params.get.side_effect = lambda key, **_: values.get(key)
   services = {
     "deviceState": {"started": True, "cpuTempC": [85], "networkType": "none", "chestnutPresent": False},
-    "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
+    "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "vCruiseCluster": 90.0, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
     "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android", "unixTimestampMillis": 1800000000000},
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
     "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical", "alertSize": "full"},
@@ -76,7 +76,7 @@ def test_live_alerts_match_raylib_and_clear_with_device_params(device, compact):
 def test_home_vehicle_readings_require_live_valid_car_data(device, compact):
   sm, params, _ = device
   assert methods._live_state_snapshot(sm, params, compact=compact)['services']['carState'] == {
-    'vEgo': 20.0, 'vEgoCluster': 20.5, 'gearShifter': 'drive', 'canValid': True,
+    'vEgo': 20.0, 'vEgoCluster': 20.5, 'vCruiseCluster': 90.0, 'gearShifter': 'drive', 'canValid': True,
   }
   for alive, valid in [(False, True), (True, False)]:
     sm.alive['carState'], sm.valid['carState'] = alive, valid
