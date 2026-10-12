@@ -183,7 +183,10 @@ class MapRenderer:
   def render(self, longitude: float, latitude: float, bearing: float, route: np.ndarray) -> tuple[np.ndarray, bool]:
     """The map image at a position and bearing, and whether every tile was present with a road near the ego."""
     image = np.full((SIZE, SIZE), BACKGROUND, dtype=np.uint8)
-    loaded = [self.roads(x, y) for x, y in self.view_tiles(longitude, latitude)]
+    tiles_in_view = self.view_tiles(longitude, latitude)
+    if hasattr(self.archive, "prefetch_view"):
+      self.archive.prefetch_view(self.zoom, tiles_in_view)
+    loaded = [self.roads(x, y) for x, y in tiles_in_view]
     tiles = [tile for tile in loaded if tile is not None]
     # The training renderer's latitude-dependent style zoom: the web mercator zoom with one meter per pixel
     # at this latitude, under the 512-pixel tile convention. Tile zoom and style zoom are independent.

@@ -151,6 +151,7 @@ class TestEndToEnd(TileServerCase):
     destination = {'latitude': 0.01, 'longitude': 0}
     self.enterContext(patch('requests.get', return_value=mapbox_response([
       {'geometry': {'coordinates': [[0, -0.01], [0, 0.01]]}, 'distance': 2224, 'duration': 100, 'bannerInstructions': []}])))
+    self.enterContext(patch('openpilot.selfdrive.navigation.mapsd.navigation_archive', side_effect=lambda: PMTiles(RemoteTiles())))
     with OpenpilotPrefix():
       pm = messaging.PubMaster(['navInstruction', 'navRoute', 'gpsLocationExternal'])
       sm = messaging.SubMaster(['gpsLocation', 'gpsLocationExternal', 'navRoute'])
@@ -275,9 +276,11 @@ class TestRouteEngine(unittest.TestCase):
 
   def test_request_and_instruction(self):
     get = self.load_route()
-    self.assertEqual(get.call_args.args[0], 'https://api.commadotai.com/v1/nav/directions/v5/mapbox/driving-traffic/0,0;0.002,0')
+    self.assertEqual(get.call_args.args[0], 'https://api.asius.ai/v1/nav/directions/v5/mapbox/driving-traffic/0,0;0.002,0')
     options = get.call_args.kwargs['params']
-    self.assertEqual((options['access_token'], options['bearings'], options['language']), ('test-token', '90,90;', 'en'))
+    self.assertEqual((options['bearings'], options['language']), ('90,90;', 'en'))
+    self.assertEqual(get.call_args.kwargs['headers'], {'Authorization': 'Bearer test-token'})
+    self.assertNotIn('access_token', options)
     self.assertEqual(len(self.last_message('navRoute').navRoute.coordinates), 5)
     self.engine.send_instruction()
     message = self.last_message('navInstruction')
