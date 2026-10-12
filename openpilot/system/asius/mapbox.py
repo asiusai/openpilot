@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
-from openpilot.system.asius.identity import get_device_public_key
+from openpilot.system.asius.identity import dongle_id_from_public_key, get_device_public_key
 from openpilot.system.asius.relayd import sign_jwt
 
 
@@ -13,7 +13,7 @@ NAVIGATION_API = 'https://api.asius.ai/v1/nav'
 
 class NavigationApi:
   def get_token(self):
-    return sign_jwt({'type': 'navigation', 'aud': 'asius-navigation', 'identity': get_device_public_key()}, expiry_seconds=60)
+    return sign_jwt({'type': 'navigation', 'aud': 'asius-navigation', 'identity': dongle_id_from_public_key(get_device_public_key())}, expiry_seconds=60)
 
 
 class MapboxTiles:
