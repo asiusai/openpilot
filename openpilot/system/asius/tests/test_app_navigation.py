@@ -85,3 +85,16 @@ def test_mapbox_cache_and_redacted_errors():
         tiles.get(15, 12, 35)
   finally:
     tiles.close()
+
+
+def test_device_navigation_proof_uses_base58_identity(monkeypatch):
+  from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+  from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+  from openpilot.system.asius import mapbox
+  from openpilot.system.asius.identity import bytes_to_identity
+  key = Ed25519PrivateKey.generate().public_key()
+  monkeypatch.setattr(mapbox, 'get_device_public_key', lambda: key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode())
+  monkeypatch.setattr(mapbox, 'sign_jwt', lambda claims, expiry_seconds: (claims, expiry_seconds))
+  claims, expiry = mapbox.NavigationApi().get_token()
+  assert claims == {'type': 'navigation', 'aud': 'asius-navigation', 'identity': bytes_to_identity(key.public_bytes(Encoding.Raw, PublicFormat.Raw))}
+  assert expiry == 60
