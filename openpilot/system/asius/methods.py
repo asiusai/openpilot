@@ -82,6 +82,8 @@ LIVE_STATE_SERVICES = [
   "deviceState",
   "carState",
   "gpsLocation",
+  "gpsLocationExternal",
+  "navInstruction",
   "peripheralState",
   "extrinsicsCalibration",
   "managerState",
@@ -91,6 +93,8 @@ LIVE_STATE_SERVICES = [
 parameter_editor = ParameterEditor(SAVE_PARAMS_BLOCKED_KEYS)
 LIVE_STATE_PARAM_KEYS = [
   "DongleId",
+  "NavigationEnabled",
+  "NavDestination",
   "CloudHost",
   "CloudUploadEnabled",
   "ShareDrivingData",
@@ -143,11 +147,15 @@ BLUETOOTH_STATE_FIELDS = {
   "peripheralState": ("pandaType", "voltage", "current"),
   "extrinsicsCalibration": ("calStatus", "calPerc"),
   "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
+  "gpsLocationExternal": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
+  "navInstruction": ("maneuverPrimaryText", "maneuverSecondaryText", "maneuverType", "maneuverModifier", "maneuverDistance", "distanceRemaining", "timeRemaining"),
   "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize"),
 }
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
+  upstream_athena.setNavDestination,
+  upstream_athena.clearNavDestination,
   upstream_athena.listDataDirectory,
   upstream_athena.setRouteViewed,
   upstream_athena.getSshAuthorizedKeys,
@@ -878,10 +886,10 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
   services: dict[str, Any] = {}
   for service in LIVE_STATE_SERVICES:
     try:
-      if service == "gpsLocation" and not (sm.alive[service] and sm.valid[service]):
+      if service in ("gpsLocation", "gpsLocationExternal") and not (sm.alive[service] and sm.valid[service]):
         services[service] = {"hasFix": False}
         continue
-      if service == "carState" and not (sm.alive[service] and sm.valid[service]):
+      if service in ("carState", "navInstruction") and not (sm.alive[service] and sm.valid[service]):
         continue
       if sm.recv_frame[service] > 0:
         data = sm[service]

@@ -96,7 +96,7 @@ def decode_roads(data: bytes) -> list[Road]:
       continue
     layer_fields = list(fields(layer))
     name = next((v.decode('utf-8') for n, w, v in layer_fields if n == 1 and w == 2), '')
-    if name != 'roads':
+    if name not in ('roads', 'road'):
       continue
     version = next((v for n, w, v in layer_fields if n == 15 and w == 0), 1)
     extent = next((v for n, w, v in layer_fields if n == 5 and w == 0), 4096)
@@ -126,6 +126,16 @@ def decode_roads(data: bytes) -> list[Road]:
         if tags[i] >= len(keys) or tags[i + 1] >= len(values):
           raise ValueError("MVT tag index out of bounds")
         properties[keys[tags[i]]] = values[tags[i + 1]]
+      if name == 'road':
+        # Mapbox Streets v8: normalize its road layer to the training renderer's OSM classes.
+        detail = properties.get('class', '')
+        if detail not in ('motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link',
+                          'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'street', 'street_limited',
+                          'service', 'track'):
+          continue
+        detail = {'street': 'residential', 'street_limited': 'living_street'}.get(detail, detail)
+        properties = {'kind': 'minor_road', 'kind_detail': detail,
+                      'is_tunnel': properties.get('structure') == 'tunnel', 'is_bridge': properties.get('structure') == 'bridge'}
       kind = properties.get('kind', '')
       if kind in ('highway', 'major_road', 'minor_road', 'other'):
         roads.extend(Road(points / extent, kind, properties.get('kind_detail', ''), properties.get('is_tunnel') is True,
