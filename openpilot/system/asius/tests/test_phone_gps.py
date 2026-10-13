@@ -137,6 +137,7 @@ def test_revoking_authorization_removes_fix(gps):
 
 
 def test_gps_methods_only_exist_on_bluetooth_dispatcher(gps, monkeypatch):
+  monkeypatch.setattr(bluetoothd, 'ASIUS_HARDWARE', True)
   service, _, sent = gps
   engine = bluetoothd.BlePeerEngine.__new__(bluetoothd.BlePeerEngine)
   engine.phone_gps = service
