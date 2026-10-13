@@ -6,7 +6,7 @@ import subprocess
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.spinner import Spinner
 from openpilot.common.text_window import TextWindow
-from openpilot.common.hardware import HARDWARE, AGNOS
+from openpilot.common.hardware import HARDWARE, AGNOS, ASIUS_HARDWARE
 
 def build() -> None:
   spinner = Spinner()
@@ -55,6 +55,15 @@ def build() -> None:
   if scons.returncode != 0:
     # Build failed log errors
     error_s = b"\n".join(compile_output).decode('utf8', 'replace')
+
+    # ledd has not started yet. Leave a solid fault indication on screenless devices.
+    if ASIUS_HARDWARE:
+      from openpilot.selfdrive.v0.ledd import BOOT_BRIGHTNESS, RED, CameraLeds
+      leds = CameraLeds()
+      try:
+        leds.set(RED, force=True, brightness=BOOT_BRIGHTNESS)
+      finally:
+        leds.close()
 
     # Show TextWindow
     spinner.close()
