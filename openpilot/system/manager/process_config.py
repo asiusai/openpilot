@@ -96,7 +96,7 @@ procs = [
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
-  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navigation),
+  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
 
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview,

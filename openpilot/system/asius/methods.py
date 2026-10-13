@@ -44,7 +44,9 @@ from openpilot.system.asius.relayd import (
   verify_pair_token,
 )
 from openpilot.system.asius.onboarding import Onboarding, setup_status
-from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination
+from openpilot.system.asius.live_state import StateEncoder
+from openpilot.system.asius.navigation_route import getNavigationRoute, getNavigationState
+from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination, searchNavigation, retrieveNavigationLocation
 
 
 class ParamsReader(Protocol):
@@ -55,7 +57,7 @@ RELAY_HOST = Params().get("RelayHost", return_default=True)
 
 RECONNECT_TIMEOUT_S = 70
 WS_FRAME_SIZE = 4096
-LIVE_STATE_INTERVAL_S = 1.0
+LIVE_STATE_INTERVAL_S = 0.2
 VAMOS_UPDATE_STATE_FILE = Path("/data/vamos-update/state.json")
 VAMOS_WIFI_COMMAND = Path("/usr/bin/vamos-wifi")
 SAVE_PARAMS_BLOCKED_KEYS = {
@@ -145,13 +147,17 @@ NETWORK_ONLY_METHODS = {"startStream"}
 # Use the same active Params alerts as the device UI, including their extra text.
 OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/selfdrived/alerts_offroad.json").read_text()))
 BLUETOOTH_STATE_FIELDS = {
-  "deviceState": ("started", "networkType", "networkStrength", "cpuTempC", "gpuTempC", "memoryTempC", "freeSpacePercent",
+  "deviceState": ("started", "deviceType", "thermalStatus", "fanSpeedRpm", "networkType", "networkStrength", "cpuTempC", "gpuTempC", "memoryTempC",
+                  "freeSpacePercent",
                   "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "uptime"),
   "peripheralState": ("pandaType", "voltage", "current"),
   "extrinsicsCalibration": ("calStatus", "calPerc"),
-  "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
-  "gpsLocationExternal": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
-  "navInstruction": ("maneuverPrimaryText", "maneuverSecondaryText", "maneuverType", "maneuverModifier", "maneuverDistance", "distanceRemaining", "timeRemaining"),
+  "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
+                  "speed", "bearingDeg", "bearingAccuracyDeg", "sampleMonoTime"),
+  "gpsLocationExternal": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
+                          "speed", "bearingDeg", "bearingAccuracyDeg", "sampleMonoTime"),
+  "navInstruction": ("maneuverPrimaryText", "maneuverSecondaryText", "maneuverType", "maneuverModifier",
+                     "maneuverDistance", "distanceRemaining", "timeRemaining"),
   "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize", "alertType"),
 }
 dispatcher["echo"] = lambda s: s
@@ -159,6 +165,10 @@ for method in (
   upstream_athena.getMessage,
   setNavDestination,
   getRecentNavDestinations,
+  getNavigationRoute,
+  getNavigationState,
+  searchNavigation,
+  retrieveNavigationLocation,
   upstream_athena.clearNavDestination,
   upstream_athena.listDataDirectory,
   upstream_athena.setRouteViewed,
@@ -885,8 +895,7 @@ def _json_safe(value: Any) -> Any:
   return str(value)
 
 
-def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
-  build_metadata = get_build_metadata()
+def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
   services: dict[str, Any] = {}
   for service in LIVE_STATE_SERVICES:
     try:
@@ -899,6 +908,8 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
         data = sm[service]
         services[service] = ([event.to_dict() for event in data]
                              if service == "onroadEvents" else data.to_dict())
+        if service in ("gpsLocation", "gpsLocationExternal"):
+          services[service]["sampleMonoTime"] = int(sm.logMonoTime[service]) / 1e9
         if service == "carState":
           # Home needs only these readings, including over the Bluetooth link.
           services[service] = {key: services[service][key] for key in ("vEgo", "vEgoCluster", "vCruiseCluster", "gearShifter", "canValid")}
@@ -920,6 +931,20 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
   if "deviceState" in services:
     services["deviceState"]["uptime"] = int(time.monotonic())
 
+  for service, fields in BLUETOOTH_STATE_FIELDS.items():
+    if service in services:
+      services[service] = {key: services[service][key] for key in fields if key in services[service]}
+  if "managerState" in services:
+    services["managerState"] = {"processes": [
+      {key: process.get(key) for key in ("name", "running", "shouldBeRunning", "exitCode")}
+      for process in services["managerState"].get("processes", []) if process.get("shouldBeRunning") and not process.get("running")
+    ]}
+  return services
+
+
+def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
+  build_metadata = get_build_metadata()
+  services = _live_services(sm)
   param_values = {}
   for key in LIVE_STATE_PARAM_KEYS:
     try:
@@ -935,6 +960,9 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
                              "severity": alert.get("severity", 0)})
 
   snapshot = {
+    "navigation": getNavigationState(),
+    "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+    "sampledAt": time.monotonic(),
     "ignition": ignition_state(),
     "ts": time.time(),  # noqa: TID251
     "dongleId": params.get("DongleId"),
@@ -967,14 +995,6 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     failure = snapshot["software"].get("LastUpdateException")
     if isinstance(failure, str):
       snapshot["software"]["LastUpdateException"] = failure[-4096:]
-    for service, fields in BLUETOOTH_STATE_FIELDS.items():
-      if service in services:
-        services[service] = {key: services[service][key] for key in fields if key in services[service]}
-    if "managerState" in services:
-      services["managerState"] = {"processes": [
-        {key: process.get(key) for key in ("name", "running", "shouldBeRunning", "exitCode")}
-        for process in services["managerState"].get("processes", []) if process.get("shouldBeRunning") and not process.get("running")
-      ]}
   return snapshot
 
 
@@ -1001,18 +1021,46 @@ def broadcast_peer_event(name: str, payload: Any) -> None:
       cloudlog.exception("relay.websocket.broadcast_failed public_key=%s", public_key)
 
 
-def live_state_handler(end_event: threading.Event) -> None:
-  params = Params()
-  sm = messaging.SubMaster(LIVE_STATE_SERVICES)
+class LiveStateSampler:
+  def __init__(self, sm, params):
+    self.sm, self.params = sm, params
+    self.snapshot = None
+    self.updated_at = 0.
 
+  def sample(self):
+    now = time.monotonic()
+    self.sm.update(0)
+    if self.snapshot is None or now - self.updated_at >= 1:
+      self.snapshot = _live_state_snapshot(self.sm, self.params, compact=True)
+      self.updated_at = now
+    navigation = getNavigationState()
+    services = _live_services(self.sm)
+    if navigation.get("status") != "ready" or self.sm.logMonoTime["navInstruction"] / 1e9 < navigation.get("publishedAt", 0):
+      services.pop("navInstruction", None)
+    return {**self.snapshot, "services": services, "sampledAt": now,
+            "params": {**self.snapshot["params"], "NavDestination": navigation.get("destination")},
+            "navigation": navigation, "ignition": ignition_state()}
+
+
+live_state_pending = {}
+live_state_lock = threading.Lock()
+
+
+def live_state_handler(end_event: threading.Event) -> None:
+  sampler = LiveStateSampler(messaging.SubMaster(LIVE_STATE_SERVICES), Params())
   while not end_event.is_set():
+    started = time.monotonic()
     try:
-      sm.update(0)
-      if load_authorized_peers():
-        broadcast_peer_event("liveState", _live_state_snapshot(sm, params))
+      peers = load_authorized_peers()
+      if peers:
+        snapshot = sampler.sample()
+        # At most one unsent snapshot per peer. Never queue old vehicle positions.
+        with live_state_lock:
+          live_state_pending.clear()
+          live_state_pending.update(dict.fromkeys(peers, snapshot))
     except Exception:
       cloudlog.exception("relay.live_state_handler.exception")
-    end_event.wait(LIVE_STATE_INTERVAL_S)
+    end_event.wait(max(0., LIVE_STATE_INTERVAL_S - (time.monotonic() - started)))
 
 
 clock_challenges = ClockChallenges()
@@ -1122,9 +1170,21 @@ def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
 
 def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
   sequence = 0
+  encoders = {}
   while not end_event.is_set():
     try:
-      data = send_queue.get(timeout=1)
+      try:
+        data = send_queue.get(timeout=0.02)
+      except queue.Empty:
+        with live_state_lock:
+          if not live_state_pending:
+            continue
+          peer = next(iter(live_state_pending))
+          snapshot = live_state_pending.pop(peer)
+        if peer not in load_authorized_peers():
+          continue
+        payload = encoders.setdefault(peer, StateEncoder()).encode(snapshot)
+        data = pack_peer_message(Params().get("DongleId"), peer, {"type": "event", "name": "liveState", "payload": payload})
       try:
         message = json.loads(data)
         if message.get("type") != "peer":

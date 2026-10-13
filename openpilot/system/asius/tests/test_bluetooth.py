@@ -1,6 +1,7 @@
 import pytest
 import json
 import unittest
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from dbus_fast import Variant
@@ -10,6 +11,31 @@ from openpilot.system.asius.bluetoothd import Advertisement, BLE_SERVICE_UUID, B
 
 
 class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
+  async def test_slow_rpc_does_not_block_phone_gps(self):
+    engine = BlePeerEngine.__new__(BlePeerEngine)
+    engine.rpc_active = 0
+    engine.incoming = asyncio.Queue()
+    engine.send_authenticated_error = AsyncMock()
+    slow_started, release, gps = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def handle(payload):
+      if json.loads(payload)["method"] == "searchNavigation":
+        slow_started.set()
+        await release.wait()
+      else:
+        gps.set()
+    engine.handle_encrypted = handle
+    stop = asyncio.Event()
+    task = asyncio.create_task(engine.process_messages(stop))
+    try:
+      await engine.incoming.put(b'{"method":"searchNavigation"}')
+      await asyncio.wait_for(slow_started.wait(), 1)
+      await engine.incoming.put(b'{"method":"updatePhoneGps"}')
+      await asyncio.wait_for(gps.wait(), 0.2)
+    finally:
+      release.set()
+      stop.set()
+      await asyncio.wait_for(task, 1)
+
   def test_status_is_public_read_only_and_reflects_pairing_mode(self):
     status = StatusCharacteristic('public-device-key')
     self.assertEqual(status.Flags, ['read'])
@@ -48,9 +74,11 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
     self.assertEqual([call.args[3].value for call in set_property.call_args_list], [True, 'Asius v0', False])
 
 
+
 class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.engine = BlePeerEngine.__new__(BlePeerEngine)
+    self.engine.rpc_active = 0
     self.engine.dongle_id = "device"
     self.engine.active_peers = {}
     self.engine.send_body = AsyncMock()

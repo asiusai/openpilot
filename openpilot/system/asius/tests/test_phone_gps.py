@@ -140,6 +140,7 @@ def test_gps_methods_only_exist_on_bluetooth_dispatcher(gps, monkeypatch):
   monkeypatch.setattr(bluetoothd, 'ASIUS_HARDWARE', True)
   service, _, sent = gps
   engine = bluetoothd.BlePeerEngine.__new__(bluetoothd.BlePeerEngine)
+  engine.rpc_active = 0
   engine.phone_gps = service
   engine.dongle_id = 'device'
   engine.active_peers = {}

@@ -6,6 +6,24 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import pytest
 
 from openpilot.system.asius import methods
+from openpilot.system.asius.live_state import StateEncoder
+
+
+def test_batched_telemetry_reduces_repeated_metadata_and_recovers_baselines(device):
+  sm, params, _ = device
+  snapshot = methods._live_state_snapshot(sm, params, compact=True)
+  encoder = StateEncoder()
+  full = encoder.encode(snapshot, 0)
+  changed = copy.deepcopy(snapshot)
+  changed["services"]["carState"]["vEgo"] = 21.
+  changed["sampledAt"] += 0.2
+  changed["services"].pop("driverMonitoringState")
+  delta = encoder.encode(changed, .2)
+  assert len(json.dumps(delta)) < len(json.dumps(full)) / 4
+  assert delta["base"] == full["sequence"]
+  assert delta["changes"]["services"]["driverMonitoringState"] is None
+  assert "params" not in delta["changes"]
+  assert encoder.encode(changed, 3.1)["full"]
 
 
 @pytest.fixture
@@ -118,6 +136,7 @@ def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_p
   from openpilot.common.hardware.hw import Paths
 
   engine = BlePeerEngine.__new__(BlePeerEngine)
+  engine.rpc_active = 0
   engine.send_body = AsyncMock()
   params = Mock()
   params.get_bool.return_value = True
