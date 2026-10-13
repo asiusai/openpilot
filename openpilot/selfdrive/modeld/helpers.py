@@ -14,7 +14,7 @@ def tensor_from_dma_buf(ptr: int, fd: int | None, size: int, device: str) -> Ten
   if fd is None or device.split(':', 1)[0] != 'QCOM':
     return Tensor.from_blob(ptr, (size,), dtype='uint8', device=device)
   tensor = Tensor.empty(size, dtype='uint8', device=device)
-  buffer = tensor.uop.buffer
+  buffer = tensor.realize().uop.buffer
   buffer.allocate(Device[device].iface.map(ptr, buffer.nbytes, fd))
   return tensor
 
