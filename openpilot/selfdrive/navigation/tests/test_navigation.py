@@ -95,7 +95,13 @@ def route_engine(sm, pm, values):
   params.remove.side_effect = lambda key: values.pop(key, None)
   with patch('openpilot.selfdrive.navigation.navd.Api') as api:
     api.return_value.get_token.return_value = 'test-token'
-    return RouteEngine(sm, pm, params=params)
+    store = MagicMock()
+    store.position.return_value = None
+    store.publish.return_value = True
+    engine = RouteEngine(sm, pm, params=params, store=store)
+    engine.started = True
+    engine.last_known = False
+    return engine
 
 
 class RangeHandler(BaseHTTPRequestHandler):
@@ -153,10 +159,10 @@ class TestEndToEnd(TileServerCase):
       {'geometry': {'coordinates': [[0, -0.01], [0, 0.01]]}, 'distance': 2224, 'duration': 100, 'bannerInstructions': []}])))
     self.enterContext(patch('openpilot.selfdrive.navigation.mapsd.navigation_archive', side_effect=lambda: PMTiles(RemoteTiles())))
     with OpenpilotPrefix():
-      pm = messaging.PubMaster(['navInstruction', 'navRoute', 'gpsLocationExternal'])
+      pm = messaging.PubMaster(['navInstruction', 'navRoute', 'gpsLocationExternal', 'deviceState'])
       sm = messaging.SubMaster(['gpsLocation', 'gpsLocationExternal', 'navRoute'])
       values = {'NavDestination': dict(destination)}
-      navd = route_engine(messaging.SubMaster(['gpsLocation', 'gpsLocationExternal']), pm, values)
+      navd = route_engine(messaging.SubMaster(['gpsLocation', 'gpsLocationExternal', 'deviceState']), pm, values)
       mapsd = MapsD()
       self.addCleanup(mapsd.close)
 
@@ -164,6 +170,9 @@ class TestEndToEnd(TileServerCase):
         gps = messaging.new_message('gpsLocationExternal', valid=True)
         gps.gpsLocationExternal.hasFix = fix
         pm.send('gpsLocationExternal', gps)
+        device = messaging.new_message('deviceState', valid=True)
+        device.deviceState.started = True
+        pm.send('deviceState', device)
         navd.update()
         sm.update(0)
         return mapsd.update(sm)
@@ -252,10 +261,10 @@ class TestRouteEngine(unittest.TestCase):
     self.pm = MagicMock()
     self.values = {'NavDestination': {'latitude': 0, 'longitude': 0.002}, 'LanguageSetting': 'main_en'}
     self.sm = MagicMock()
-    self.sm.valid = dict.fromkeys(('gpsLocation', 'gpsLocationExternal'), True)
+    self.sm.valid = dict.fromkeys(('gpsLocation', 'gpsLocationExternal', 'deviceState'), True)
     self.sm.logMonoTime = dict.fromkeys(self.sm.valid, time.monotonic_ns())
     self.sm.recv_time = dict.fromkeys(self.sm.valid, time.monotonic())
-    self.sm.__getitem__.return_value = SimpleNamespace(hasFix=True, latitude=0, longitude=0, bearingDeg=90)
+    self.sm.__getitem__.return_value = SimpleNamespace(hasFix=True, latitude=0, longitude=0, bearingDeg=90, started=True)
     self.engine = route_engine(self.sm, self.pm, self.values)
     self.engine.last_position, self.engine.last_bearing = (0, 0), 90
     distance = 111.195  # Mapbox's length of 0.001 degrees at the equator
@@ -349,8 +358,9 @@ class TestRouteEngine(unittest.TestCase):
     self.assertFalse(self.last_message('navInstruction').valid)
 
   def test_gps_source(self):
-    fixes = {'gpsLocation': SimpleNamespace(hasFix=True, latitude=1, longitude=1, bearingDeg=180),
-             'gpsLocationExternal': SimpleNamespace(hasFix=True, latitude=2, longitude=2, bearingDeg=0)}
+    fixes = {'gpsLocation': SimpleNamespace(hasFix=True, latitude=1, longitude=1, bearingDeg=180, speed=10),
+             'gpsLocationExternal': SimpleNamespace(hasFix=True, latitude=2, longitude=2, bearingDeg=0, speed=10)}
+    fixes["deviceState"] = SimpleNamespace(started=True)
     self.sm.__getitem__.side_effect = fixes.get
     self.sm.logMonoTime = {'gpsLocation': 2, 'gpsLocationExternal': 1}  # replayed logs are judged by receipt time
     with patch('requests.get', return_value=self.response):
