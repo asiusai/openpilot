@@ -17,6 +17,7 @@ from dbus_fast.aio import MessageBus
 from dbus_fast.service import ServiceInterface, dbus_method, dbus_property
 
 from openpilot.common.params import Params
+from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
 from openpilot.common.swaglog import cloudlog
 import openpilot.cereal.messaging as messaging
 from openpilot.system.asius import methods
@@ -59,7 +60,7 @@ LIVE_STATE_INTERVAL_SECONDS = 1.
 TERMINAL_OUTPUT_QUEUE_SIZE = 64
 NOTIFICATION_FRAME_DELAY_SECONDS = 0.004
 REGISTER_RETRY_SECONDS = 3.
-DEVICE_TYPE = "asius-v0"
+DEVICE_TYPE = "asius-v0" if ASIUS_HARDWARE else HARDWARE.get_device_type()
 BLUETOOTH_PAIRING_UNTIL_PARAM = "BluetoothPairingUntil"
 
 BLE_SERVICE_UUID = "84a48ccf-5c26-56f7-91b8-5c39abd40cb9"
@@ -356,7 +357,7 @@ class BlePeerEngine:
     self.params = Params()
     self.dongle_id = self.params.get("DongleId")
     self.sm = messaging.SubMaster(methods.LIVE_STATE_SERVICES)
-    self.gps_pm = messaging.PubMaster(['gpsLocation'])
+    self.gps_pm = messaging.PubMaster(['gpsLocation'] if ASIUS_HARDWARE else [])
     self.phone_gps = PhoneGps(lambda message: self.gps_pm.send('gpsLocation', message))
     self.loop: asyncio.AbstractEventLoop | None = None
     self.terminal_output: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=TERMINAL_OUTPUT_QUEUE_SIZE)
@@ -469,7 +470,7 @@ class BlePeerEngine:
     cloudlog.event("asius.bluetooth.paired", sender=sender, request_id=request_id)
 
   async def handle_rpc(self, sender: str, body: dict[str, Any]) -> None:
-    if body.get("method") in PHONE_GPS_METHODS:
+    if ASIUS_HARDWARE and body.get("method") in PHONE_GPS_METHODS:
       # The publisher stays on the Bluetooth event loop, never the relay dispatcher.
       response = json.loads(methods.handle(body, self.phone_gps.dispatcher(sender)))
       await self.send_body(sender, response)
