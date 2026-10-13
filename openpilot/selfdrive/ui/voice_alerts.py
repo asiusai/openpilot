@@ -25,6 +25,8 @@ def alert_voice(state):
   if state is None or state.alertSize == 0:
     return None
   event, _, alert_type = state.alertType.partition("/")
+  if alert_type in ("enable", "userDisable"):
+    return None
   # selfdrived selects noEntry only when an engagement attempt is refused.
   if alert_type == "noEntry" and event in NO_ENTRY_VOICES:
     return NO_ENTRY_VOICES[event]

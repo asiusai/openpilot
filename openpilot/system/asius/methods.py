@@ -90,6 +90,7 @@ LIVE_STATE_SERVICES = [
   "managerState",
   "onroadEvents",
   "selfdriveState",
+  "driverMonitoringState",
 ]
 parameter_editor = ParameterEditor(SAVE_PARAMS_BLOCKED_KEYS)
 LIVE_STATE_PARAM_KEYS = [
@@ -892,7 +893,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
       if service in ("gpsLocation", "gpsLocationExternal") and not (sm.alive[service] and sm.valid[service]):
         services[service] = {"hasFix": False}
         continue
-      if service in ("carState", "navInstruction", "selfdriveState", "onroadEvents") and not (sm.alive[service] and sm.valid[service]):
+      if service in ("carState", "navInstruction", "selfdriveState", "onroadEvents", "driverMonitoringState") and not (sm.alive[service] and sm.valid[service]):
         continue
       if sm.recv_frame[service] > 0:
         data = sm[service]
@@ -901,6 +902,18 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
         if service == "carState":
           # Home needs only these readings, including over the Bluetooth link.
           services[service] = {key: services[service][key] for key in ("vEgo", "vEgoCluster", "vCruiseCluster", "gearShifter", "canValid")}
+        elif service == "driverMonitoringState":
+          # Keep Home telemetry small on both transports; no separate polling RPC.
+          state = services[service]
+          vision = state.get("visionPolicyState", {})
+          services[service] = {key: state[key] for key in ("activePolicy", "isRHD") if key in state}
+          if "visionPolicyState" in state:
+            services[service]["visionPolicyState"] = {
+              key: vision[key] for key in ("faceDetected", "isDistracted", "awarenessPercent") if key in vision
+            }
+            services[service]["visionPolicyState"]["pose"] = {
+              key: vision["pose"][key] for key in ("pitch", "yaw") if key in vision.get("pose", {})
+            }
     except Exception:
       cloudlog.exception("relay.live_state.service_failed service=%s", service)
 
