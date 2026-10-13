@@ -106,6 +106,7 @@ LIVE_STATE_PARAM_KEYS = [
   "DisengageOnAccelerator",
   "LongitudinalPersonality",
   "IsLdwEnabled",
+  "VoiceAlertsEnabled",
   "RecordFront",
   "RecordAudio",
   "IsMetric",

@@ -12,6 +12,9 @@ WEBCAM = os.getenv("USE_WEBCAM") is not None
 def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started or params.get_bool("IsDriverViewEnabled")
 
+def sound(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return driverview(started, params, CP) or params.get_bool("VoiceAlertsEnabled")
+
 def notcar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and CP.notCar
 
@@ -100,7 +103,7 @@ procs = [
                 enabled=(WEBCAM or not PC)),
   PythonProcess("sensord", "openpilot.system.sensord.sensord", only_onroad, enabled=not PC),
   PythonProcess("ui", "openpilot.selfdrive.ui.ui", always_run, enabled=not ASIUS_HARDWARE),
-  PythonProcess("soundd", "openpilot.selfdrive.ui.soundd", driverview),
+  PythonProcess("soundd", "openpilot.selfdrive.ui.soundd", sound),
   PythonProcess("ledd", "openpilot.selfdrive.v0.ledd", always_run, enabled=ASIUS_HARDWARE),
   PythonProcess("buttond", "openpilot.selfdrive.v0.buttond", always_run, enabled=ASIUS_HARDWARE),
   PythonProcess("locationd", "openpilot.selfdrive.locationd.locationd", only_onroad),

@@ -354,8 +354,10 @@ def engaged_warning(sm) -> LedState | None:
   }
   if selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling:
     return RED
-  if selfdrive_state.alertSound.raw in WARNING_ALERT_SOUNDS:
-    return DM_WARNING if dm_alert else RED
+  if dm_alert:
+    return DM_WARNING
+  if str(selfdrive_state.alertSound) in WARNING_ALERT_SOUNDS:
+    return RED
   return None
 
 

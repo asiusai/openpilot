@@ -39,7 +39,7 @@ class TestSoundd(OpenpilotTestCase):
     levels = [0, 26, 35, 41, 50, 56, 100]
     original = [comma.calculate_volume(db) for db in levels]
     assert comma.current_volume == soundd.MIN_VOLUME
-    np.testing.assert_allclose(original, [20 ** -.9, 20 ** -.9, 20 ** -.63, 20 ** -.45, 20 ** -.18, 1., 1.])
+    np.testing.assert_allclose(original, [20 ** -.9, 20 ** -.78, 20 ** -.51, 20 ** -.33, 20 ** -.06, 1., 1.])
 
     device.return_value = 'v0'
     asius = soundd.Soundd()

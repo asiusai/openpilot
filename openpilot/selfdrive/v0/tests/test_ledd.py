@@ -37,11 +37,11 @@ def healthy_sm(*, started=True):
   )])
   sm.set('driverMonitoringState', SimpleNamespace(alertLevel=log.DriverMonitoringState.AlertLevel.none, lockout=False, alwaysOnLockout=False,
                                                 visionPolicyState=SimpleNamespace(faceDetected=True)))
-  sm.set('selfdriveState', SimpleNamespace(
+  sm.set('selfdriveState', log.SelfdriveState.new_message(
     active=False,
     engageable=True,
     state=log.SelfdriveState.OpenpilotState.disabled,
-    alertSound=SimpleNamespace(raw='none'),
+    alertSound='none',
     alertType='',
   ))
   return sm
@@ -123,7 +123,7 @@ def test_green_when_engaged():
 
 def test_warning_sound_blinks_red_only_while_engaged():
   sm = healthy_sm()
-  sm['selfdriveState'].alertSound.raw = 'promptRepeat'
+  sm['selfdriveState'].alertSound = 'promptRepeat'
   assert ledd.led_state(sm, now=0.) == ledd.BLUE
 
   sm['selfdriveState'].active = True
@@ -132,21 +132,32 @@ def test_warning_sound_blinks_red_only_while_engaged():
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
 
 
-def test_driver_monitoring_blinks_magenta_while_engaged():
+@pytest.mark.parametrize('event', ['driverUnresponsive', 'driverDistracted'])
+@pytest.mark.parametrize('stage,sound', [(1, 'none'), (2, 'promptDistracted'), (3, 'warningImmediate')])
+def test_driver_monitoring_blinks_magenta_from_first_warning_while_engaged(event, stage, sound):
   sm = healthy_sm()
   sm['selfdriveState'].active = True
   sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.enabled
-  sm['selfdriveState'].alertType = 'driverDistracted2/permanent'
-  sm['selfdriveState'].alertSound.raw = 'promptDistracted'
+  sm['selfdriveState'].alertType = f'{event}{stage}/permanent'
+  sm['selfdriveState'].alertSound = sound
   assert ledd.led_state(sm, now=0.) == ledd.DM_WARNING
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
+  assert ledd.automatic_led_channels(sm, brightness=26, now=0.) == {
+    1: [0] * 9,
+    2: [26, 0, 26, 0, 0, 0, 26, 0, 26],
+    3: [26, 0, 26, 0, 0, 0, 26, 0, 26],
+  }
+  sm['selfdriveState'].alertType = ''
+  sm['selfdriveState'].alertSound = 'none'
+  assert ledd.led_state(sm, now=0.) == ledd.GREEN
 
 
-def test_audible_driver_monitoring_warning_is_ignored_when_disengaged():
+@pytest.mark.parametrize('stage,sound', [(1, 'none'), (2, 'promptDistracted')])
+def test_driver_monitoring_warning_is_ignored_when_disengaged(stage, sound):
   sm = healthy_sm()
   sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
-  sm['selfdriveState'].alertType = 'driverDistracted2/permanent'
-  sm['selfdriveState'].alertSound.raw = 'promptDistracted'
+  sm['selfdriveState'].alertType = f'driverUnresponsive{stage}/permanent'
+  sm['selfdriveState'].alertSound = sound
   assert ledd.led_state(sm, now=0.) == ledd.BLUE
   assert ledd.led_state(sm, now=0.5) == ledd.BLUE
 
@@ -161,7 +172,7 @@ def test_soft_disabling_blinks_red_over_driver_monitoring_warning():
 
 
 @pytest.mark.parametrize('status', ['uncalibrated', 'invalid'])
-def test_calibration_priority_over_no_face_and_audible_driver_warning(status):
+def test_calibration_priority_over_no_face_and_driver_warning(status):
   sm = healthy_sm()
   sm['extrinsicsCalibration'].calStatus = getattr(log.ExtrinsicsCalibration.Status, status)
   calibration_color = ledd.RED if status == 'invalid' else ledd.ORANGE
@@ -173,9 +184,9 @@ def test_calibration_priority_over_no_face_and_audible_driver_warning(status):
       assert ledd.led_state(sm, now=now) == calibration_color
 
   sm['selfdriveState'].active = True
-  assert ledd.led_state(sm, now=0.) == calibration_color  # Silent alert does not blink magenta.
+  assert ledd.led_state(sm, now=0.) == (ledd.RED if status == 'invalid' else ledd.DM_WARNING)
   sm['selfdriveState'].alertType = 'driverUnresponsive2/permanent'
-  sm['selfdriveState'].alertSound.raw = 'promptDistracted'
+  sm['selfdriveState'].alertSound = 'promptDistracted'
   assert ledd.led_state(sm, now=0., setup_complete=False) == (ledd.RED if status == 'invalid' else ledd.DM_WARNING)
   # A higher-priority blink stays off between flashes instead of revealing orange or setup magenta.
   assert ledd.led_state(sm, now=0.5, setup_complete=False) == ledd.OFF
