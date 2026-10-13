@@ -87,6 +87,18 @@ def test_pairing_window_closes_at_ignition(setup):
   assert not bluetoothd.pairing_mode_active()
 
 
+def test_manager_restart_closes_pairing_without_revoking_saved_apps(setup):
+  p, _ = setup
+  authorized = {'test-app': {'label': 'Android app'}}
+  p.put('AppAuthorizedKeys', authorized, block=True)
+  bluetoothd.enable_pairing_mode()
+  assert bluetoothd.pairing_mode_active()
+  p.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+  assert not bluetoothd.pairing_mode_active()
+  assert p.get('BluetoothPairingUntil') is None
+  assert p.get('AppAuthorizedKeys') == authorized
+
+
 def test_terminal_opt_in_survives_ignition_close_and_reconnect_but_not_manager_reset(setup, monkeypatch):
   p, ignition = setup
   output = []
