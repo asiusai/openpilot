@@ -10,6 +10,7 @@ AGNOS = os.path.isfile('/AGNOS')
 COMMA_HARDWARE = AGNOS
 ASIUS_HARDWARE = os.path.isfile('/ASIUS')
 PC = not (COMMA_HARDWARE or ASIUS_HARDWARE)
+BLUETOOTH_AVAILABLE = ASIUS_HARDWARE or (COMMA_HARDWARE and os.path.isdir('/sys/class/bluetooth'))
 
 if ASIUS_HARDWARE:
   HARDWARE = cast(HardwareBase, HardwareAsius())

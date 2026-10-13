@@ -44,6 +44,7 @@ from openpilot.system.asius.relayd import (
   verify_pair_token,
 )
 from openpilot.system.asius.onboarding import Onboarding, setup_status
+from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination
 
 
 class ParamsReader(Protocol):
@@ -150,12 +151,13 @@ BLUETOOTH_STATE_FIELDS = {
   "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
   "gpsLocationExternal": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis"),
   "navInstruction": ("maneuverPrimaryText", "maneuverSecondaryText", "maneuverType", "maneuverModifier", "maneuverDistance", "distanceRemaining", "timeRemaining"),
-  "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize"),
+  "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize", "alertType"),
 }
 dispatcher["echo"] = lambda s: s
 for method in (
   upstream_athena.getMessage,
-  upstream_athena.setNavDestination,
+  setNavDestination,
+  getRecentNavDestinations,
   upstream_athena.clearNavDestination,
   upstream_athena.listDataDirectory,
   upstream_athena.setRouteViewed,
@@ -890,7 +892,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
       if service in ("gpsLocation", "gpsLocationExternal") and not (sm.alive[service] and sm.valid[service]):
         services[service] = {"hasFix": False}
         continue
-      if service in ("carState", "navInstruction") and not (sm.alive[service] and sm.valid[service]):
+      if service in ("carState", "navInstruction", "selfdriveState", "onroadEvents") and not (sm.alive[service] and sm.valid[service]):
         continue
       if sm.recv_frame[service] > 0:
         data = sm[service]
@@ -1004,7 +1006,8 @@ clock_challenges = ClockChallenges()
 
 
 def dispatcher_for_peer(sender: str):
-  return dispatcher | {
+  from openpilot.system.asius.local_video import methods as local_video_methods
+  return dispatcher | local_video_methods(sender) | {
     "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
