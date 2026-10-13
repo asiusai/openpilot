@@ -18,7 +18,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RelayPid", {PERSISTENT, INT}},
     {"AppTerminalEnabled", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     {"AppAuthorizedKeys", {PERSISTENT, JSON}},
-    {"BluetoothPairingUntil", {PERSISTENT, INT}},
+    {"BluetoothPairingUntil", {CLEAR_ON_MANAGER_START, INT}},
     {"AthenadUploadQueue", {PERSISTENT, JSON}},
     {"AthenadRecentlyViewedRoutes", {PERSISTENT, STRING}},
     {"BootCount", {PERSISTENT, INT}},
