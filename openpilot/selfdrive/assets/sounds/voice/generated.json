@@ -1,0 +1,59 @@
+{
+  "clips": {
+    "calibrating": {
+      "seconds": 4.464,
+      "sha256": "b262c381cea30b9fbeec01bc598baafdf98a87b7814ad1d5123b0d0932e5df1f"
+    },
+    "calibration_error": {
+      "seconds": 4.344,
+      "sha256": "c19f9b9961befda90c66fc10f2bee83c85660969e985f7cddd4f2f4a9f9c889c"
+    },
+    "camera_error": {
+      "seconds": 1.872,
+      "sha256": "733456298c17bd41adc4b88fb70436d97180e036faffcf566c7da3585452a9e7"
+    },
+    "cannot_engage": {
+      "seconds": 2.016,
+      "sha256": "b8802dc449b1e23392e0b1b179090fd0eb17963bba2f96a68566719dabce19fe"
+    },
+    "car_unrecognized": {
+      "seconds": 4.32,
+      "sha256": "d85143a327a9dd25953a156c92ec7363c42c26c7f18d454dfec911f117cee6c5"
+    },
+    "chestnut_error": {
+      "seconds": 1.92,
+      "sha256": "91d85f0833579847b458e7fca4eabc26bec0721f6464ff99367940bbe1031c32"
+    },
+    "model_error": {
+      "seconds": 2.136,
+      "sha256": "18ada7b2658270bec7b3050481102b7ade196449402350a29a141df2f9c0a9c5"
+    },
+    "overheat": {
+      "seconds": 3.792,
+      "sha256": "eba5940543bcad25dc66ba147ca12a9d62f5c768ddbff918ce61b76d0cd022e4"
+    },
+    "pay_attention": {
+      "seconds": 1.896,
+      "sha256": "4625f685fa3f9ffbd12f10809021a34574a868714d4f043029e6717fa8c61796"
+    },
+    "pedal_pressed": {
+      "seconds": 3.792,
+      "sha256": "02a6d30e88f1a05a408ba2ccbc4fc222d09c1dab6d91d923e6b297253210451d"
+    },
+    "system_error": {
+      "seconds": 1.872,
+      "sha256": "6e7e1e7784fba2da013bf871a05b1f52b219f6a20969d86cbb19fb3c63203d43"
+    },
+    "take_control": {
+      "seconds": 1.872,
+      "sha256": "59254320a5cfcbc257472024a0615d5172796eaef20df22e3762293c0953f72e"
+    },
+    "touch_wheel": {
+      "seconds": 2.208,
+      "sha256": "088273926de21747545d922ade047eb27b71abe62f29f50b8965e6b6260328c8"
+    }
+  },
+  "filter": "aresample=48000,aformat=channel_layouts=stereo,highpass=f=180,loudnorm=I=-11:TP=-1:LRA=4,aresample=48000,highpass=f=280,acompressor=threshold=0.05:ratio=3:attack=5:release=120:makeup=10,alimiter=limit=0.85:attack=5:release=80:level=false",
+  "source_hash": "6925efd9b23b04c70962819fce22bf8689cf0714fbb7687d176eee1092555f92",
+  "voice": "en-US-JennyNeural"
+}
