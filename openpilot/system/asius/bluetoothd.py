@@ -56,7 +56,7 @@ AGENT_PATH = "/ai/asius/agent0"
 
 ACTIVE_PEER_SECONDS = 45.
 PAIRING_MODE_SECONDS = 300
-LIVE_STATE_INTERVAL_SECONDS = 1.
+LIVE_STATE_INTERVAL_SECONDS = 0.2
 TERMINAL_OUTPUT_QUEUE_SIZE = 64
 NOTIFICATION_FRAME_DELAY_SECONDS = 0.004
 REGISTER_RETRY_SECONDS = 3.
@@ -365,6 +365,7 @@ class BlePeerEngine:
     self.assembler = FrameAssembler()
     self.incoming: asyncio.Queue[bytes] = asyncio.Queue()
     self.active_peers: dict[str, float] = {}
+    self.rpc_active = 0
     self.peer_clocks: dict[str, tuple[int, float]] = {}
     self.params = Params()
     self.dongle_id = self.params.get("DongleId")
@@ -491,7 +492,15 @@ class BlePeerEngine:
       await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
                                     "error": {"code": -32000, "message": "Live video requires a network connection"}})
       return
-    response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
+    if self.rpc_active >= 4:
+      await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
+                                    "error": {"code": -32000, "message": "Device is busy. Try again."}})
+      return
+    self.rpc_active += 1
+    try:
+      response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
+    finally:
+      self.rpc_active -= 1
     await self.send_body(sender, response)
 
   async def handle_encrypted(self, payload: bytes) -> None:
@@ -554,6 +563,7 @@ class BlePeerEngine:
       await asyncio.sleep(0.25)
 
   async def process_messages(self, stop: asyncio.Event) -> None:
+    pending = set()
     while not stop.is_set():
       payload = b""
       try:
@@ -562,7 +572,18 @@ class BlePeerEngine:
         if isinstance(message, dict) and message.get("type") == "hello":
           await self.handle_hello()
         else:
-          await self.handle_encrypted(payload)
+          # Disk/HTTP RPCs must not block phone GPS or other control requests.
+          if len(pending) >= 32:
+            await self.send_authenticated_error(payload, ValueError("Device is busy. Try again."))
+          else:
+            async def process(data):
+              try:
+                await self.handle_encrypted(data)
+              except Exception as error:
+                await self.send_authenticated_error(data, error)
+            task = asyncio.create_task(process(payload))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
       except TimeoutError:
         pass
       except PermissionError as error:
@@ -572,20 +593,26 @@ class BlePeerEngine:
         cloudlog.exception("asius.bluetooth.message_failed")
         await self.send_authenticated_error(payload, error)
 
+    if pending:
+      await asyncio.gather(*pending, return_exceptions=True)
+
   async def live_state(self, stop: asyncio.Event) -> None:
+    sampler = methods.LiveStateSampler(self.sm, self.params)
+    encoders = {}
     while not stop.is_set():
+      started = time.monotonic()
       try:
-        self.sm.update(0)
-        now = time.monotonic()
+        now = started
         self.active_peers = {peer: seen for peer, seen in self.active_peers.items() if now - seen < ACTIVE_PEER_SECONDS}
         if self.tx.notifying and self.active_peers:
-          snapshot = methods._live_state_snapshot(self.sm, self.params, compact=True)
+          snapshot = sampler.sample()
           for peer in list(self.active_peers):
             if peer in load_authorized_peers():
-              await self.send_body(peer, {"type": "event", "name": "liveState", "payload": snapshot})
+              await self.send_body(peer, {"type": "event", "name": "liveState", "payload": encoders.setdefault(peer, methods.StateEncoder()).encode(snapshot)})
       except Exception:
         cloudlog.exception("asius.bluetooth.live_state_failed")
-      await asyncio.sleep(LIVE_STATE_INTERVAL_SECONDS)
+      encoders = {peer: encoder for peer, encoder in encoders.items() if peer in self.active_peers}
+      await asyncio.sleep(max(0.01, LIVE_STATE_INTERVAL_SECONDS - (time.monotonic() - started)))
 
   async def run(self, stop: asyncio.Event) -> None:
     self.loop = asyncio.get_running_loop()
