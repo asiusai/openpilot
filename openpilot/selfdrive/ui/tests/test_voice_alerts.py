@@ -124,6 +124,11 @@ def test_missing_clip_does_not_stop_standard_audio(speech, tmp_path, monkeypatch
   ("wrongCarMode", "mid", "permanent", None),
   ("pedalPressed", "none", "userDisable", None),
   ("pedalPressed", "mid", "noEntry", "pedal_pressed"),
+  ("pcmDisable", "none", "userDisable", None),
+  ("steerDisengage", "none", "userDisable", None),
+  ("fanMalfunction", "mid", "userDisable", None),
+  ("fanMalfunction", "mid", "permanent", "system_error"),
+  ("commIssue", "mid", "noEntry", "system_error"),
   ("driverUnresponsive1", "small", "permanent", "touch_wheel"),
   ("driverUnresponsive2", "mid", "permanent", "touch_wheel"),
   ("preEnableStandstill", "small", "preEnable", None),
@@ -160,6 +165,16 @@ def test_readiness_messages_require_no_entry():
     assert alert_voice(state(event, event_type=ET.NO_ENTRY)) == key
     for event_type in (ET.PERMANENT, ET.WARNING, ET.USER_DISABLE, ET.SOFT_DISABLE, ET.PRE_ENABLE):
       assert alert_voice(state(event, event_type=event_type)) is None
+
+
+def test_update_and_internet_errors_do_not_trigger_speech(speech):
+  for key in ('Offroad_ConnectivityNeeded', 'Offroad_ConnectivityNeededPrompt', 'Offroad_UpdateFailed'):
+    speech.params.put(key, {'text': 'Cannot reach update server'}, block=True)
+  speech.params.put('LastUpdateException', 'Could not resolve host: github.com', block=True)
+  speech.params.put('UpdateFailedCount', 5, block=True)
+  speech.update(None, False, False, 100.)
+  assert not speech.playing
+  assert not speech.last_played
 
 
 def test_grouped_chestnut_faults_do_not_repeat(speech):

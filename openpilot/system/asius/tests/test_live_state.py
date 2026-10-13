@@ -27,6 +27,9 @@ def device(monkeypatch):
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
     "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical",
                        "alertSize": "full", "alertType": "cameraMalfunction/softDisable"},
+    "driverMonitoringState": {"activePolicy": "vision", "isRHD": False, "lockoutCount": 0,
+                              "visionPolicyState": {"faceDetected": True, "awarenessPercent": 100, "isDistracted": False,
+                                                    "pose": {"pitch": 0.2, "yaw": 0.1, "uncertainty": 0.01}}},
     "managerState": {"processes": [
       *[{"name": f"worker{i}", "running": True, "shouldBeRunning": True, "cmdline": ["arg"] * 1000} for i in range(50)],
       {"name": "camerad", "running": False, "shouldBeRunning": True, "exitCode": 1},
@@ -87,7 +90,7 @@ def test_home_vehicle_readings_require_live_valid_car_data(device, compact):
 
 
 @pytest.mark.parametrize('compact', [False, True])
-@pytest.mark.parametrize('service', ['selfdriveState', 'onroadEvents'])
+@pytest.mark.parametrize('service', ['selfdriveState', 'onroadEvents', 'driverMonitoringState'])
 def test_driving_prompts_require_live_valid_services(device, compact, service):
   sm, params, _ = device
   original = sm.__getitem__.side_effect
@@ -97,6 +100,15 @@ def test_driving_prompts_require_live_valid_services(device, compact, service):
   for alive, valid in [(False, True), (True, False)]:
     sm.alive[service], sm.valid[service] = alive, valid
     assert service not in methods._live_state_snapshot(sm, params, compact=compact)['services']
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_monitoring_snapshot_keeps_home_fields_without_model_details(device, compact):
+  sm, params, _ = device
+  assert methods._live_state_snapshot(sm, params, compact=compact)['services']['driverMonitoringState'] == {
+    'activePolicy': 'vision', 'isRHD': False,
+    'visionPolicyState': {'faceDetected': True, 'awarenessPercent': 100, 'isDistracted': False, 'pose': {'pitch': 0.2, 'yaw': 0.1}},
+  }
 
 
 def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_path):

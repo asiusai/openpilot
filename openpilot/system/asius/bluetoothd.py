@@ -77,6 +77,7 @@ MAX_MESSAGE_BYTES = 256 * 1024
 ASSEMBLY_TIMEOUT_SECONDS = 10.
 
 DBusStrList = Annotated[list[str], DBusSignature("as")]
+DBusUInt16 = Annotated[int, DBusSignature("q")]
 
 
 class FrameError(ValueError):
@@ -194,6 +195,17 @@ class GattService(ServiceInterface):
   @dbus_property(access=PropertyAccess.READ)
   def Primary(self) -> DBusBool:
     return True
+
+  @dbus_property(access=PropertyAccess.READWRITE)
+  def Handle(self) -> DBusUInt16:
+    # Keep bonded phones' GATT caches valid across process restarts. BlueZ's
+    # automatic allocation advances the service range after each registration.
+    return 0x0100
+
+  @Handle.setter
+  def Handle(self, value: DBusUInt16):
+    if value != 0x0100:
+      raise DBusError("org.bluez.Error.InvalidArguments", "Asius service handle is fixed")
 
 
 class GattCharacteristic(ServiceInterface):
