@@ -25,7 +25,8 @@ def device(monkeypatch):
     "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "vCruiseCluster": 90.0, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
     "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android", "unixTimestampMillis": 1800000000000},
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
-    "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical", "alertSize": "full"},
+    "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical",
+                       "alertSize": "full", "alertType": "cameraMalfunction/softDisable"},
     "managerState": {"processes": [
       *[{"name": f"worker{i}", "running": True, "shouldBeRunning": True, "cmdline": ["arg"] * 1000} for i in range(50)],
       {"name": "camerad", "running": False, "shouldBeRunning": True, "exitCode": 1},
@@ -54,6 +55,7 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   assert snapshot['software']['UpdaterProgress'] == 25
   assert snapshot['services']['extrinsicsCalibration']['calPerc'] == 42
   assert snapshot['services']['selfdriveState']['alertText1'] == 'Take control'
+  assert snapshot['services']['selfdriveState']['alertType'] == 'cameraMalfunction/softDisable'
   assert snapshot['services']['gpsLocation']['horizontalAccuracy'] == 3
   assert snapshot['services']['gpsLocation']['unixTimestampMillis'] == 1800000000000
   assert snapshot['services']['managerState']['processes'] == [{'name': 'camerad', 'running': False, 'shouldBeRunning': True, 'exitCode': 1}]
@@ -82,6 +84,19 @@ def test_home_vehicle_readings_require_live_valid_car_data(device, compact):
   for alive, valid in [(False, True), (True, False)]:
     sm.alive['carState'], sm.valid['carState'] = alive, valid
     assert 'carState' not in methods._live_state_snapshot(sm, params, compact=compact)['services']
+
+
+@pytest.mark.parametrize('compact', [False, True])
+@pytest.mark.parametrize('service', ['selfdriveState', 'onroadEvents'])
+def test_driving_prompts_require_live_valid_services(device, compact, service):
+  sm, params, _ = device
+  original = sm.__getitem__.side_effect
+  sm.recv_frame['onroadEvents'] = 1
+  sm.__getitem__.side_effect = lambda name: [SimpleNamespace(to_dict=lambda: {'name': 'preLaneChangeLeft'})] if name == 'onroadEvents' else original(name)
+  assert service in methods._live_state_snapshot(sm, params, compact=compact)['services']
+  for alive, valid in [(False, True), (True, False)]:
+    sm.alive[service], sm.valid[service] = alive, valid
+    assert service not in methods._live_state_snapshot(sm, params, compact=compact)['services']
 
 
 def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_path):
