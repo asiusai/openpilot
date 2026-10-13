@@ -287,7 +287,7 @@ class StreamSession:
 
     self.identifier = str(uuid.uuid4())
     self.params = Params()
-    builder = WebRTCAnswerBuilder(body.sdp, bind_address=_default_route_ip())
+    builder = WebRTCAnswerBuilder(body.sdp, bind_address=body.bind_address or _default_route_ip(), local_only=body.bind_address is not None)
 
     self.enabled = body.enabled
     self.session_timeout = None if body.in_car or "can" in body.bridge_services_out else SESSION_TIMEOUT_SECONDS

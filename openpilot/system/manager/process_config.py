@@ -4,7 +4,7 @@ import platform
 
 from opendbc.car.structs import car
 from openpilot.common.params import Params
-from openpilot.common.hardware import ASIUS_HARDWARE, COMMA_HARDWARE, PC
+from openpilot.common.hardware import ASIUS_HARDWARE, BLUETOOTH_AVAILABLE, COMMA_HARDWARE, PC
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
@@ -79,7 +79,7 @@ def and_(*fns):
 procs = [
   DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid", enabled=False),
   DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelayPid"),
-  DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=ASIUS_HARDWARE),
+  DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=BLUETOOTH_AVAILABLE),
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),
   NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], logging, restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
