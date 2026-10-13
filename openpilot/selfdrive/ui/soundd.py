@@ -13,6 +13,8 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
 from openpilot.common.hardware import HARDWARE
+from openpilot.common.params import Params
+from openpilot.selfdrive.ui.voice_alerts import VoiceAlerts
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -76,6 +78,8 @@ def check_selfdrive_timeout_alert(sm):
 class Soundd:
   def __init__(self):
     self.load_sounds()
+    self.voice = VoiceAlerts(Params())
+    self.voice_critical = False
 
     self.current_alert = AudibleAlert.none
     self.current_sound = AudibleAlert.none
@@ -112,6 +116,7 @@ class Soundd:
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
     ret = np.zeros(frames, dtype=np.float32)
+    critical = self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
 
     if self.current_alert != AudibleAlert.none:
       num_loops = sound_list[self.current_alert][1]
@@ -134,7 +139,9 @@ class Soundd:
           self.pending_stop = False
           break
 
-    return ret * self.current_volume
+    critical = critical or self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
+    voice_volume = MAX_VOLUME if HARDWARE.get_device_type() == "v0" else self.current_volume
+    return self.voice.mix(ret * self.current_volume, voice_volume, critical)
 
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
@@ -161,6 +168,10 @@ class Soundd:
       self.current_sound_frame = 0
 
   def get_audible_alert(self, sm):
+    if sm.seen['deviceState'] and not sm['deviceState'].started:
+      self.update_alert(AudibleAlert.none)
+      self.selfdrive_timeout_alert = False
+      return
     if sm.updated['selfdriveState']:
       new_alert = sm['selfdriveState'].alertSound.raw
       self.update_alert(new_alert)
@@ -188,7 +199,7 @@ class Soundd:
     import sounddevice as sd
     micd.patch_sounddevice(sd)
 
-    sm = messaging.SubMaster(['selfdriveState', 'soundPressure'])
+    sm = messaging.SubMaster(['selfdriveState', 'soundPressure', 'deviceState'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
@@ -200,10 +211,16 @@ class Soundd:
         # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:
           self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
-          if self.current_alert == AudibleAlert.none:
+          if self.current_alert == AudibleAlert.none and not self.voice.playing:
             self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
+        now = time.monotonic()
+        onroad = not sm.seen['deviceState'] or sm['deviceState'].started
+        state = sm['selfdriveState'] if sm.seen['selfdriveState'] and sm.valid['selfdriveState'] and now - sm.recv_time['selfdriveState'] < 1. else None
+        self.voice_critical = (self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate) or
+                               (onroad and state is not None and state.alertStatus == log.SelfdriveState.AlertStatus.critical))
+        self.voice.update(state, onroad, self.voice_critical, now)
 
         if self.current_alert in critical_max_sounds:
           elapsed = time.monotonic() - self.ramp_start_time
