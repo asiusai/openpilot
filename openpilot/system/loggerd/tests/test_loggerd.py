@@ -1,4 +1,6 @@
 import numpy as np
+import json
+import tempfile
 import os
 import re
 import random
@@ -20,6 +22,7 @@ from openpilot.common.timeout import Timeout
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.system.loggerd.xattr_cache import getxattr
+from openpilot.system.loggerd.tests.media_fixture import make_video
 from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE
 from openpilot.system.manager.process_config import managed_processes
 from openpilot.common.version import get_version
@@ -198,7 +201,9 @@ class TestLoggerd(OpenpilotTestCase):
   def test_rotation(self):
     Params().put("RecordFront", True, block=True)
 
-    expected_files = {"rlog.zst", "qlog.zst", "qcamera.ts", "fcamera.hevc", "dcamera.hevc", "ecamera.hevc"}
+    camera_extension = "mp4"
+    qcamera_filename = "qcamera.mp4"
+    expected_files = {"rlog.zst", "qlog.zst", qcamera_filename, *(f"{camera}.{camera_extension}" for camera in ("fcamera", "dcamera", "ecamera"))}
 
     num_segs = random.randint(2, 3)
     length = random.randint(4, 5) # H264 encoder uses 40 lookahead frames and does B-frame reordering, so minimum 3 seconds before qcam output
@@ -211,6 +216,53 @@ class TestLoggerd(OpenpilotTestCase):
       logged = {f.name for f in p.iterdir() if f.is_file()}
       diff = logged ^ expected_files
       assert len(diff) == 0, f"didn't get all expected files. seg={n} {route_path=}, {diff=}\n{logged=} {expected_files=}"
+
+  @parameterized.expand(['hevc', 'h264'])
+  def test_recordings_are_fragmented_mp4(self, codec):
+    Params().put_bool("RecordFront", True, block=True)
+    with tempfile.TemporaryDirectory() as temporary:
+      source = Path(temporary) / f"input.{codec}"
+      make_video(source, 1, codec="libx265" if codec == "hevc" else "libx264", format_name=codec)
+      encoded = source.read_bytes()
+      packets = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_packets",
+                           "-show_entries", "packet=pos,size,flags", "-of", "json", str(source)]))["packets"]
+    first = encoded[:int(packets[0]["size"])]
+    starts = list(re.finditer(b"\x00\x00(?:\x00)?\x01", first))
+    header = b"".join(first[nal.start():starts[i + 1].start() if i + 1 < len(starts) else len(first)]
+                      for i, nal in enumerate(starts)
+                      if ((first[nal.end()] >> 1) & 63 in (32, 33, 34) if codec == "hevc" else first[nal.end()] & 31 in (7, 8)))
+    streams = {"narrowRoadEncodeData": "fcamera.mp4", "wideRoadEncodeData": "ecamera.mp4", "cabinEncodeData": "dcamera.mp4"}
+    if codec == "h264":
+      streams = {"qNarrowRoadEncodeData": "qcamera.mp4"}
+    pm = messaging.PubMaster(list(streams))
+    os.environ["LOGGERD_TEST"] = "1"
+    os.environ["LOGGERD_SEGMENT_LENGTH"] = "60"
+    managed_processes["loggerd"].start()
+    try:
+      for service in streams:
+        assert pm.wait_for_readers_to_update(service, timeout=5)
+        for frame, packet in enumerate(packets):
+          msg = messaging.new_message(service)
+          data = getattr(msg, service)
+          data.width, data.height = 64, 64
+          data.idx.type = log.EncodeIndex.Type.fullHEVC if codec == "hevc" else log.EncodeIndex.Type.qcameraH264
+          data.idx.flags = 8 if "K" in packet["flags"] else 0  # V4L2_BUF_FLAG_KEYFRAME
+          data.idx.frameId = data.idx.encodeId = frame
+          data.header = header
+          start, size = int(packet["pos"]), int(packet["size"])
+          data.data = encoded[start:start + size]
+          pm.send(service, msg)
+          assert pm.wait_for_readers_to_update(service, timeout=5)
+    finally:
+      managed_processes["loggerd"].stop()
+    for filename in streams.values():
+      path = self._get_latest_log_dir() / filename
+      probe = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries",
+                         "stream=codec_name,codec_tag_string:format=format_name", "-of", "json", str(path)]))
+      assert probe["streams"][0]["codec_name"] == codec
+      assert probe["streams"][0]["codec_tag_string"] == ("hvc1" if codec == "hevc" else "avc1")
+      assert "mp4" in probe["format"]["format_name"]
+      assert b"moof" in path.read_bytes(), "recording must contain MP4 fragments"
 
   def test_bootlog(self):
     # generate bootlog with fake launch log
@@ -322,8 +374,9 @@ class TestLoggerd(OpenpilotTestCase):
 
     self._publish_camera_and_audio_messages()
 
-    cabin_hevc_exists = os.path.exists(os.path.join(self._get_latest_log_dir(), 'dcamera.hevc'))
-    assert cabin_hevc_exists == record_front
+    dcamera_file = 'dcamera.mp4'
+    dcamera_exists = os.path.exists(os.path.join(self._get_latest_log_dir(), dcamera_file))
+    assert dcamera_exists == record_front
 
   @parameterized.expand([True, False])
   def test_record_audio(self, record_audio):
@@ -332,8 +385,8 @@ class TestLoggerd(OpenpilotTestCase):
 
     self._publish_camera_and_audio_messages()
 
-    qcamera_ts_path = os.path.join(self._get_latest_log_dir(), 'qcamera.ts')
-    ffprobe_cmd = f"ffprobe -i {qcamera_ts_path} -show_streams -select_streams a -loglevel error"
+    qcamera_file = 'qcamera.mp4'
+    ffprobe_cmd = f"ffprobe -i {os.path.join(self._get_latest_log_dir(), qcamera_file)} -show_streams -select_streams a -loglevel error"
     has_audio_stream = subprocess.run(ffprobe_cmd, shell=True, capture_output=True).stdout.strip() != b''
     assert has_audio_stream == record_audio
 
