@@ -24,7 +24,8 @@ def test_navigation_rpc_uses_upstream_params(tmp_path, monkeypatch):
     dispatcher = methods.dispatcher_for_peer('test')
     result = json.loads(methods.handle({'id': 1, 'method': 'setNavDestination', 'params': place}, dispatcher))
     assert result['result']['success'] == 1
-    assert params.get('NavDestination') == place
+    assert {key: params.get('NavDestination')[key] for key in place} == place
+    assert params.get_bool('NavigationEnabled')
     result = json.loads(methods.handle({'id': 2, 'method': 'setNavDestination', 'params': {**place, 'latitude': 100}}, dispatcher))
     assert result['result']['success'] == 0
     assert params.get('NavDestination')['latitude'] == 59.4
@@ -33,6 +34,7 @@ def test_navigation_rpc_uses_upstream_params(tmp_path, monkeypatch):
     if transport == 'bluetooth':
       from openpilot.system.asius.bluetoothd import BlePeerEngine
       engine = BlePeerEngine.__new__(BlePeerEngine)
+      engine.rpc_active = 0
       engine.send_body = AsyncMock()
       asyncio.run(engine.handle_rpc('test', {'id': 4, 'method': 'setNavDestination', 'params': place}))
       assert engine.send_body.call_args.args[1]['result']['success'] == 1
@@ -68,7 +70,7 @@ def test_invalid_destination_cannot_change_route_or_history(tmp_path, monkeypatc
   navigation.setNavDestination(**place)
   assert navigation.setNavDestination(**{**place, field: value})['success'] == 0
   assert navigation.getRecentNavDestinations() == [place]
-  assert Params(str(tmp_path)).get('NavDestination') == place
+  assert {key: Params(str(tmp_path)).get('NavDestination')[key] for key in place} == place
 
 
 def test_parallel_transport_updates_do_not_drop_destinations(tmp_path, monkeypatch):
@@ -95,7 +97,7 @@ def test_route_engine_uses_asius_proxy_without_mapbox_token(monkeypatch):
   params = MagicMock()
   params.get.side_effect = values.get
   with patch('openpilot.selfdrive.navigation.navd.Api'):
-    engine = RouteEngine(MagicMock(), MagicMock(), params)
+    engine = RouteEngine(MagicMock(), MagicMock(), params, store=MagicMock())
     engine.api.get_token.return_value = 'signed-device-proof'
   engine.last_position = (24.7, 59.4)
   with patch('requests.get') as get:

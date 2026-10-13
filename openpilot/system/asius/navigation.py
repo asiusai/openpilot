@@ -2,6 +2,7 @@
 
 import fcntl
 import math
+import secrets
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -65,5 +66,48 @@ def setNavDestination(latitude, longitude, name, address):
   with history_lock(params):
     recent = [item for item in read_recent(params) if (item["latitude"], item["longitude"]) != (latitude, longitude)]
     params.put(RECENT_DESTINATIONS, [place, *recent][:MAX_RECENT_DESTINATIONS], block=True)
-    params.put("NavDestination", place, block=True)
+    params.put_bool("NavigationEnabled", True, block=True)
+    params.put("NavDestination", {**place, "requestId": secrets.token_hex(16)}, block=True)
   return {"success": 1}
+
+
+def navigation_request(path, params):
+  import requests
+  from openpilot.system.asius.mapbox import NAVIGATION_API, NavigationApi
+  try:
+    response = requests.get(f"{NAVIGATION_API}/{path}", params=params,
+                            headers={"Authorization": f"Bearer {NavigationApi().get_token()}"}, timeout=8)
+    response.raise_for_status()
+    if len(response.content) > 256 * 1024:
+      raise ValueError("Navigation response is too large")
+    return response.json()
+  except requests.RequestException:
+    raise ValueError("Cannot search. Check device internet.") from None
+
+
+def searchNavigation(query, session, latitude=None, longitude=None, language="en"):
+  if not isinstance(query, str) or not 3 <= len(query.strip()) <= 256:
+    raise ValueError("Invalid search")
+  if not isinstance(session, str) or not 1 <= len(session) <= 128:
+    raise ValueError("Invalid search session")
+  if not isinstance(language, str) or not 2 <= len(language) <= 8 or not language.replace("-", "").isalpha():
+    raise ValueError("Invalid language")
+  params = {"q": query, "session_token": session, "limit": "6", "language": language}
+  if latitude is not None or longitude is not None:
+    point = destination(latitude, longitude, "Search", "")
+    params["proximity"] = f'{point["longitude"]},{point["latitude"]}'
+  result = navigation_request("search/searchbox/v1/suggest", params)
+  return {"suggestions": [{key: item[key] for key in ("mapbox_id", "name", "place_formatted", "full_address") if key in item}
+                          for item in result.get("suggestions", [])[:6]]}
+
+
+def retrieveNavigationLocation(mapboxId, session):
+  from urllib.parse import quote
+  if not isinstance(mapboxId, str) or not 1 <= len(mapboxId) <= 2048:
+    raise ValueError("Invalid location")
+  if not isinstance(session, str) or not 1 <= len(session) <= 128:
+    raise ValueError("Invalid search session")
+  result = navigation_request(f"search/searchbox/v1/retrieve/{quote(mapboxId, safe='')}", {"session_token": session})
+  longitude, latitude = result["features"][0]["geometry"]["coordinates"]
+  point = destination(latitude, longitude, "Location", "")
+  return {"latitude": point["latitude"], "longitude": point["longitude"]}
