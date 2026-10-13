@@ -19,6 +19,7 @@ def test_get_all_params_serializes_current_api_without_protected_values(tmp_path
   values = {
     'DeviceName': 'Test device',
     'ExperimentalMode': True,
+    'VoiceAlertsEnabled': True,
     'LongitudinalPersonality': 1,
     'LastUpdateUptimeOnroad': 1.25,
     'Offroad_CarUnrecognized': {'text': 'Test alert'},
@@ -35,6 +36,7 @@ def test_get_all_params_serializes_current_api_without_protected_values(tmp_path
     assert result[key] == values[key]
   assert result['LastUpdateTime'] == values['LastUpdateTime'].timestamp()
   assert result['InstallDate'] is None
+  assert result['VoiceAlertsEnabled'] is True
   assert 'CarParams' not in result
   assert not methods.SAVE_PARAMS_BLOCKED_KEYS.intersection(result)
   assert 'private test value' not in json.dumps(response)
