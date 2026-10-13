@@ -71,7 +71,7 @@ def test_stale_calibration_and_safety_alerts_do_not_render_progress(monkeypatch)
   assert ledd.automatic_led_channels(sm, 255, 100.) is None
   sm.valid['extrinsicsCalibration'] = True
   sm['selfdriveState'].active = True
-  sm['selfdriveState'].alertSound.raw = 'warningImmediate'
+  sm['selfdriveState'].alertSound = 'warningImmediate'
   assert ledd.automatic_led_channels(sm, 255, 100.) == {
     1: [0] * 9, 2: [127, 0, 0, 0, 0, 0, 127, 0, 0], 3: [127, 0, 0, 0, 0, 0, 127, 0, 0],
   }
