@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import time
-import uuid
 from typing import Any
 
 import requests
@@ -156,7 +155,6 @@ class DataApiClient:
       "method": method,
       "path": path,
       "bodyHash": b64url(hashlib.sha256(encoded).digest()),
-      "nonce": str(uuid.uuid4()),
       "scope": "asius-storage-request-v1",
       "timestamp": now,
     }
