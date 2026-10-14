@@ -4,13 +4,31 @@ import unittest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from dbus_fast import Variant
+from dbus_fast import Message, Variant
 from dbus_fast.errors import DBusError
 
-from openpilot.system.asius.bluetoothd import Advertisement, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, StatusCharacteristic, keep_advertising
+from openpilot.system.asius.bluetoothd import (
+  Advertisement, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, StatusCharacteristic, keep_advertising, bluez_registration_lost,
+)
 
 
 class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
+  def test_adapter_reset_invalidates_service_registration(self):
+    def removed(path, interfaces):
+      return Message.new_signal('/', 'org.freedesktop.DBus.ObjectManager', 'InterfacesRemoved', 'oas', [path, interfaces])
+    self.assertTrue(bluez_registration_lost(removed('/org/bluez/hci0', ['org.bluez.Adapter1']), '/org/bluez/hci0'))
+    self.assertTrue(bluez_registration_lost(removed('/org/bluez/hci0', ['org.bluez.GattManager1']), '/org/bluez/hci0'))
+    self.assertFalse(bluez_registration_lost(removed('/org/bluez/hci1', ['org.bluez.Adapter1']), '/org/bluez/hci0'))
+    self.assertFalse(bluez_registration_lost(removed('/org/bluez/hci0/dev_123', ['org.bluez.Device1']), '/org/bluez/hci0'))
+
+  def test_bluez_restart_invalidates_service_registration(self):
+    def changed(name, old, new):
+      return Message.new_signal('/org/freedesktop/DBus', 'org.freedesktop.DBus', 'NameOwnerChanged', 'sss', [name, old, new])
+    self.assertTrue(bluez_registration_lost(changed('org.bluez', ':1.2', ''), '/org/bluez/hci0'))
+    self.assertTrue(bluez_registration_lost(changed('org.bluez', ':1.2', ':1.3'), '/org/bluez/hci0'))
+    self.assertFalse(bluez_registration_lost(changed('org.bluez', '', ':1.3'), '/org/bluez/hci0'))
+    self.assertFalse(bluez_registration_lost(changed('other.service', ':1.2', ''), '/org/bluez/hci0'))
+
   async def test_slow_rpc_does_not_block_phone_gps(self):
     engine = BlePeerEngine.__new__(BlePeerEngine)
     engine.rpc_active = 0
@@ -73,6 +91,19 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
     self.assertEqual([call.args[2] for call in set_property.call_args_list], ['Pairable', 'Alias', 'Pairable'])
     self.assertEqual([call.args[3].value for call in set_property.call_args_list], [True, 'Asius v0', False])
 
+  async def test_advertising_recovers_after_connected_refresh_fails(self):
+    stop = MagicMock()
+    stop.is_set.side_effect = [False, False, False, True]
+    stop.wait = AsyncMock()
+    bus = MagicMock()
+    with patch('openpilot.system.asius.bluetoothd.connected_device_count', new=AsyncMock(side_effect=[0, 1, 0])), \
+         patch('openpilot.system.asius.bluetoothd.pairing_mode_active', return_value=False), \
+         patch('openpilot.system.asius.bluetoothd.methods.getDeviceName', return_value='comma 3X'), \
+         patch('openpilot.system.asius.bluetoothd.set_adapter_property', new=AsyncMock()), \
+         patch('openpilot.system.asius.bluetoothd.cloudlog.exception'), \
+         patch('openpilot.system.asius.bluetoothd.refresh_advertisement', new=AsyncMock(side_effect=[None, RuntimeError('busy'), None])) as refresh:
+      await keep_advertising(bus, '/adapter', stop)
+    self.assertEqual(refresh.await_count, 3)
 
 
 class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
