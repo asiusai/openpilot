@@ -172,7 +172,7 @@ def hw_state_thread(end_event, hw_queue):
       prev_usb_topology = usb_topology
       if ASIUS_HARDWARE:
         try:
-          sync_device_hostname(Params().get("DeviceName", return_default=True))
+          sync_device_hostname(Params().get("DeviceName") or "Asius v0")
         except Exception:
           cloudlog.exception("Error updating device hostname")
       try:

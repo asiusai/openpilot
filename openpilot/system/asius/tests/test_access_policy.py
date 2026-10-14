@@ -42,7 +42,7 @@ def test_restricted_rpc_and_param_paths_reject_ignition_or_unknown(setup, state)
   with pytest.raises(PermissionError):
     bluetoothd.enable_pairing_mode()
   with pytest.raises(PermissionError):
-    relayd.authorize_peer('test')
+    relayd.authorize_peer('test', 'invalid')
 
 
 def test_regular_writes_and_calibration_reboot_shutdown_allowed_during_ignition(setup):

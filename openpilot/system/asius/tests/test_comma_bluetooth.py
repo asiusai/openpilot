@@ -29,12 +29,12 @@ def test_screen_button_requires_ignition_off(monkeypatch, tmp_path, ignition):
   params = Params(str(tmp_path))
   monkeypatch.setattr(bluetoothd, 'Params', lambda: params)
   monkeypatch.setattr(access_policy, 'ignition_state', lambda: ignition)
-  monkeypatch.setattr(bluetoothd.time, 'time', lambda: 1000.)
+  monkeypatch.setattr(bluetoothd.time, 'monotonic', lambda: 1000.)
   result = bluetooth_ui.start_pairing()
   until = params.get('BluetoothPairingUntil')
   if ignition is False:
-    assert 'five minutes' in result
-    assert until == 1300
+    assert 'two minutes' in result
+    assert until == 1120
   else:
     assert 'Turn the vehicle off' in result
     assert until is None
