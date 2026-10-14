@@ -22,15 +22,14 @@ from openpilot.common.swaglog import cloudlog
 import openpilot.cereal.messaging as messaging
 from openpilot.system.asius import methods
 from openpilot.system.asius.phone_gps import PHONE_GPS_METHODS, PhoneGps
-from openpilot.system.asius.identity import is_dongle_id
+from openpilot.system.asius.identity import is_dongle_id, get_device_private_key
+from openpilot.system.asius.session import SecureSession, wrap_peer, unwrap_peer
+from openpilot.system.asius.pairing_confirmation import Confirmation, announce
 from openpilot.system.asius.terminal import TerminalManager
 from openpilot.system.asius.access_policy import ignition_state, require_ignition_off
 from openpilot.system.asius.relayd import (
   authorize_peer,
   load_authorized_peers,
-  pack_peer_message,
-  peer_message_timestamp,
-  unpack_peer_message,
 )
 
 BLUEZ_SERVICE = "org.bluez"
@@ -55,7 +54,7 @@ ADVERTISEMENT_PATH = "/ai/asius/advertisement0"
 AGENT_PATH = "/ai/asius/agent0"
 
 ACTIVE_PEER_SECONDS = 45.
-PAIRING_MODE_SECONDS = 300
+PAIRING_MODE_SECONDS = 120
 LIVE_STATE_INTERVAL_SECONDS = 0.2
 TERMINAL_OUTPUT_QUEUE_SIZE = 64
 NOTIFICATION_FRAME_DELAY_SECONDS = 0.004
@@ -167,12 +166,15 @@ def variant_value(value: Any) -> Any:
 
 def enable_pairing_mode(duration_seconds: int = PAIRING_MODE_SECONDS) -> int:
   require_ignition_off()
-  pairing_until = int(time.time()) + duration_seconds  # noqa: TID251
+  pairing_until = int(time.monotonic()) + duration_seconds
   Params().put(BLUETOOTH_PAIRING_UNTIL_PARAM, pairing_until, block=True)
+  announce('started')
   return pairing_until
 
 
-def disable_pairing_mode() -> None:
+def disable_pairing_mode(completed: bool = False) -> None:
+  if Params().get(BLUETOOTH_PAIRING_UNTIL_PARAM) is not None:
+    announce('success' if completed else 'failed')
   Params().remove(BLUETOOTH_PAIRING_UNTIL_PARAM)
 
 
@@ -181,7 +183,10 @@ def pairing_mode_active() -> bool:
     disable_pairing_mode()
     return False
   pairing_until = Params().get(BLUETOOTH_PAIRING_UNTIL_PARAM)
-  return isinstance(pairing_until, int) and pairing_until >= int(time.time())  # noqa: TID251
+  active = isinstance(pairing_until, int) and pairing_until > time.monotonic()
+  if not active and pairing_until is not None:
+    disable_pairing_mode()
+  return active
 
 
 class GattService(ServiceInterface):
@@ -245,8 +250,17 @@ class StatusCharacteristic(GattCharacteristic):
 
 class RxCharacteristic(GattCharacteristic):
   def __init__(self, on_frame: Callable[[str, bytes], None]):
-    super().__init__(BLE_RX_UUID, ["write", "encrypt-write"])
+    super().__init__(BLE_RX_UUID, ["read", "write", "secure-read", "secure-write"])
     self.on_frame = on_frame
+
+  @dbus_method()
+  def ReadValue(self, options: DBusDict) -> DBusBytes:
+    # Complete authenticated bonding before the client subscribes. BlueZ can
+    # lose a subscription made before the peer's private address is resolved.
+    offset = int(variant_value(options.get("offset", Variant("q", 0))))
+    if offset > 1:
+      raise DBusError("org.bluez.Error.InvalidOffset", "invalid security status offset")
+    return bytes([PROTOCOL_VERSION])[offset:]
 
   @dbus_method()
   def WriteValue(self, value: DBusBytes, options: DBusDict):
@@ -256,7 +270,7 @@ class RxCharacteristic(GattCharacteristic):
 
 class TxCharacteristic(GattCharacteristic):
   def __init__(self):
-    super().__init__(BLE_TX_UUID, ["notify", "encrypt-read"])
+    super().__init__(BLE_TX_UUID, ["notify", "secure-read"])
     self.notifying = False
     self.value = b""
     self.send_lock = asyncio.Lock()
@@ -313,13 +327,19 @@ class Advertisement(ServiceInterface):
 
   @dbus_property(access=PropertyAccess.READ)
   def LocalName(self) -> DBusStr:
-    return methods.getDeviceName()
+    return methods.getDeviceName() if pairing_mode_active() else ""
 
   @dbus_property(access=PropertyAccess.READ)
   def Discoverable(self) -> DBusBool:
-    # Browsers must be able to find saved devices after pairing mode ends.
-    # OS bonding and new app authorization are still gated by pairing mode.
-    return True
+    return pairing_mode_active()
+
+  @dbus_property(access=PropertyAccess.READ)
+  def MinInterval(self) -> DBusUInt32:
+    return 100
+
+  @dbus_property(access=PropertyAccess.READ)
+  def MaxInterval(self) -> DBusUInt32:
+    return 150
 
   @dbus_method()
   def Release(self):
@@ -327,8 +347,9 @@ class Advertisement(ServiceInterface):
 
 
 class PairingAgent(ServiceInterface):
-  def __init__(self):
+  def __init__(self, confirmation: Confirmation):
     super().__init__(AGENT)
+    self.confirmation = confirmation
 
   @staticmethod
   def require_pairing_mode() -> None:
@@ -337,16 +358,19 @@ class PairingAgent(ServiceInterface):
 
   @dbus_method()
   def Release(self):
-    pass
+    self.confirmation.cancel()
 
   @dbus_method()
-  def RequestConfirmation(self, device: DBusObjectPath, passkey: DBusUInt32):
+  async def RequestConfirmation(self, device: DBusObjectPath, passkey: DBusUInt32):
     self.require_pairing_mode()
-    cloudlog.event("asius.bluetooth.os_pairing", device=device, passkey=passkey)
+    try:
+      await self.confirmation.request(device, passkey)
+    except (PermissionError, TimeoutError):
+      raise DBusError("org.bluez.Error.Rejected", "Physical confirmation was cancelled or expired") from None
 
   @dbus_method()
   def RequestAuthorization(self, device: DBusObjectPath):
-    self.require_pairing_mode()
+    raise DBusError("org.bluez.Error.Rejected", "Numeric Comparison is required")
 
   @dbus_method()
   def AuthorizeService(self, device: DBusObjectPath, uuid: DBusStr):
@@ -355,7 +379,7 @@ class PairingAgent(ServiceInterface):
 
   @dbus_method()
   def Cancel(self):
-    pass
+    self.confirmation.cancel()
 
 
 class BlePeerEngine:
@@ -363,10 +387,12 @@ class BlePeerEngine:
     self.tx = tx
     self.tx.on_stop = self.clear_active_peers
     self.assembler = FrameAssembler()
-    self.incoming: asyncio.Queue[bytes] = asyncio.Queue()
+    self.incoming: asyncio.Queue[tuple[str, bytes]] = asyncio.Queue(maxsize=64)
+    self.sessions: dict[str, SecureSession] = {}
+    self.peer_devices: dict[str, str] = {}
+    self.approvals: Confirmation | None = None
     self.active_peers: dict[str, float] = {}
     self.rpc_active = 0
-    self.peer_clocks: dict[str, tuple[int, float]] = {}
     self.params = Params()
     self.dongle_id = self.params.get("DongleId")
     self.sm = messaging.SubMaster(methods.LIVE_STATE_SERVICES)
@@ -392,56 +418,34 @@ class BlePeerEngine:
     try:
       payload = self.assembler.feed(device, frame)
       if payload is not None:
-        self.incoming.put_nowait(payload)
-    except FrameError as error:
+        self.incoming.put_nowait((device, payload))
+    except (FrameError, asyncio.QueueFull) as error:
       cloudlog.event("asius.bluetooth.invalid_frame", device=device, error=str(error))
 
   def clear_active_peers(self) -> None:
     self.active_peers.clear()
+    self.sessions.clear()
+    self.peer_devices.clear()
     self.phone_gps.clear()
 
-  def peer_timestamp(self, recipient: str) -> int | None:
-    if recipient not in self.peer_clocks:
-      return None
-    peer_time, observed_at = self.peer_clocks[recipient]
-    return int(peer_time + time.monotonic() - observed_at)
+  def disconnect(self, device: str) -> None:
+    self.sessions.pop(device, None)
+    self.assembler.partial.pop(device, None)
+    for peer, path in list(self.peer_devices.items()):
+      if path == device:
+        self.peer_devices.pop(peer, None)
+        self.active_peers.pop(peer, None)
+    if self.approvals:
+      self.approvals.cancel(device)
 
   async def send_body(self, recipient: str, body: dict[str, Any], initial: bool = False) -> bool:
-    if self.dongle_id is None:
+    session = self.sessions.get(self.peer_devices.get(recipient, ''))
+    if session is None or not session.ready(recipient):
       return False
-    return await self.tx.send_text(pack_peer_message(
-      self.dongle_id, recipient, body, timestamp=self.peer_timestamp(recipient),
-    ), initial=initial)
-
-  def unpack_body(self, payload: bytes) -> tuple[str, dict | None, bool] | None:
-    message = unpack_peer_message(payload.decode(), self.dongle_id, validate_timestamp=False)
-    if message is None:
-      return None
-
-    sender, body, _ = message
-    if body is None:
-      return message
-
-    timestamp = peer_message_timestamp(payload.decode())
-    if timestamp is not None:
-      self.peer_clocks[sender] = (timestamp, time.monotonic())
-    return message
+    return await self.tx.send_text(wrap_peer(session.encrypt(recipient, json.dumps(body))), initial=initial)
 
   async def send_error(self, recipient: str, message: str, request_id: Any = None) -> None:
     await self.send_body(recipient, {"type": "ble-error", "requestId": request_id, "error": message})
-
-  async def send_authenticated_error(self, payload: bytes, error: Exception) -> None:
-    if self.dongle_id is None:
-      return
-    try:
-      message = self.unpack_body(payload)
-      if message is None:
-        return
-      sender, body, _ = message
-      if body is not None:
-        await self.send_error(sender, str(error), body.get("requestId"))
-    except Exception:
-      pass
 
   async def handle_hello(self) -> None:
     response = {
@@ -454,7 +458,7 @@ class BlePeerEngine:
     }
     await self.tx.send_text(json.dumps(response, separators=(",", ":")), initial=True)
 
-  async def handle_pair_request(self, sender: str, body: dict[str, Any]) -> None:
+  async def handle_pair_request(self, sender: str, body: dict[str, Any], device: str) -> None:
     request_id = body.get("requestId")
     if body.get("publicKey") != sender:
       raise ValueError("pair request sender mismatch")
@@ -471,8 +475,14 @@ class BlePeerEngine:
     if label is not None and len(label) > 80:
       raise ValueError("pairing label is too long")
 
-    authorize_peer(sender, label)
-    disable_pairing_mode()
+    if self.approvals is None or not self.approvals.consume(device):
+      raise PermissionError("Confirm this phone on the device before authorizing the app")
+    try:
+      authorize_peer(sender, body.get("storagePublicKey"), label)
+    except Exception:
+      self.approvals.failed(device)
+      raise
+    disable_pairing_mode(completed=True)
     self.active_peers[sender] = time.monotonic()
     await self.send_body(sender, {
       "type": "pair-response",
@@ -503,38 +513,49 @@ class BlePeerEngine:
       self.rpc_active -= 1
     await self.send_body(sender, response)
 
-  async def handle_encrypted(self, payload: bytes) -> None:
+  async def handle_encrypted(self, payload: bytes, device: str) -> None:
     if self.dongle_id is None:
-      raise RuntimeError("device identity is unavailable")
-
-    message = self.unpack_body(payload)
-    if message is None:
-      raise ValueError("expected an Athena peer envelope")
-    sender, body, decrypt_failed = message
-    if body is None:
-      if decrypt_failed:
-        raise ValueError("peer envelope failed authentication")
+      raise RuntimeError('Device identity is unavailable')
+    if device not in self.sessions:
+      if len(self.sessions) >= 8:
+        raise ValueError('Too many Bluetooth connections')
+      self.sessions[device] = SecureSession(get_device_private_key(), 'bluetooth')
+    session = self.sessions[device]
+    result = session.receive(unwrap_peer(payload.decode(), self.dongle_id))
+    sender = result['peer']
+    if 'reply' in result:
+      await self.tx.send_text(wrap_peer(result['reply']))
+    if 'text' not in result:
       return
+    self.peer_devices[sender] = device
+    body = {}
+    try:
+      body = json.loads(result['text'])
+      if not isinstance(body, dict):
+        body = {}
+        raise ValueError('Invalid session body')
+      await self.handle_authenticated(sender, body, device)
+    except Exception as error:
+      if body.get('jsonrpc') == '2.0':
+        await self.send_body(sender, {'jsonrpc': '2.0', 'id': body.get('id'), 'error': {'code': -32000, 'message': str(error)}})
+      else:
+        await self.send_error(sender, str(error), body.get('requestId'))
+    finally:
+      if sender not in load_authorized_peers():
+        session.forget(sender)
+        self.peer_devices.pop(sender, None)
 
+  async def handle_authenticated(self, sender: str, body: dict[str, Any], device: str) -> None:
     authorized = sender in load_authorized_peers()
-    if not authorized:
-      if body.get("type") != "ble-pair-request":
-        raise PermissionError("app is not authorized")
-      await self.handle_pair_request(sender, body)
+    if body.get('type') == 'ble-pair-request':
+      await self.handle_pair_request(sender, body, device)
       return
+    if not authorized:
+      raise PermissionError('App is not authorized')
 
     self.active_peers[sender] = time.monotonic()
     message_type = body.get("type")
-    if message_type == "ble-pair-request":
-      require_ignition_off()
-      disable_pairing_mode()
-      await self.send_body(sender, {
-        "type": "pair-response",
-        "publicKey": self.dongle_id,
-        "device-type": DEVICE_TYPE,
-        "name": methods.getDeviceName(),
-      })
-    elif message_type == "ble-session":
+    if message_type == "ble-session":
       await self.send_body(sender, {"type": "ble-session", "ready": True, "requestId": body.get("requestId")})
     elif message_type == "ble-ping":
       await self.send_body(sender, {"type": "ble-pong", "id": body.get("id")})
@@ -567,31 +588,29 @@ class BlePeerEngine:
     while not stop.is_set():
       payload = b""
       try:
-        payload = await asyncio.wait_for(self.incoming.get(), timeout=0.5)
+        device, payload = await asyncio.wait_for(self.incoming.get(), timeout=0.5)
         message = json.loads(payload)
         if isinstance(message, dict) and message.get("type") == "hello":
           await self.handle_hello()
         else:
           # Disk/HTTP RPCs must not block phone GPS or other control requests.
           if len(pending) >= 32:
-            await self.send_authenticated_error(payload, ValueError("Device is busy. Try again."))
+            cloudlog.warning("Bluetooth request queue is full")
           else:
-            async def process(data):
+            async def process(data, device):
               try:
-                await self.handle_encrypted(data)
+                await self.handle_encrypted(data, device)
               except Exception as error:
-                await self.send_authenticated_error(data, error)
-            task = asyncio.create_task(process(payload))
+                cloudlog.warning("Bluetooth request rejected: %s", type(error).__name__)
+            task = asyncio.create_task(process(payload, device))
             pending.add(task)
             task.add_done_callback(pending.discard)
       except TimeoutError:
         pass
       except PermissionError as error:
         cloudlog.event("asius.bluetooth.unauthorized", error=str(error))
-        await self.send_authenticated_error(payload, error)
-      except Exception as error:
+      except Exception:
         cloudlog.exception("asius.bluetooth.message_failed")
-        await self.send_authenticated_error(payload, error)
 
     if pending:
       await asyncio.gather(*pending, return_exceptions=True)
@@ -665,7 +684,7 @@ async def register_bluez(bus: MessageBus, adapter: str) -> None:
   await set_adapter_property(bus, adapter, "Powered", Variant("b", True))
   await set_adapter_property(bus, adapter, "Alias", Variant("s", methods.getDeviceName()))
   await set_adapter_property(bus, adapter, "Pairable", Variant("b", pairing_mode_active()))
-  await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RegisterAgent", "os", [AGENT_PATH, "NoInputNoOutput"]))
+  await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RegisterAgent", "os", [AGENT_PATH, "DisplayYesNo"]))
   await checked_call(bus, method_call("/org/bluez", AGENT_MANAGER, "RequestDefaultAgent", "o", [AGENT_PATH]))
   await checked_call(bus, method_call(adapter, GATT_MANAGER, "RegisterApplication", "oa{sv}", [APPLICATION_PATH, {}]))
   await checked_call(bus, method_call(adapter, ADVERTISING_MANAGER, "RegisterAdvertisement", "oa{sv}", [ADVERTISEMENT_PATH, {}]))
@@ -714,12 +733,12 @@ async def keep_advertising(bus: MessageBus, adapter: str, stop: asyncio.Event) -
       current_name = methods.getDeviceName()
       if current_pairing != pairing:
         await set_adapter_property(bus, adapter, "Pairable", Variant("b", current_pairing))
-        pairing = current_pairing
       if current_name != name:
         await set_adapter_property(bus, adapter, "Alias", Variant("s", current_name))
-      if current != connected or current_name != name:
+      if current != connected or current_name != name or current_pairing != pairing:
         await refresh_advertisement(bus, adapter)
         connected = current
+        pairing = current_pairing
         name = current_name
         cloudlog.event("asius.bluetooth.advertisement_refreshed", connected=current, pairing=current_pairing)
     except Exception:
@@ -746,14 +765,22 @@ def bluez_registration_lost(message: Message, adapter: str) -> bool:
   return False
 
 
-async def watch_bluez(bus: MessageBus, adapter: str, lost: asyncio.Event) -> None:
+async def watch_bluez(bus: MessageBus, adapter: str, lost: asyncio.Event, engine: BlePeerEngine) -> None:
   def changed(message: Message) -> None:
     if bluez_registration_lost(message, adapter):
       lost.set()
+    elif (message.message_type == MessageType.SIGNAL and message.interface == DBUS_PROPERTIES and
+          message.member == 'PropertiesChanged' and len(message.body) == 3 and message.body[0] == DEVICE and
+          variant_value(message.body[1].get('Connected')) is False):
+      engine.disconnect(message.path)
+    elif (message.message_type == MessageType.SIGNAL and message.interface == DBUS_OBJECT_MANAGER and
+          message.member == 'InterfacesRemoved' and len(message.body) == 2 and DEVICE in message.body[1]):
+      engine.disconnect(message.body[0])
 
   bus.add_message_handler(changed)
   for rule in (
     "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',member='InterfacesRemoved'",
+    "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.bluez.Device1'",
     "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'",
   ):
     await checked_call(bus, Message(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
@@ -766,12 +793,23 @@ async def run_bluez(stop: asyncio.Event) -> None:
     adapter: str | None = None
     engine_task: asyncio.Task | None = None
     advertising_task: asyncio.Task | None = None
+    button_task: asyncio.Task | None = None
     waiters: list[asyncio.Task] = []
     try:
       bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
       service = GattService()
       tx = TxCharacteristic()
       engine = BlePeerEngine(tx)
+      if not is_dongle_id(engine.dongle_id):
+        raise RuntimeError('Device identity is unavailable; Bluetooth enrollment cannot start')
+      adapter = await find_adapter(bus)
+      async def discard_unenrolled(device: str, connection=bus, path=adapter) -> None:
+        try:
+          await checked_call(connection, method_call(path, ADAPTER, 'RemoveDevice', 'o', [device]))
+        except Exception:
+          cloudlog.exception('asius.bluetooth.remove_failed_pairing')
+      engine.approvals = Confirmation(pairing_mode_active, allow_ui=not ASIUS_HARDWARE,
+                                     on_reject=lambda device: asyncio.create_task(discard_unenrolled(device)))
       rx = RxCharacteristic(engine.receive_frame)
       advertisement = Advertisement()
 
@@ -780,18 +818,18 @@ async def run_bluez(stop: asyncio.Event) -> None:
       bus.export(TX_PATH, tx)
       bus.export(STATUS_PATH, StatusCharacteristic(engine.dongle_id))
       bus.export(ADVERTISEMENT_PATH, advertisement)
-      bus.export(AGENT_PATH, PairingAgent())
+      bus.export(AGENT_PATH, PairingAgent(engine.approvals))
 
-      adapter = await find_adapter(bus)
       lost = asyncio.Event()
-      await watch_bluez(bus, adapter, lost)
+      await watch_bluez(bus, adapter, lost, engine)
       await register_bluez(bus, adapter)
       cloudlog.event("asius.bluetooth.ready", adapter=adapter, service_uuid=BLE_SERVICE_UUID)
 
       engine_task = asyncio.create_task(engine.run(stop))
       advertising_task = asyncio.create_task(keep_advertising(bus, adapter, stop))
+      button_task = asyncio.create_task(engine.approvals.buttons(enable_pairing_mode))
       waiters = [asyncio.create_task(stop.wait()), asyncio.create_task(lost.wait())]
-      done, _ = await asyncio.wait([*waiters, engine_task, advertising_task], return_when=asyncio.FIRST_COMPLETED)
+      done, _ = await asyncio.wait([*waiters, engine_task, advertising_task, button_task], return_when=asyncio.FIRST_COMPLETED)
       if not stop.is_set():
         for task in done:
           task.result()
@@ -809,6 +847,9 @@ async def run_bluez(stop: asyncio.Event) -> None:
       if advertising_task is not None:
         advertising_task.cancel()
         await asyncio.gather(advertising_task, return_exceptions=True)
+      if button_task is not None:
+        button_task.cancel()
+        await asyncio.gather(button_task, return_exceptions=True)
       if engine_task is not None:
         engine_task.cancel()
         await asyncio.gather(engine_task, return_exceptions=True)

@@ -13,7 +13,9 @@ def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started or params.get_bool("IsDriverViewEnabled")
 
 def sound(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return driverview(started, params, CP) or params.get_bool("VoiceAlertsEnabled")
+  from openpilot.system.asius.pairing_confirmation import read_announcement
+  return (driverview(started, params, CP) or params.get_bool("VoiceAlertsEnabled") or
+          bool(params.get("BluetoothPairingUntil")) or read_announcement() is not None)
 
 def notcar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and CP.notCar

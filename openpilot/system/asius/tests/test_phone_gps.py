@@ -145,13 +145,14 @@ def test_gps_methods_only_exist_on_bluetooth_dispatcher(gps, monkeypatch):
   engine.dongle_id = 'device'
   engine.active_peers = {}
   engine.send_body = AsyncMock()
-  engine.unpack_body = lambda _: ('app', {'id': 'rpc', 'method': 'startPhoneGps'}, False)
+  engine.sessions = {}
+  engine.peer_devices = {}
   monkeypatch.setattr(bluetoothd, 'load_authorized_peers', dict)
   with pytest.raises(PermissionError):
-    asyncio.run(engine.handle_encrypted(b''))
+    asyncio.run(engine.handle_authenticated('app', {'id': 'rpc', 'method': 'startPhoneGps'}, '/phone'))
   assert service.owner is None
   monkeypatch.setattr(bluetoothd, 'load_authorized_peers', lambda: {'app': {}})
-  asyncio.run(engine.handle_encrypted(b''))
+  asyncio.run(engine.handle_authenticated('app', {'id': 'rpc', 'method': 'startPhoneGps'}, '/phone'))
   response = engine.send_body.call_args.args[1]
   assert response['result']['session'] == service.session
   for method in ('startPhoneGps', 'updatePhoneGps', 'stopPhoneGps'):
@@ -179,12 +180,13 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   params = Mock()
   params.get.return_value = None
   sm = Mock()
-  sm.alive = {'gpsLocation': False}
-  sm.valid = {'gpsLocation': True}
+  sm.alive = dict.fromkeys(methods.LIVE_STATE_SERVICES, False)
+  sm.valid = dict.fromkeys(methods.LIVE_STATE_SERVICES, True)
   sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
   monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')
   monkeypatch.setattr(methods, 'load_authorized_peers', dict)
   monkeypatch.setattr(methods, '_software_update_state', lambda _: {})
+  monkeypatch.setattr(methods, 'ignition_state', lambda: None)
   assert methods._live_state_snapshot(sm, params)['services']['gpsLocation'] == {'hasFix': False}

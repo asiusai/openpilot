@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from openpilot.system.asius.pairing_confirmation import read_confirmation
 
 from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB,
                                                 STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
@@ -399,7 +400,15 @@ def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[in
   if not pairing_mode_active():
     return None
 
-  state = max_brightness(BLUE if int(time.monotonic() * 2) % 2 == 0 else OFF, brightness)
+  now = time.monotonic()
+  confirmation = read_confirmation(now=now)
+  if confirmation:
+    phase = (now - confirmation['created']) % 2.
+    # A slow double pulse distinguishes physical confirmation from discovery.
+    state = LedState('pair_confirm', 255, 115, 0) if phase < .25 or .5 <= phase < .75 else OFF
+  else:
+    state = BLUE if int(now * 2) % 2 == 0 else OFF
+  state = max_brightness(state, brightness)
   return camera_channels([[state.red, state.green, state.blue]] * 6)
 
 
