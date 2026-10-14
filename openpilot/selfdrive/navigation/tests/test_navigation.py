@@ -290,6 +290,7 @@ class TestRouteEngine(unittest.TestCase):
     self.assertEqual((options['bearings'], options['language']), ('90,90;', 'en'))
     self.assertEqual(get.call_args.kwargs['headers'], {'Authorization': 'Bearer test-token'})
     self.assertNotIn('access_token', options)
+    self.assertNotIn('annotations', options)
     self.assertEqual(len(self.last_message('navRoute').navRoute.coordinates), 5)
     self.engine.send_instruction()
     message = self.last_message('navInstruction')
@@ -302,6 +303,14 @@ class TestRouteEngine(unittest.TestCase):
     self.engine.last_position = (0.001, 0)  # at the maneuver
     self.engine.send_instruction()
     self.assertAlmostEqual(self.last_message('navInstruction').navInstruction.maneuverDistance, 0, delta=0.01)
+
+  def test_direct_mapbox_request_includes_speed_limits(self):
+    self.engine.mapbox_token = 'direct-test-token'
+    self.engine.mapbox_host = 'https://api.mapbox.com'
+    get = self.load_route()
+    self.assertEqual(get.call_args.kwargs['params']['annotations'], 'maxspeed')
+    self.assertEqual(get.call_args.kwargs['params']['access_token'], 'direct-test-token')
+    self.assertEqual(get.call_args.kwargs['headers'], {})
 
   def test_banner_selection(self):
     banners = [{'distanceAlongGeometry': 100, 'primary': {'text': 'Turn right', 'type': 'turn', 'modifier': 'right'}},
