@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
@@ -20,12 +20,19 @@ from openpilot.system.loggerd.data_api import (
   public_identity,
   recover_state,
   update_state,
-  x25519_private,
-  x25519_public,
 )
 from openpilot.system.loggerd.asius_uploader import AsiusUploader
 from openpilot.system.loggerd.uploader import Uploader
-from openpilot.system.asius.identity import bytes_to_identity
+from openpilot.system.asius.recording_keys import decode_public, public_text
+
+
+@pytest.fixture(autouse=True)
+def isolated_recording_key(tmp_path, monkeypatch):
+  monkeypatch.setattr("openpilot.system.asius.recording_keys.KEY_PATH", tmp_path / "recording.pem")
+
+
+def reader_record():
+  return {"publicKey": public_identity(ed25519.Ed25519PrivateKey.generate()), "storagePublicKey": public_text(ec.generate_private_key(ec.SECP256R1()))}
 
 
 def decode64(value: str) -> bytes:
@@ -34,9 +41,9 @@ def decode64(value: str) -> bytes:
 
 def test_access_document_and_object_crypto() -> None:
   device_key = ed25519.Ed25519PrivateKey.generate()
-  reader_key = ed25519.Ed25519PrivateKey.generate()
+  reader_key = ec.generate_private_key(ec.SECP256R1())
   owner = public_identity(device_key)
-  reader = public_identity(reader_key)
+  reader = reader_record() | {"storagePublicKey": public_text(reader_key)}
   state = initial_state([reader])
 
   document = access_document(device_key, state, [reader])
@@ -46,11 +53,11 @@ def test_access_document_and_object_crypto() -> None:
   recovered = recover_state(device_key, signed_document, [reader])
   assert recovered["keys"][0]["key"] == state["keys"][0]["key"]
 
-  grant = document["keys"][0]["grants"][1]
-  shared = x25519_private(reader_key).exchange(x25519_public(owner))
-  wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-access-v1:{owner}:{grant['keyId']}".encode(),
-                  info=f"{owner}:{reader}".encode()).derive(shared)
-  aad = {**{key: grant[key] for key in ("v", "alg", "from", "to", "keyId", "iv")}, "owner": owner}
+  grant = next(grant for grant in document["keys"][0]["grants"] if grant["to"] == reader["publicKey"])
+  shared = reader_key.exchange(ec.ECDH(), decode_public(grant["ephemeral"]))
+  wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-access-p256-v1:{owner}:{grant['keyId']}".encode(),
+                  info=f"{owner}:{reader['publicKey']}".encode()).derive(shared)
+  aad = {**{key: grant[key] for key in ("v", "alg", "from", "to", "keyId", "iv", "ephemeral")}, "owner": owner}
   folder_key = AESGCM(wrap_key).decrypt(decode64(grant["iv"]), decode64(grant["ciphertext"]), canonical_json(aad).encode())
 
   path = "routes/2026-08-10--12-00-00--0/qlog.zst"
@@ -67,22 +74,21 @@ def test_access_document_and_object_crypto() -> None:
 
 
 def test_revocation_rotates_active_key() -> None:
-  first = public_identity(ed25519.Ed25519PrivateKey.generate())
-  second = public_identity(ed25519.Ed25519PrivateKey.generate())
+  first = reader_record()
+  second = reader_record()
   state = initial_state([first, second])
   active = state["activeKey"]
 
-  added = update_state(state, [first, second, public_identity(ed25519.Ed25519PrivateKey.generate())])
+  added = update_state(state, [first, second, reader_record()])
   assert added["activeKey"] == active
   revoked = update_state(added, [second])
   assert revoked["activeKey"] != active
   assert len(revoked["keys"]) == 2
 
 
-def test_rejects_low_order_x25519_recipient() -> None:
-  device_key = ed25519.Ed25519PrivateKey.generate()
-  low_order_identity = bytes_to_identity(b"\x01" + b"\x00" * 31)
-  assert not can_wrap_for(device_key, low_order_identity)
+def test_rejects_invalid_p256_recipient() -> None:
+  assert not can_wrap_for({"storagePublicKey": b64url(b"\x04" + b"\x00" * 64)})
+  assert not can_wrap_for({})
 
 
 def test_asius_uploader_reuses_default_uploader_flow() -> None:
@@ -93,8 +99,8 @@ def test_asius_uploader_reuses_default_uploader_flow() -> None:
 
 def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
   device_key = ed25519.Ed25519PrivateKey.generate()
-  app_reader = public_identity(ed25519.Ed25519PrivateKey.generate())
-  asius_reader = public_identity(ed25519.Ed25519PrivateKey.generate())
+  app_reader = reader_record()
+  asius_reader = reader_record()
   published = {}
 
   class FakeParams:
@@ -116,12 +122,12 @@ def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
     base_url = "https://storage.example"
 
     def get_config(self):
-      return {"sharingPublicKey": asius_reader}
+      return {"sharingPublicKey": asius_reader["publicKey"], "sharingStoragePublicKey": asius_reader["storagePublicKey"]}
 
     def put_access(self, document):
       published.update(document)
 
-  monkeypatch.setattr("openpilot.system.loggerd.asius_uploader.load_authorized_peers", lambda: {app_reader})
+  monkeypatch.setattr("openpilot.system.loggerd.asius_uploader.load_authorized_peers", lambda: {app_reader["publicKey"]: app_reader})
   uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.private_key = device_key
   uploader.owner = public_identity(device_key)
@@ -129,9 +135,9 @@ def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
   uploader.client = Client()
 
   state = uploader.sync_access()
-  assert state["readers"] == sorted([app_reader, asius_reader])
+  assert state["readers"] == sorted([app_reader, asius_reader], key=lambda reader: reader["publicKey"])
   recipients = {grant["to"] for grant in published["keys"][0]["grants"]}
-  assert recipients == {uploader.owner, app_reader, asius_reader}
+  assert recipients == {uploader.owner, app_reader["publicKey"], asius_reader["publicKey"]}
 
 
 def test_custom_upload_step_only_adds_compression_encryption_and_transport(tmp_path) -> None:

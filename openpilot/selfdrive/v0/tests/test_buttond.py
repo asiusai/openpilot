@@ -8,6 +8,7 @@ from openpilot.selfdrive.v0.buttond import (
   KEY_PROG1,
   KEY_RELEASED,
   ButtonAction,
+  ButtonEvent,
   PandaButton,
   find_panda_key,
 )
@@ -25,7 +26,7 @@ def test_pair_after_long_hold():
 
     assert button.poll(now=1.0) == []
     assert button.poll(now=3.9) == []
-    assert button.poll(now=4.0) == [ButtonAction.PAIR]
+    assert button.poll(now=4.0) == [ButtonEvent(ButtonAction.PAIR, 1.)]
     assert button.poll(now=5.0) == []
 
     os.write(write_fd, input_event(KEY_RELEASED))
@@ -44,7 +45,7 @@ def test_short_press_does_not_pair():
     assert button.poll(now=1.0) == []
 
     os.write(write_fd, input_event(KEY_RELEASED))
-    assert button.poll(now=2.0) == []
+    assert button.poll(now=2.0) == [ButtonEvent(ButtonAction.CANCEL, 1.)]
     assert button.poll(now=5.0) == []
   finally:
     button.close()
@@ -73,6 +74,20 @@ def test_other_keys_do_not_pair():
       os.write(write_fd, INPUT_EVENT.pack(0, 0, EV_KEY, code, KEY_PRESSED))
     assert button.poll(now=1.) == []
     assert button.poll(now=5.) == []
+  finally:
+    button.close()
+    os.close(read_fd)
+    os.close(write_fd)
+
+
+def test_queued_short_release_does_not_become_confirmation_after_stall():
+  read_fd, write_fd = os.pipe()
+  button = PandaButton(event_device=f"/proc/self/fd/{read_fd}")
+  try:
+    os.write(write_fd, INPUT_EVENT.pack(1, 0, EV_KEY, KEY_PROG1, KEY_PRESSED))
+    assert button.poll(now=1.) == []
+    os.write(write_fd, INPUT_EVENT.pack(1, 100000, EV_KEY, KEY_PROG1, KEY_RELEASED))
+    assert button.poll(now=5.) == [ButtonEvent(ButtonAction.CANCEL, 1.)]
   finally:
     button.close()
     os.close(read_fd)
