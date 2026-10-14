@@ -6,6 +6,7 @@ LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
 LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
+TURN_SPEED_MAX = 19 * CV.MPH_TO_MS  # Sunnypilot's default turn-desire limit.
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
 
@@ -32,12 +33,12 @@ class DesireHelper:
       self.lane_change_direction = LaneChangeDirection.none
       self.lane_change_timer = 0.0
     elif below_lane_change_speed:
-      # Like sunnypilot's lane turn desires, signal turns below lane-change speed.
+      # Use sunnypilot's default turn speed, independently of the lane-change threshold.
       # Keep hazards and a detected vehicle on the requested side from requesting a turn.
       self.lane_change_state = LaneChangeState.off
       self.lane_change_direction = LaneChangeDirection.none
       self.lane_change_timer = 0.0
-      if one_blinker and v_ego >= 0:
+      if one_blinker and 0 <= v_ego < TURN_SPEED_MAX:
         if carstate.leftBlinker and not carstate.leftBlindspot:
           self.desire = log.Desire.turnLeft
         elif carstate.rightBlinker and not carstate.rightBlindspot:
