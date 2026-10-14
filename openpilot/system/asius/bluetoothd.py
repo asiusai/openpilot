@@ -707,6 +707,7 @@ async def keep_advertising(bus: MessageBus, adapter: str, stop: asyncio.Event) -
   pairing: bool | None = None
   name: str | None = None
   while not stop.is_set():
+    retry_seconds = 0.25
     try:
       current = await connected_device_count(bus, adapter)
       current_pairing = pairing_mode_active()
@@ -722,11 +723,41 @@ async def keep_advertising(bus: MessageBus, adapter: str, stop: asyncio.Event) -
         name = current_name
         cloudlog.event("asius.bluetooth.advertisement_refreshed", connected=current, pairing=current_pairing)
     except Exception:
+      # A failed refresh removes the old advertisement. Retry even if the
+      # connection count returns to its previous value after disconnect.
+      connected = -1
+      retry_seconds = REGISTER_RETRY_SECONDS
       cloudlog.exception("asius.bluetooth.advertisement_refresh_failed")
     try:
-      await asyncio.wait_for(stop.wait(), timeout=0.25)
+      await asyncio.wait_for(stop.wait(), timeout=retry_seconds)
     except TimeoutError:
       pass
+
+
+def bluez_registration_lost(message: Message, adapter: str) -> bool:
+  if message.message_type != MessageType.SIGNAL:
+    return False
+  if message.interface == DBUS_OBJECT_MANAGER and message.member == "InterfacesRemoved":
+    return len(message.body) == 2 and message.body[0] == adapter and any(
+      interface in message.body[1] for interface in (ADAPTER, GATT_MANAGER, ADVERTISING_MANAGER)
+    )
+  if message.interface == "org.freedesktop.DBus" and message.member == "NameOwnerChanged":
+    return len(message.body) == 3 and message.body[0] == BLUEZ_SERVICE and bool(message.body[1])
+  return False
+
+
+async def watch_bluez(bus: MessageBus, adapter: str, lost: asyncio.Event) -> None:
+  def changed(message: Message) -> None:
+    if bluez_registration_lost(message, adapter):
+      lost.set()
+
+  bus.add_message_handler(changed)
+  for rule in (
+    "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',member='InterfacesRemoved'",
+    "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'",
+  ):
+    await checked_call(bus, Message(destination="org.freedesktop.DBus", path="/org/freedesktop/DBus",
+                                    interface="org.freedesktop.DBus", member="AddMatch", signature="s", body=[rule]))
 
 
 async def run_bluez(stop: asyncio.Event) -> None:
@@ -735,6 +766,7 @@ async def run_bluez(stop: asyncio.Event) -> None:
     adapter: str | None = None
     engine_task: asyncio.Task | None = None
     advertising_task: asyncio.Task | None = None
+    waiters: list[asyncio.Task] = []
     try:
       bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
       service = GattService()
@@ -751,12 +783,19 @@ async def run_bluez(stop: asyncio.Event) -> None:
       bus.export(AGENT_PATH, PairingAgent())
 
       adapter = await find_adapter(bus)
+      lost = asyncio.Event()
+      await watch_bluez(bus, adapter, lost)
       await register_bluez(bus, adapter)
       cloudlog.event("asius.bluetooth.ready", adapter=adapter, service_uuid=BLE_SERVICE_UUID)
 
       engine_task = asyncio.create_task(engine.run(stop))
       advertising_task = asyncio.create_task(keep_advertising(bus, adapter, stop))
-      await stop.wait()
+      waiters = [asyncio.create_task(stop.wait()), asyncio.create_task(lost.wait())]
+      done, _ = await asyncio.wait([*waiters, engine_task, advertising_task], return_when=asyncio.FIRST_COMPLETED)
+      if not stop.is_set():
+        for task in done:
+          task.result()
+        raise RuntimeError("Bluetooth registration was lost; registering the service again")
     except Exception:
       cloudlog.exception("asius.bluetooth.service_failed")
       try:
@@ -764,6 +803,9 @@ async def run_bluez(stop: asyncio.Event) -> None:
       except TimeoutError:
         pass
     finally:
+      for task in waiters:
+        task.cancel()
+      await asyncio.gather(*waiters, return_exceptions=True)
       if advertising_task is not None:
         advertising_task.cancel()
         await asyncio.gather(advertising_task, return_exceptions=True)
