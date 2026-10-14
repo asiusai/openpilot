@@ -156,6 +156,8 @@ class RouteEngine:
     headers = {}
     if self.mapbox_token is None:
       params.pop('access_token')
+      # The Asius proxy adds maxspeed annotations and rejects unknown parameters.
+      params.pop('annotations')
       headers['Authorization'] = f'Bearer {token}'
     try:
       resp = requests.get(url, params=params, headers=headers, timeout=10)
