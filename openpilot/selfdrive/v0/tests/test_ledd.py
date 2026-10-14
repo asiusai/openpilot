@@ -209,6 +209,7 @@ def test_offroad_stays_blue_when_processes_are_intentionally_stopped(monkeypatch
 
 
 def test_pairing_blinks_blue_without_driver_camera(monkeypatch):
+  monkeypatch.setattr(ledd, 'read_confirmation', lambda **kwargs: None)
   monkeypatch.setattr(ledd, 'pairing_mode_active', lambda: True)
   monkeypatch.setattr(ledd.time, 'monotonic', lambda: 0.)
   channels = ledd.pairing_led_channels(26)
@@ -220,6 +221,21 @@ def test_pairing_blinks_blue_without_driver_camera(monkeypatch):
 
   monkeypatch.setattr(ledd.time, 'monotonic', lambda: 0.5)
   assert ledd.pairing_led_channels(26) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
+
+
+def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
+  monkeypatch.setattr(ledd, 'pairing_mode_active', lambda: True)
+  monkeypatch.setattr(ledd, 'read_confirmation', lambda **kwargs: {'created': 10.})
+  for now, lit in [(10., True), (10.3, False), (10.5, True), (10.9, False), (12., True)]:
+    monkeypatch.setattr(ledd.time, 'monotonic', lambda: now)
+    channels = ledd.pairing_led_channels(26)
+    assert channels[1] == [0] * 9
+    assert channels[2] == channels[3]
+    assert channels[2][3:6] == [0] * 3
+    assert channels[2][:3] == ([26, 12, 0] if lit else [0, 0, 0])
+    assert channels[2][6:] == channels[2][:3]
+  monkeypatch.setattr(ledd, 'pairing_mode_active', lambda: False)
+  assert ledd.pairing_led_channels(26) is None
 
 
 def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():

@@ -17,6 +17,7 @@ from openpilot.system.manager.process import ensure_running
 from openpilot.system.manager.process_config import managed_processes
 from openpilot.system.asius.migrate_params import migrate_cloud_params
 from openpilot.system.asius.registration import register, UNREGISTERED_DONGLE_ID
+from openpilot.system.asius.pairing_invitation import invalidate as invalidate_pairing_invitations
 from openpilot.common.swaglog import cloudlog, add_file_handler
 from openpilot.common.version import get_build_metadata
 from openpilot.common.hardware.hw import Paths
@@ -30,6 +31,7 @@ def manager_init() -> None:
   params = Params()
   migrate_cloud_params(params)
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+  invalidate_pairing_invitations()
   params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
   params.clear_all(ParamKeyFlag.CLEAR_ON_OFFROAD_TRANSITION)
   params.clear_all(ParamKeyFlag.CLEAR_ON_IGNITION_ON)

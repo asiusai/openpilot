@@ -94,18 +94,18 @@ class AsiusUploader(Uploader):
 
   def sync_access(self) -> dict:
     readers = []
-    for key in sorted(load_authorized_peers()):
-      if is_dongle_id(key) and can_wrap_for(self.private_key, key):
-        readers.append(key)
-      else:
-        cloudlog.event("data_upload_invalid_recipient", recipient=key)
+    for key, peer in sorted(load_authorized_peers().items()):
+      reader = {"publicKey": key, "storagePublicKey": peer.get("storagePublicKey")}
+      if not is_dongle_id(key) or not can_wrap_for(reader):
+        raise ValueError("Authorized app has no valid recording public key")
+      readers.append(reader)
     if self.params.get_bool("ShareDrivingData"):
       config = self.client.get_config()
-      asius_reader = config.get("sharingPublicKey") or config.get("retentionPublicKey")
-      if not isinstance(asius_reader, str) or not is_dongle_id(asius_reader) or not can_wrap_for(self.private_key, asius_reader):
+      reader = {"publicKey": config.get("sharingPublicKey"), "storagePublicKey": config.get("sharingStoragePublicKey")}
+      if not is_dongle_id(reader['publicKey']) or not can_wrap_for(reader):
         raise ValueError("Data API returned an invalid sharing public key")
-      readers.append(asius_reader)
-    readers = sorted(set(readers))
+      readers.append(reader)
+    readers = sorted({reader['publicKey']: reader for reader in readers}.values(), key=lambda reader: reader['publicKey'])
     state = self.params.get(STATE_PARAM)
     state = initial_state(readers) if not isinstance(state, dict) else update_state(state, readers)
     if state.get("publishedVersion") == state["version"] and state.get("publishedHost") == self.client.base_url:
