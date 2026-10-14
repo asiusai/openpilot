@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from openpilot.cereal import log
-from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper, LANE_CHANGE_SPEED_MIN, LaneChangeState
+from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper, LANE_CHANGE_SPEED_MIN, TURN_SPEED_MAX, LaneChangeState
 
 
 def car(**values):
@@ -33,7 +33,10 @@ def test_signal_and_blindspot_conditions(left, right, blind_left, blind_right, e
 
 @pytest.mark.parametrize('speed,expected', [
   (0.0, log.Desire.turnLeft),
-  (LANE_CHANGE_SPEED_MIN - 0.001, log.Desire.turnLeft),
+  (TURN_SPEED_MAX - 0.001, log.Desire.turnLeft),
+  (TURN_SPEED_MAX, log.Desire.none),
+  (TURN_SPEED_MAX + 0.001, log.Desire.none),
+  (LANE_CHANGE_SPEED_MIN - 0.001, log.Desire.none),
   (LANE_CHANGE_SPEED_MIN, log.Desire.none),
   (LANE_CHANGE_SPEED_MIN + 0.001, log.Desire.none),
   (-1.0, log.Desire.none),
@@ -64,6 +67,27 @@ def test_signal_direction_changes_and_held_signal_are_consistent():
     assert helper.desire == log.Desire.turnLeft
   helper.update(car(rightBlinker=True), True, 1.0)
   assert helper.desire == log.Desire.turnRight
+
+
+@pytest.mark.parametrize('left', [True, False])
+def test_held_signal_crosses_turn_and_lane_change_thresholds(left):
+  helper = DesireHelper()
+  state = car(vEgo=TURN_SPEED_MAX, leftBlinker=left, rightBlinker=not left)
+  for speed in [TURN_SPEED_MAX, LANE_CHANGE_SPEED_MIN - 0.001, TURN_SPEED_MAX]:
+    state.vEgo = speed
+    helper.update(state, True, 1.0)
+    assert helper.desire == log.Desire.none
+    assert helper.lane_change_state == LaneChangeState.off
+
+  state.vEgo = TURN_SPEED_MAX - 0.001
+  helper.update(state, True, 1.0)
+  assert helper.desire == (log.Desire.turnLeft if left else log.Desire.turnRight)
+
+  for speed in [TURN_SPEED_MAX, LANE_CHANGE_SPEED_MIN]:
+    state.vEgo = speed
+    helper.update(state, True, 1.0)
+    assert helper.desire == log.Desire.none
+    assert helper.lane_change_state == LaneChangeState.off
 
 
 @pytest.mark.parametrize('left,torque,desire', [(True, 1.0, log.Desire.laneChangeLeft), (False, -1.0, log.Desire.laneChangeRight)])
