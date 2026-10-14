@@ -50,6 +50,8 @@ def test_legacy_upload_methods_are_not_callable(name):
 
 
 def test_relay_does_not_start_legacy_upload_workers(monkeypatch):
+  from cryptography.hazmat.primitives.asymmetric import ed25519
+  monkeypatch.setattr(methods, "get_device_private_key", ed25519.Ed25519PrivateKey.generate)
   threads = []
 
   def thread(*, target, **kwargs):

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import glob
+import fcntl
 import os
 import signal
+import stat
 import struct
 import time
 from dataclasses import dataclass
@@ -20,6 +22,13 @@ INPUT_EVENT = struct.Struct("@llHHI")
 
 class ButtonAction(Enum):
   PAIR = auto()
+  CANCEL = auto()
+
+
+@dataclass(frozen=True)
+class ButtonEvent:
+  action: ButtonAction
+  started: float
 
 
 def find_panda_key() -> str | None:
@@ -57,10 +66,14 @@ class PandaButton:
 
     try:
       self.fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+      if stat.S_ISCHR(os.fstat(self.fd).st_mode):
+        # EVIOCSCLOCKID: use event timestamps, including releases queued during a stall.
+        fcntl.ioctl(self.fd, 0x400445a0, struct.pack('i', time.CLOCK_MONOTONIC))
       self.event_device = path
       self.pending = b""
       return True
     except OSError:
+      self.close()
       self.next_retry = now + RECONNECT_SECONDS
       return False
 
@@ -72,15 +85,15 @@ class PandaButton:
     self.pair_sent = False
     self.pending = b""
 
-  def _long_hold(self, now: float) -> list[ButtonAction]:
+  def _long_hold(self, now: float) -> list[ButtonEvent]:
     if self.pressed_at is not None and not self.pair_sent and now - self.pressed_at >= self.hold_seconds:
       self.pair_sent = True
-      return [ButtonAction.PAIR]
+      return [ButtonEvent(ButtonAction.PAIR, self.pressed_at)]
     return []
 
-  def poll(self, now: float | None = None) -> list[ButtonAction]:
+  def poll(self, now: float | None = None) -> list[ButtonEvent]:
     now = time.monotonic() if now is None else now
-    actions = self._long_hold(now)
+    actions: list[ButtonEvent] = []
     if not self.connect(now):
       return actions
     fd = self.fd
@@ -102,15 +115,18 @@ class PandaButton:
 
     complete = len(self.pending) - (len(self.pending) % INPUT_EVENT.size)
     for offset in range(0, complete, INPUT_EVENT.size):
-      _, _, event_type, code, value = INPUT_EVENT.unpack_from(self.pending, offset)
+      seconds, micros, event_type, code, value = INPUT_EVENT.unpack_from(self.pending, offset)
+      event_time = seconds + micros / 1e6 if seconds or micros else now
       if event_type != EV_KEY or code != KEY_PROG1:
         continue
 
       if value == KEY_PRESSED:
-        self.pressed_at = now
+        self.pressed_at = event_time
         self.pair_sent = False
       elif value == KEY_RELEASED and self.pressed_at is not None:
-        actions.extend(self._long_hold(now))
+        actions.extend(self._long_hold(event_time))
+        if not self.pair_sent:
+          actions.append(ButtonEvent(ButtonAction.CANCEL, self.pressed_at))
         self.pressed_at = None
         self.pair_sent = False
 
@@ -122,7 +138,7 @@ class PandaButton:
 def main() -> None:
   from openpilot.common.realtime import Ratekeeper
   from openpilot.common.swaglog import cloudlog
-  from openpilot.system.asius.bluetoothd import enable_pairing_mode
+  from openpilot.system.asius.pairing_confirmation import send_button
 
   parser = argparse.ArgumentParser()
   parser.add_argument("--event-device")
@@ -141,13 +157,9 @@ def main() -> None:
   rk = Ratekeeper(RUNTIME_HZ)
 
   while not done:
-    for action in button.poll():
-      if action == ButtonAction.PAIR:
-        try:
-          pairing_until = enable_pairing_mode()
-          cloudlog.event("asius.button.pairing_mode", pairing_until=pairing_until)
-        except PermissionError:
-          cloudlog.info("asius.button.pairing_ignition_blocked")
+    for event in button.poll():
+      if not send_button('hold' if event.action == ButtonAction.PAIR else 'press', event.started):
+        cloudlog.warning("asius.button.bluetooth_unavailable")
     rk.keep_time()
 
   button.close()

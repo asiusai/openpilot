@@ -24,6 +24,11 @@ def main():
   else:
     MiciMainLayout()
 
+  if COMMA_HARDWARE:
+    from openpilot.system.asius.bluetooth_ui import PairingDisplay
+    pairing_display = PairingDisplay()
+    gui_app.add_nav_stack_tick(pairing_display.tick)
+
   pm = messaging.PubMaster(['uiDebug'])
   for should_render, frame_time, cpu_time in gui_app.render():
     extra_start = time.monotonic()

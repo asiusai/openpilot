@@ -1,0 +1,59 @@
+{
+  "clips": {
+    "0": {
+      "seconds": 1.872,
+      "sha256": "4fefcdc0106191713ee16ed8c2de707c40fe157f3408686dfc3bb629e8a70ddd"
+    },
+    "1": {
+      "seconds": 1.44,
+      "sha256": "bc3cc7d99ffa1033b1a6c426753bb3d30c1fceaec201deed9044ff80f27aa222"
+    },
+    "2": {
+      "seconds": 1.872,
+      "sha256": "bb9df6d4cd96f02b6046bc87bd4b0db05f0d693076bf8fd6a0769c825798c4b4"
+    },
+    "3": {
+      "seconds": 1.392,
+      "sha256": "f5844c9097d3e4b2d4ab9b5d325fb24d895dd382b2eb5effaec03bc841138d51"
+    },
+    "4": {
+      "seconds": 1.872,
+      "sha256": "c12892f58731fb0cbf6cb4109bd8757127521420448862e858fd502d9cd51ddd"
+    },
+    "5": {
+      "seconds": 1.872,
+      "sha256": "4ed2e401aa60aec6ad3eb1c3de85c834698c37959081277b722f1cc5d10312f3"
+    },
+    "6": {
+      "seconds": 1.608,
+      "sha256": "f93fb4d7eb237be6fd704062cf58771bf5b04c93d115488481cd9cf9355808f8"
+    },
+    "7": {
+      "seconds": 1.872,
+      "sha256": "9e2bfafe51a771d4e26207eca9908ae757c0f1c30d8a8af026855374638161f1"
+    },
+    "8": {
+      "seconds": 1.872,
+      "sha256": "a88e364a3eda8be8e42e332670e90d8d5e0f78fd74e65b68651d7de2051936ae"
+    },
+    "9": {
+      "seconds": 1.488,
+      "sha256": "1df3063923d3dc5c58de691989a4e3f77ebea96f0211a796c200be7925a64678"
+    },
+    "failed": {
+      "seconds": 3.528,
+      "sha256": "ce7df0b0811e9975c9a738ba17fc9171aec4d8b1023fc531cfb580d4da005c9c"
+    },
+    "started": {
+      "seconds": 4.296,
+      "sha256": "381c1bcf1d30e22ca0f4971b1fb04530886abd40218386eb92a3a12bda4a41ab"
+    },
+    "success": {
+      "seconds": 2.16,
+      "sha256": "0492b0730be99ce128f190b90cb9be3534be0775cd808e14136671cd191f46ec"
+    }
+  },
+  "filter": "aresample=48000,aformat=channel_layouts=stereo,highpass=f=180,loudnorm=I=-11:TP=-1:LRA=4,aresample=48000,highpass=f=280,acompressor=threshold=0.05:ratio=3:attack=5:release=120:makeup=10,alimiter=limit=0.85:attack=5:release=80:level=false",
+  "source_hash": "337ad9180efb4f710f53428b7ef0d61dbb1ba787991538543459ecb56da72a0f",
+  "voice": "en-US-JennyNeural"
+}

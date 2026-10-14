@@ -23,7 +23,8 @@ from openpilot.cereal import log
 from openpilot.system.asius.clock import ClockChallenges
 from openpilot.system.asius.fork import FORK
 from openpilot.system.asius.access_policy import check_param_write, ignition_state, require_ignition_off
-from openpilot.system.asius.identity import get_device_public_key
+from openpilot.system.asius.identity import get_device_public_key, get_device_private_key
+from openpilot.system.asius.session import SessionChanged, SecureSession, wrap_peer, unwrap_peer
 from openpilot.system.asius.device_name import device_hostname
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.basedir import BASEDIR
@@ -37,10 +38,8 @@ from openpilot.system.asius.param_editor import ParameterEditor
 from openpilot.system.asius.relayd import (
   authorize_peer,
   load_authorized_peers,
-  pack_peer_message,
   pairing_url,
-  save_authorized_peers,
-  unpack_peer_message,
+  forget_peer,
   verify_pair_token,
 )
 from openpilot.system.asius.onboarding import Onboarding, setup_status
@@ -106,7 +105,6 @@ LIVE_STATE_PARAM_KEYS = [
   "LastAthenaPingTime",
   "OpenpilotEnabledToggle",
   "ExperimentalMode",
-  "ExperimentalModeConfirmed",
   "DisengageOnAccelerator",
   "LongitudinalPersonality",
   "IsLdwEnabled",
@@ -180,10 +178,17 @@ for method in (
 ):
   dispatcher.add_method(method)
 
-send_queue: Queue[str] = queue.Queue()
+send_queue: Queue[str | tuple] = queue.Queue()
+
+
+relay_session = None
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
+  global relay_session
+  relay_session = SecureSession(get_device_private_key(), "web")
+  while not send_queue.empty():
+    send_queue.get_nowait()
   end_event = threading.Event()
 
   threads = [
@@ -206,6 +211,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
     for thread in threads:
       cloudlog.debug(f"relay.joining {thread.name}")
       thread.join()
+    relay_session.clear()
 
 
 @dispatcher.add_method
@@ -271,7 +277,9 @@ def getPublicKey() -> str | None:
 
 @dispatcher.add_method
 def getDeviceName() -> str:
-  return Params().get("DeviceName", return_default=True)
+  return Params().get("DeviceName") or {
+    "tici": "comma 3", "tizi": "comma 3X", "mici": "comma four",
+  }.get(HARDWARE.get_device_type(), "Asius v0")
 
 
 @dispatcher.add_method
@@ -299,12 +307,7 @@ def getAuthorizedPeers() -> dict[str, Any]:
 
 @dispatcher.add_method
 def removeAuthorizedPeer(publicKey: str) -> dict[str, Any]:
-  peers = load_authorized_peers()
-  removed = peers.pop(publicKey, None) is not None
-  if removed:
-    save_authorized_peers(peers)
-
-  return {"removed": removed}
+  return {"removed": forget_peer(publicKey)}
 
 
 @dispatcher.add_method
@@ -1007,7 +1010,10 @@ def send_peer_payload(to: str, body: dict) -> None:
   if not isinstance(recipient, str):
     raise Exception("invalid Athena peer")
 
-  send_queue.put_nowait(pack_peer_message(dongle_id, recipient, body))
+  if relay_session is not None and relay_session.ready(recipient):
+    # Allocate counters at the socket writer, after all queued and live messages.
+    # Session identity prevents delayed RPC replies from crossing a reconnect.
+    send_queue.put_nowait((relay_session, relay_session.session_id(recipient), recipient, json.dumps(body)))
 
 
 terminal_manager = TerminalManager(send_peer_payload)
@@ -1080,29 +1086,31 @@ def handle_rpc(sender: str, body: dict) -> None:
 
 
 def handle_peer_message(data: str) -> bool:
+  sender = None
+  session = relay_session
   try:
     dongle_id = Params().get("DongleId")
     if dongle_id is None:
       return True
 
-    # The relay authenticates each live connection and enforces increasing sequence
-    # numbers. E2E signatures are still verified; the device wall clock is irrelevant.
-    peer_message = unpack_peer_message(data, dongle_id, validate_timestamp=False)
-    if peer_message is None:
-      return False
-
-    sender, body, decrypt_failed = peer_message
-    if body is None:
-      if decrypt_failed:
-        cloudlog.event("relay.websocket.decrypt_failed", sender=sender, error=True)
+    if relay_session is None:
       return True
+    result = session.receive(unwrap_peer(data, dongle_id))
+    sender = result['peer']
+    if 'reply' in result:
+      send_queue.put_nowait(wrap_peer(result['reply']))
+    if 'text' not in result:
+      return True
+    body = json.loads(result['text'])
+    if not isinstance(body, dict):
+      raise ValueError('Invalid session body')
 
     if body.get("type") == "pair-request":
       if body.get("publicKey") != sender:
         raise Exception("pair request sender mismatch")
       if not verify_pair_token(body.get("pairToken"), dongle_id):
         raise Exception("invalid pair token")
-      authorize_peer(body["publicKey"], label=body.get("label") if isinstance(body.get("label"), str) else None)
+      authorize_peer(body["publicKey"], body.get("storagePublicKey"), label=body.get("label") if isinstance(body.get("label"), str) else None)
       cloudlog.event("relay.websocket.paired", sender=sender)
       send_peer_payload(sender, {
         "type": "pair-response",
@@ -1127,6 +1135,11 @@ def handle_peer_message(data: str) -> bool:
   except Exception:
     cloudlog.exception("relay.websocket.handle_peer_message_failed")
     return True
+  finally:
+    if sender and session and sender not in load_authorized_peers():
+      # Keep the unconfirmed candidate for the handshake, but no active unauthorized key.
+      if session.ready(sender):
+        session.forget(sender)
 
 
 def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
@@ -1175,16 +1188,24 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
     try:
       try:
         data = send_queue.get(timeout=0.02)
+        if isinstance(data, tuple):
+          session, sid, peer, text = data
+          if session is not relay_session or session.session_id(peer) != sid or peer not in load_authorized_peers():
+            continue
+          data = wrap_peer(session.encrypt(peer, text, expected_sid=sid))
       except queue.Empty:
         with live_state_lock:
           if not live_state_pending:
             continue
           peer = next(iter(live_state_pending))
           snapshot = live_state_pending.pop(peer)
-        if peer not in load_authorized_peers():
+        if peer not in load_authorized_peers() or relay_session is None or not relay_session.ready(peer):
           continue
-        payload = encoders.setdefault(peer, StateEncoder()).encode(snapshot)
-        data = pack_peer_message(Params().get("DongleId"), peer, {"type": "event", "name": "liveState", "payload": payload})
+        session_id = relay_session.session_id(peer)
+        if peer not in encoders or encoders[peer][0] != session_id:
+          encoders[peer] = (session_id, StateEncoder())
+        payload = encoders[peer][1].encode(snapshot)
+        data = wrap_peer(relay_session.encrypt(peer, json.dumps({"type": "event", "name": "liveState", "payload": payload}), expected_sid=session_id))
       try:
         message = json.loads(data)
         if message.get("type") != "peer":
@@ -1199,7 +1220,7 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
         last = i + WS_FRAME_SIZE >= len(data)
         opcode = ABNF.OPCODE_TEXT if i == 0 else ABNF.OPCODE_CONT
         ws.send_frame(ABNF.create_frame(frame, opcode, last))
-    except queue.Empty:
+    except (queue.Empty, SessionChanged):
       pass
     except Exception:
       cloudlog.exception("relayd.ws_send.exception")

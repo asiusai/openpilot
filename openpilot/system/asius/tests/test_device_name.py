@@ -8,8 +8,26 @@ from openpilot.system.asius import methods
 from openpilot.system.asius.bluetoothd import Advertisement, keep_advertising
 
 
+@pytest.mark.parametrize('device_type,expected', [
+  ('tici', 'comma 3'), ('tizi', 'comma 3X'), ('mici', 'comma four'),
+  ('asius-v0', 'Asius v0'), ('pc', 'Asius v0'),
+])
+def test_default_name_uses_hardware(tmp_path, monkeypatch, device_type, expected):
+  monkeypatch.setattr(methods, 'Params', lambda: Params(str(tmp_path)))
+  monkeypatch.setattr('openpilot.system.asius.bluetoothd.pairing_mode_active', lambda: True)
+  monkeypatch.setattr(methods.HARDWARE, 'get_device_type', lambda: device_type)
+  # Manager persists parameter defaults before the Bluetooth daemon starts.
+  params = methods.Params()
+  if (default := params.get_default_value('DeviceName')) is not None:
+    params.put('DeviceName', default, block=True)
+  assert methods.getDeviceName() == Advertisement().LocalName == expected
+  methods.setDeviceName('My car')
+  assert methods.getDeviceName() == Advertisement().LocalName == 'My car'
+
+
 def test_device_name_is_persistent_and_shared(tmp_path, monkeypatch):
   monkeypatch.setattr(methods, 'Params', lambda: Params(str(tmp_path)))
+  monkeypatch.setattr('openpilot.system.asius.bluetoothd.pairing_mode_active', lambda: True)
   assert methods.getDeviceName() == 'Asius v0'
   assert methods.setDeviceName('  My car  ') == {'name': 'My car'}
   params = Params(str(tmp_path))

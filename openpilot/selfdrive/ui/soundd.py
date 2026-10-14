@@ -15,6 +15,7 @@ from openpilot.system import micd
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.voice_alerts import VoiceAlerts
+from openpilot.selfdrive.ui.pairing_speech import PairingSpeech
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -68,6 +69,7 @@ class Soundd:
   def __init__(self):
     self.load_sounds()
     self.voice = VoiceAlerts(Params())
+    self.pairing_speech = PairingSpeech()
     self.voice_critical = False
 
     self.current_alert = AudibleAlert.none
@@ -130,7 +132,8 @@ class Soundd:
 
     critical = critical or self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
     voice_volume = MAX_VOLUME if HARDWARE.get_device_type() == "v0" else self.current_volume
-    return self.voice.mix(ret * self.current_volume, voice_volume, critical)
+    mixed = self.voice.mix(ret * self.current_volume, voice_volume, critical)
+    return self.pairing_speech.mix(mixed, voice_volume, critical)
 
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
@@ -200,7 +203,7 @@ class Soundd:
         # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:
           self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
-          if self.current_alert == AudibleAlert.none and not self.voice.playing:
+          if self.current_alert == AudibleAlert.none and not self.voice.playing and not self.pairing_speech.playing:
             self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
@@ -210,6 +213,7 @@ class Soundd:
         self.voice_critical = (self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate) or
                                (onroad and state is not None and state.alertStatus == log.SelfdriveState.AlertStatus.critical))
         self.voice.update(state, onroad, self.voice_critical, now)
+        self.pairing_speech.update(onroad, self.voice_critical, now)
 
         if self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
           elapsed = time.monotonic() - self.ramp_start_time

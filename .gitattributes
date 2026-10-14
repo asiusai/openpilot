@@ -12,6 +12,7 @@ openpilot/selfdrive/modeld/models/big_*_tinygrad.pkl filter=lfs diff=lfs merge=l
 *.wav filter=lfs diff=lfs merge=lfs -text
 # Small generated voice clips belong to this fork, without upstream LFS uploads.
 openpilot/selfdrive/assets/sounds/voice/*.wav -filter -diff -merge -text
+openpilot/selfdrive/assets/sounds/pairing/*.wav -filter -diff -merge -text
 
 openpilot/selfdrive/car/tests/test_models_segs.txt filter=lfs diff=lfs merge=lfs -text
 openpilot/common/hardware/comma/updater filter=lfs diff=lfs merge=lfs -text
