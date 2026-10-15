@@ -11,7 +11,7 @@ from dbus_fast import Message, Variant
 from dbus_fast.errors import DBusError
 
 from openpilot.system.asius.bluetoothd import (
-  Advertisement, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, StatusCharacteristic, keep_advertising, bluez_registration_lost,
+  Advertisement, BLE_PAIRING_UUID, BLE_SERVICE_UUID, BlePeerEngine, PairingAgent, StatusCharacteristic, keep_advertising, bluez_registration_lost,
 )
 
 
@@ -86,7 +86,7 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
       advertisement = Advertisement()
       self.assertEqual(advertisement.LocalName, 'Asius v0')
       self.assertTrue(advertisement.Discoverable)
-      self.assertEqual(advertisement.ServiceUUIDs, [BLE_SERVICE_UUID])
+      self.assertEqual(advertisement.ServiceUUIDs, [BLE_PAIRING_UUID])
 
   async def test_closing_pairing_refreshes_advertisement(self):
     stop = MagicMock()

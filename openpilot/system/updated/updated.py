@@ -18,6 +18,7 @@ from openpilot.common.markdown import parse_markdown
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import AGNOS, HARDWARE
+from openpilot.common.hardware.base import NetworkType
 from openpilot.common.version import get_build_metadata
 from openpilot.system.updated.vamos_update import (activate_vamos_update, prepare_vamos_update,
                                                    should_skip_noop_vamos_fetch, vamos_update_supported)
@@ -69,8 +70,17 @@ def write_time_to_param(params, param) -> None:
   t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
   params.put(param, t, block=True)
 
-def run(cmd: list[str], cwd: str | None = None) -> str:
-  return subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.STDOUT, encoding='utf8')
+def run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> str:
+  return subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.STDOUT, encoding='utf8', timeout=timeout)
+
+
+def network_unavailable(error: Exception) -> bool:
+  if isinstance(error, subprocess.TimeoutExpired):
+    return True
+  output = str(getattr(error, 'output', '') or error)
+  return re.search(r'could not resolve|temporary failure in name resolution|network is (?:unreachable|down)|' +
+                   r'no route to host|failed to connect|connection (?:refused|reset)|' +
+                   r'(?:connection|connect|read|request|operation) timed out', output, re.IGNORECASE) is not None
 
 
 def set_consistent_flag(consistent: bool) -> None:
@@ -337,26 +347,29 @@ class Updater:
       else:
         extra_text = exception
       set_offroad_alert("Offroad_UpdateFailed", True, extra_text=extra_text)
-    elif failed_count > 0:
+    elif failed_count > 0 or not self.has_internet:
       if dt_uptime_onroad > HOURS_NO_CONNECTIVITY_MAX and dt_route_count > ROUTES_NO_CONNECTIVITY_MAX:
         set_offroad_alert("Offroad_ConnectivityNeeded", True)
       elif dt_uptime_onroad > HOURS_NO_CONNECTIVITY_PROMPT and dt_route_count > ROUTES_NO_CONNECTIVITY_PROMPT:
         remaining = max(HOURS_NO_CONNECTIVITY_MAX - dt_uptime_onroad, 1)
         set_offroad_alert("Offroad_ConnectivityNeededPrompt", True, extra_text=f"{remaining} hour{'' if remaining == 1 else 's'}.")
 
-  def check_for_update(self) -> None:
+  def check_for_update(self) -> bool:
     cloudlog.info("checking for updates")
 
     excluded_branches = ('release2', 'release2-staging')
 
-    try:
-      run(["git", "ls-remote", "origin", "HEAD"], OVERLAY_MERGED)
-      self._has_internet = True
-    except subprocess.CalledProcessError:
-      self._has_internet = False
-
+    self._has_internet = False
+    if HARDWARE.get_network_type() == NetworkType.none:
+      return False
     setup_git_options(OVERLAY_MERGED)
-    output = run(["git", "ls-remote", "--heads"], OVERLAY_MERGED)
+    try:
+      output = run(["git", "ls-remote", "--heads", "origin"], OVERLAY_MERGED, timeout=30)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+      if network_unavailable(e):
+        return False
+      raise
+    self._has_internet = True
 
     self.branches.clear()
     for line in output.split('\n'):
@@ -373,6 +386,7 @@ class Updater:
       cloudlog.info(f"update available, {cur_branch} ({str(cur_commit)[:7]}) -> {new_branch} ({str(new_commit)[:7]})")
     else:
       cloudlog.info(f"up to date on {cur_branch} ({str(cur_commit)[:7]})")
+    return True
 
   def fetch_update(self) -> None:
     cloudlog.info("attempting git fetch inside staging overlay")
@@ -389,7 +403,9 @@ class Updater:
     run(["git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], OVERLAY_MERGED)
 
     branch = self.target_branch
-    git_fetch_output = run(["git", "fetch", "origin", branch], OVERLAY_MERGED)
+    # Historical commits can reference retired fork submodules. Fetch only the
+    # parent here; the selected checkout's exact submodules are updated below.
+    git_fetch_output = run(["git", "fetch", "--no-recurse-submodules", "origin", branch], OVERLAY_MERGED)
     cloudlog.info("git fetch success: %s", git_fetch_output)
 
     cloudlog.info("git reset in progress")
@@ -477,11 +493,12 @@ def main() -> None:
           wait_helper.sleep(60)
           continue
 
-        update_failed_count += 1
-
         # check for update
         params.put("UpdaterState", "checking...", block=True)
-        updater.check_for_update()
+        if not updater.check_for_update():
+          params.put("UpdaterState", "waiting for internet", block=True)
+          wait_helper.sleep(60)
+          continue
 
         # download update
         last_fetch = params.get("UpdaterLastFetchTime")
@@ -497,16 +514,26 @@ def main() -> None:
           updater.fetch_update()
           write_time_to_param(params, "UpdaterLastFetchTime")
         update_failed_count = 0
-      except subprocess.CalledProcessError as e:
+      except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        if network_unavailable(e):
+          updater._has_internet = False
+          # A dropped download can leave the parent at the new revision with
+          # incomplete submodules. Rebuild staging before the next attempt.
+          OVERLAY_INIT.unlink(missing_ok=True)
+          params.put("UpdaterState", "waiting for internet", block=True)
+          wait_helper.sleep(60)
+          continue
+        update_failed_count += 1
         cloudlog.event(
           "update process failed",
           cmd=e.cmd,
           output=e.output,
-          returncode=e.returncode
+          returncode=getattr(e, 'returncode', None)
         )
         exception = f"command failed: {e.cmd}\n{e.output}"
         OVERLAY_INIT.unlink(missing_ok=True)
       except Exception as e:
+        update_failed_count += 1
         cloudlog.exception("uncaught updated exception, shouldn't happen")
         exception = str(e)
         OVERLAY_INIT.unlink(missing_ok=True)
