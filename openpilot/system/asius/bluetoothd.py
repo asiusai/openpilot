@@ -510,6 +510,12 @@ class BlePeerEngine:
       await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
                                     "error": {"code": -32000, "message": "Live video requires a network connection"}})
       return
+    from openpilot.system.asius.navigation_proxy import BRIDGE_METHODS
+    if body.get("method") in BRIDGE_METHODS:
+      # A search RPC may occupy each ordinary slot while waiting for these chunks.
+      response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
+      await self.send_body(sender, response)
+      return
     if self.rpc_active >= 4:
       await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
                                     "error": {"code": -32000, "message": "Device is busy. Try again."}})

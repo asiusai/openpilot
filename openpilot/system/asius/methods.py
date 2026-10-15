@@ -46,6 +46,7 @@ from openpilot.system.asius.onboarding import Onboarding, setup_status
 from openpilot.system.asius.live_state import StateEncoder
 from openpilot.system.asius.navigation_route import getNavigationRoute, getNavigationState
 from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination, searchNavigation, retrieveNavigationLocation
+from openpilot.system.asius.navigation_proxy import NavigationRequests, SEARCH_METHODS
 
 
 class ParamsReader(Protocol):
@@ -1044,7 +1045,7 @@ class LiveStateSampler:
       services.pop("navInstruction", None)
     return {**self.snapshot, "services": services, "sampledAt": now,
             "params": {**self.snapshot["params"], "NavDestination": navigation.get("destination")},
-            "navigation": navigation, "ignition": ignition_state()}
+            "navigation": navigation, "navigationRequests": NavigationRequests(self.params).pending(), "ignition": ignition_state()}
 
 
 live_state_pending = {}
@@ -1073,15 +1074,35 @@ clock_challenges = ClockChallenges()
 
 def dispatcher_for_peer(sender: str):
   from openpilot.system.asius.local_video import methods as local_video_methods
-  return dispatcher | local_video_methods(sender) | {
+  return dispatcher | local_video_methods(sender) | NavigationRequests().methods(sender) | {
     "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
   }
 
 
+navigation_rpc_slots = threading.BoundedSemaphore(4)
+
+
 def handle_rpc(sender: str, body: dict) -> None:
-  send_peer_payload(sender, json.loads(handle(body, dispatcher_for_peer(sender))))
+  if body.get("method") not in SEARCH_METHODS:
+    send_peer_payload(sender, json.loads(handle(body, dispatcher_for_peer(sender))))
+    return
+  # Search can wait for a response over this same socket. Keep its receiver free.
+  if not navigation_rpc_slots.acquire(blocking=False):
+    send_peer_payload(sender, {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32000, "message": "Navigation is busy"}})
+    return
+  session = relay_session
+  sid = session.session_id(sender) if session is not None else None
+
+  def run():
+    try:
+      response = json.loads(handle(body, dispatcher_for_peer(sender)))
+      if session is relay_session and (session is None or session.session_id(sender) == sid):
+        send_peer_payload(sender, response)
+    finally:
+      navigation_rpc_slots.release()
+  threading.Thread(target=run, daemon=True, name="navigation-search").start()
 
 
 def handle_peer_message(data: str) -> bool:
