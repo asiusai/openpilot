@@ -49,7 +49,7 @@ def test_regular_writes_and_calibration_reboot_shutdown_allowed_during_ignition(
   p, ignition = setup
   ignition['value'] = True
   values = {'DoReboot': True, 'DoShutdown': True, 'CalibrationParams': None, 'LiveTorqueParameters': None,
-            'LiveParametersV2': None, 'LiveDelay': None, 'OnroadCycleRequested': True, 'ExperimentalMode': True,
+            'LiveParametersV2': None, 'LiveDelay': None, 'OnroadCycleRequested': True, 'IsMetric': True,
             'Offroad_CarUnrecognized': {'text': 'test'}}
   result = methods.saveParams(values)
   assert all(v.startswith('ok') for v in result.values()), result

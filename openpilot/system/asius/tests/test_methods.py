@@ -18,7 +18,7 @@ def test_get_all_params_serializes_current_api_without_protected_values(tmp_path
   params = Params(str(tmp_path))
   values = {
     'DeviceName': 'Test device',
-    'ExperimentalMode': True,
+    'IsMetric': True,
     'VoiceAlertsEnabled': True,
     'LongitudinalPersonality': 1,
     'LastUpdateUptimeOnroad': 1.25,
@@ -32,7 +32,7 @@ def test_get_all_params_serializes_current_api_without_protected_values(tmp_path
   monkeypatch.setattr(methods, 'Params', lambda: params)
   response = json.loads(methods.handle({'jsonrpc': '2.0', 'method': 'getAllParams', 'id': 1}, methods.dispatcher_for_peer('test')))
   result = response['result']
-  for key in ('DeviceName', 'ExperimentalMode', 'LongitudinalPersonality', 'LastUpdateUptimeOnroad', 'Offroad_CarUnrecognized'):
+  for key in ('DeviceName', 'IsMetric', 'LongitudinalPersonality', 'LastUpdateUptimeOnroad', 'Offroad_CarUnrecognized'):
     assert result[key] == values[key]
   assert result['LastUpdateTime'] == values['LastUpdateTime'].timestamp()
   assert result['InstallDate'] is None
