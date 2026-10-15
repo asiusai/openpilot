@@ -73,16 +73,12 @@ def setNavDestination(latitude, longitude, name, address):
 
 def navigation_request(path, params):
   import requests
-  from openpilot.system.asius.mapbox import NAVIGATION_API, NavigationApi
+  from openpilot.system.asius.mapbox import NavigationApi
+  from openpilot.system.asius.navigation_proxy import request_json
   try:
-    response = requests.get(f"{NAVIGATION_API}/{path}", params=params,
-                            headers={"Authorization": f"Bearer {NavigationApi().get_token()}"}, timeout=8)
-    response.raise_for_status()
-    if len(response.content) > 256 * 1024:
-      raise ValueError("Navigation response is too large")
-    return response.json()
+    return request_json('/' + path, params, {"Authorization": f"Bearer {NavigationApi().get_token()}"}, max_bytes=256 * 1024)
   except requests.RequestException:
-    raise ValueError("Cannot search. Check device internet.") from None
+    raise ValueError("Navigation service unavailable. Try again shortly.") from None
 
 
 def searchNavigation(query, session, latitude=None, longitude=None, language="en"):
