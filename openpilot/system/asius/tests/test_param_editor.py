@@ -143,6 +143,7 @@ def test_actual_device_registry(tmp_path):
       break
     after = page['next']
   assert 'OpenpilotEnabledToggle' in names
+  assert 'ExperimentalMode' not in names
   assert len(names) == len(params.all_keys())
-  write(api, 'ExperimentalMode', 'true')
-  assert params.get_bool('ExperimentalMode')
+  write(api, 'IsMetric', 'true')
+  assert params.get_bool('IsMetric')
