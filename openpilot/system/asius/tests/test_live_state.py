@@ -29,7 +29,7 @@ def test_batched_telemetry_reduces_repeated_metadata_and_recovers_baselines(devi
 @pytest.fixture
 def device(monkeypatch):
   values = {
-    "DongleId": "device", "ExperimentalMode": True, "AppTerminalEnabled": True, "VoiceAlertsEnabled": True,
+    "DongleId": "device", "IsMetric": True, "AppTerminalEnabled": True, "VoiceAlertsEnabled": True,
     "UpdaterCurrentReleaseNotes": b"Release notes " * 12000,
     "UpdaterNewReleaseNotes": b"More release notes " * 12000,
     "UpdaterAvailableBranches": [f"branch-{i}" for i in range(2000)],
@@ -71,7 +71,7 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   assert len(json.dumps(snapshot).encode()) < 5000
   assert snapshot['ignition'] is True
   assert snapshot['params']['AppTerminalEnabled'] is True
-  assert snapshot['params']['ExperimentalMode'] is True
+  assert snapshot['params']['IsMetric'] is True
   assert snapshot['params']['VoiceAlertsEnabled'] is True
   assert snapshot['software']['UpdaterProgress'] == 25
   assert snapshot['services']['extrinsicsCalibration']['calPerc'] == 42
