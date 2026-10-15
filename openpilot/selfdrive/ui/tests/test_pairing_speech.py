@@ -82,6 +82,8 @@ def test_runtime_loads_every_catalog_clip_and_instructions_leave_time_to_confirm
   catalog = Path(pairing_speech.BASEDIR) / 'openpilot/selfdrive/assets/sounds/voice/messages.json'
   pairing_keys = {key.removeprefix('pairing_') for key in json.loads(catalog.read_text()) if key.startswith('pairing_')}
   assert set(speaker.digits) | set(speaker.outcomes) | set(speaker.instructions) == pairing_keys
+  # Keep even the slowest six-digit code below ten seconds.
+  assert max(map(len, speaker.digits.values())) / pairing_speech.SAMPLE_RATE < 1.6
   longest_code = 6 * max(map(len, speaker.digits.values()))
   for confirm in ('confirm_button', 'confirm_screen'):
     duration = (len(speaker.instructions['compare']) + longest_code + len(speaker.instructions[confirm])) / pairing_speech.SAMPLE_RATE

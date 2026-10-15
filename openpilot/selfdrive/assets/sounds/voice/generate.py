@@ -28,8 +28,10 @@ FILTER = ",".join([
 ])
 
 
+DIGIT_FILTER = "atempo=1.25"
+
 def signature(messages):
-  return hashlib.sha256(json.dumps([messages, VOICE, FILTER], sort_keys=True).encode()).hexdigest()
+  return hashlib.sha256(json.dumps([messages, VOICE, FILTER, DIGIT_FILTER], sort_keys=True).encode()).hexdigest()
 
 
 def check(messages):
@@ -55,7 +57,7 @@ async def generate(messages):
 
   semaphore = asyncio.Semaphore(3)
   previous = json.loads((ROOT / "generated.json").read_text())["clips"] if (ROOT / "generated.json").exists() else {}
-  metadata = {"voice": VOICE, "source_hash": signature(messages), "filter": FILTER, "clips": {}}
+  metadata = {"voice": VOICE, "source_hash": signature(messages), "filter": FILTER, "digit_filter": DIGIT_FILTER, "clips": {}}
   with tempfile.TemporaryDirectory(prefix="openpilot-voice-") as tmp:
     async def clip(key, item):
       async with semaphore:
@@ -71,6 +73,11 @@ async def generate(messages):
         wav = Path(tmp) / f"{key}.wav"
         await asyncio.to_thread(subprocess.run, ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(raw), "-af", FILTER,
                                                 "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)], check=True)
+        if key.removeprefix("pairing_") in "0123456789" and len(key.removeprefix("pairing_")) == 1:
+          faster = Path(tmp) / f"{key}-faster.wav"
+          await asyncio.to_thread(subprocess.run, ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(wav),
+                                                  "-af", DIGIT_FILTER, "-c:a", "pcm_s16le", str(faster)], check=True)
+          faster.replace(wav)
         with wave.open(str(wav)) as audio:
           seconds = audio.getnframes() / audio.getframerate()
         if not 0 < seconds <= 8:
