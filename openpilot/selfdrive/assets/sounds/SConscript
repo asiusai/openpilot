@@ -1,0 +1,26 @@
+from pathlib import Path
+import subprocess
+import sys
+from SCons.Script import Action, Alias, AlwaysBuild, File, Import, NoCache
+
+Import('env')
+
+root = Path(File('voice/generate.py').abspath).parent.parent
+
+
+def check_speech(target, source, env):
+  # Device builds only validate committed audio. Never run TTS or download inputs.
+  for catalog in ('voice', 'pairing'):
+    result = subprocess.run([sys.executable, '-S', str(root / 'voice/generate.py'), '--check', '--directory', str(root / catalog)])
+    if result.returncode:
+      return result.returncode
+  stamp = Path(target[0].abspath)
+  stamp.parent.mkdir(parents=True, exist_ok=True)
+  stamp.write_text('Verified bundled speech.\n')
+  return 0
+
+
+speech = env.Command('#build/speech_checked', [], Action(check_speech, '  [SPEECH] Checking bundled Jenny phrases'))  # noqa: F821
+AlwaysBuild(speech)
+NoCache(speech)
+Alias('speech', speech)
