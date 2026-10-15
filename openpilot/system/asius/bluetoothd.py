@@ -166,7 +166,12 @@ def variant_value(value: Any) -> Any:
 
 
 def enable_pairing_mode(duration_seconds: int = PAIRING_MODE_SECONDS) -> int:
-  require_ignition_off()
+  try:
+    require_ignition_off()
+  except PermissionError:
+    if ignition_state() is True:
+      announce('ignition_on')
+    raise
   pairing_until = int(time.monotonic()) + duration_seconds
   Params().put(BLUETOOTH_PAIRING_UNTIL_PARAM, pairing_until, block=True)
   announce('started')

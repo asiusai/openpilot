@@ -23,6 +23,7 @@ def setup(tmp_path, monkeypatch):
   monkeypatch.setattr(methods, 'Params', lambda: p)
   monkeypatch.setattr(bluetoothd, 'Params', lambda: p)
   monkeypatch.setattr(bluetoothd, 'ignition_state', lambda: ignition['value'])
+  monkeypatch.setattr(bluetoothd, 'announce', Mock())
   monkeypatch.setattr(relayd, 'Params', lambda: p)
   return p, ignition
 
@@ -85,6 +86,23 @@ def test_pairing_window_closes_at_ignition(setup):
   assert not bluetoothd.pairing_mode_active()
   ignition['value'] = False
   assert not bluetoothd.pairing_mode_active()
+
+
+@pytest.mark.parametrize('state,expected', [(True, 'ignition_on'), (False, 'started'), (None, None)])
+def test_pairing_attempt_announces_ignition_refusal_without_opening_window(setup, state, expected):
+  p, ignition = setup
+  ignition['value'] = state
+  if state is False:
+    bluetoothd.enable_pairing_mode()
+    assert p.get('BluetoothPairingUntil') is not None
+  else:
+    with pytest.raises(PermissionError):
+      bluetoothd.enable_pairing_mode()
+    assert p.get('BluetoothPairingUntil') is None
+  if expected:
+    bluetoothd.announce.assert_called_once_with(expected)
+  else:
+    bluetoothd.announce.assert_not_called()
 
 
 def test_manager_restart_closes_pairing_without_revoking_saved_apps(setup):

@@ -2,7 +2,7 @@ import asyncio
 import json
 import pytest
 
-from openpilot.system.asius.pairing_confirmation import Confirmation, read_confirmation, send_button
+from openpilot.system.asius.pairing_confirmation import Confirmation, announce, read_announcement, read_confirmation, send_button
 
 
 @pytest.mark.asyncio
@@ -172,3 +172,31 @@ def test_stale_state_cannot_keep_led_or_speech_running(tmp_path):
   assert read_confirmation(tmp_path, 9.) is None
   (tmp_path / 'status.json').write_text('{bad')
   assert read_confirmation(tmp_path, 10.) is None
+
+
+@pytest.mark.asyncio
+async def test_physical_hold_with_ignition_on_announces_refusal_and_keeps_pairing_closed(tmp_path, monkeypatch):
+  from openpilot.common.params import Params
+  from openpilot.system.asius import access_policy, bluetoothd
+  params = Params(str(tmp_path / 'params'))
+  monkeypatch.setattr(access_policy, 'ignition_state', lambda: True)
+  monkeypatch.setattr(bluetoothd, 'ignition_state', lambda: True)
+  monkeypatch.setattr(bluetoothd, 'Params', lambda: params)
+  monkeypatch.setattr(bluetoothd, 'announce', lambda outcome: announce(outcome, tmp_path, 10.))
+  control = Confirmation(lambda: False, tmp_path, lambda: 10.)
+  server = asyncio.create_task(control.buttons(bluetoothd.enable_pairing_mode))
+  try:
+    await asyncio.sleep(0)
+    assert send_button('hold', 7., tmp_path)
+    for _ in range(20):
+      if read_announcement(tmp_path, 10.):
+        break
+      await asyncio.sleep(.01)
+    assert read_announcement(tmp_path, 10.)['outcome'] == 'ignition_on'
+    assert read_announcement(tmp_path, 18.) is None
+    assert params.get('BluetoothPairingUntil') is None
+    assert not server.done()
+  finally:
+    server.cancel()
+    with pytest.raises(asyncio.CancelledError):
+      await server
