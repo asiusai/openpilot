@@ -63,6 +63,7 @@ DEVICE_TYPE = "asius-v0" if ASIUS_HARDWARE else HARDWARE.get_device_type()
 BLUETOOTH_PAIRING_UNTIL_PARAM = "BluetoothPairingUntil"
 
 BLE_SERVICE_UUID = "84a48ccf-5c26-56f7-91b8-5c39abd40cb9"
+BLE_PAIRING_UUID = "49898f6f-f19b-51a5-bbf6-9e41be3161a9"
 BLE_RX_UUID = "756e901e-4d8e-53ca-a196-41927498a27d"
 BLE_TX_UUID = "6871393b-21dc-5830-b5b1-0debe5fd29c8"
 BLE_STATUS_UUID = "0673914b-aee6-53b5-bb41-53674b7f9510"
@@ -323,7 +324,9 @@ class Advertisement(ServiceInterface):
 
   @dbus_property(access=PropertyAccess.READ)
   def ServiceUUIDs(self) -> DBusStrList:
-    return [BLE_SERVICE_UUID]
+    # One advertised UUID fits legacy advertising. Saved clients connect directly
+    # to the unchanged GATT service; new-device pickers use only the pairing UUID.
+    return [BLE_PAIRING_UUID if pairing_mode_active() else BLE_SERVICE_UUID]
 
   @dbus_property(access=PropertyAccess.READ)
   def LocalName(self) -> DBusStr:
