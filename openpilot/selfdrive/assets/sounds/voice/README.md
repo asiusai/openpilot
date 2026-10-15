@@ -1,10 +1,16 @@
-# Voice alerts
+# Bundled speech
 
-`soundd` plays these optional clips for screen alerts and offroad faults.
-Enable `VoiceAlertsEnabled` through the Asius app's Controls page.
-The persistent toggle defaults to off. Playback works without internet.
+`soundd` uses this directory for all spoken clips. Playback works without internet.
+`messages.json` contains every phrase and digit. `generated.json` contains their generation settings and hashes.
+Keep each WAV file beside these files. Use the catalog key as its filename.
 
-`messages.json` lists 13 phrases and their event or offroad-parameter bindings.
+The catalog contains 13 alert phrases and 17 pairing clips.
+Pairing keys use the `pairing_` prefix. They include ten digits, instructions and results.
+Pairing speech works when `VoiceAlertsEnabled` is off.
+
+Enable optional screen alerts and offroad fault speech through the Asius app's Controls page.
+The persistent `VoiceAlertsEnabled` toggle defaults to off.
+Alert entries contain their event and offroad-parameter bindings.
 The event names come from `selfdrive/selfdrived/events.py`, which supplies the
 comma four `mici` alert renderer. These are selected common conditions, not
 frequency statistics from driving logs. Both wheel-touch warnings use
@@ -20,9 +26,7 @@ Generate from the repository root:
 
 ```sh
 uv run openpilot/selfdrive/assets/sounds/voice/generate.py
-uv run openpilot/selfdrive/assets/sounds/voice/generate.py --directory openpilot/selfdrive/assets/sounds/pairing
 python3 openpilot/selfdrive/assets/sounds/voice/generate.py --check
-python3 openpilot/selfdrive/assets/sounds/voice/generate.py --check --directory openpilot/selfdrive/assets/sounds/pairing
 ```
 
 Generation needs ffmpeg and sends only the fixed phrases to Microsoft's speech
@@ -33,7 +37,7 @@ Commit the mono 48 kHz, 16-bit WAV files with their manifest. These small clips
 use ordinary Git storage, without uploading to comma's LFS server.
 
 Generate speech only during development. Device builds validate the committed files without TTS dependencies or network access.
-`scons speech` checks both catalogs. The normal build runs the same check.
+`scons speech` checks every clip in the shared catalog. The normal build runs the same check.
 Tests reject missing clips, extra clips, damaged audio and text changes without regenerated files.
 
 Processing uses the louder asius-1 speech test settings: loudness normalization,

@@ -150,5 +150,56 @@
       "Offroad_ChestnutPcieUnavailable",
       "Offroad_ChestnutUpdateFailed"
     ]
+  },
+  "pairing_0": {
+    "text": "Zero."
+  },
+  "pairing_1": {
+    "text": "One."
+  },
+  "pairing_2": {
+    "text": "Two."
+  },
+  "pairing_3": {
+    "text": "Three."
+  },
+  "pairing_4": {
+    "text": "Four."
+  },
+  "pairing_5": {
+    "text": "Five."
+  },
+  "pairing_6": {
+    "text": "Six."
+  },
+  "pairing_7": {
+    "text": "Seven."
+  },
+  "pairing_8": {
+    "text": "Eight."
+  },
+  "pairing_9": {
+    "text": "Nine."
+  },
+  "pairing_started": {
+    "text": "Pairing started. Select your device in the app."
+  },
+  "pairing_success": {
+    "text": "Paired successfully."
+  },
+  "pairing_failed": {
+    "text": "Pairing failed. Try again."
+  },
+  "pairing_ignition_on": {
+    "text": "Pairing is disabled when ignition is on."
+  },
+  "pairing_compare": {
+    "text": "Pairing code."
+  },
+  "pairing_confirm_button": {
+    "text": "If it matches, hold the button for three seconds."
+  },
+  "pairing_confirm_screen": {
+    "text": "If it matches, confirm."
   }
 }
