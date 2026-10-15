@@ -10,7 +10,7 @@ from openpilot.common.basedir import BASEDIR
 from openpilot.common.swaglog import cloudlog
 
 VOICE_DIR = Path(BASEDIR) / "openpilot/selfdrive/assets/sounds/voice"
-MESSAGES = json.loads((VOICE_DIR / "messages.json").read_text())
+MESSAGES = {key: item for key, item in json.loads((VOICE_DIR / "messages.json").read_text()).items() if not key.startswith("pairing_")}
 EVENT_VOICES = {event: key for key, item in MESSAGES.items() for event in item["events"]}
 NO_ENTRY_VOICES = {event: key for key, item in MESSAGES.items() for event in item["no_entry"]}
 OFFROAD_VOICES = {param: key for key, item in MESSAGES.items() for param in item["offroad"]}
