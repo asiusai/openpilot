@@ -17,10 +17,11 @@ from openpilot.common.swaglog import cloudlog
 RUNTIME = Path('/dev/shm/asius-pairing')
 CONFIRM_SECONDS = 30.
 ENROLL_SECONDS = 30.
+ANNOUNCEMENTS = ('started', 'success', 'failed', 'ignition_on')
 
 
 def announce(outcome: str, root: Path = RUNTIME, now: float | None = None) -> None:
-  if outcome not in ('started', 'success', 'failed'):
+  if outcome not in ANNOUNCEMENTS:
     raise ValueError('Invalid pairing announcement')
   now = time.monotonic() if now is None else now
   root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -35,7 +36,7 @@ def read_announcement(root: Path = RUNTIME, now: float | None = None) -> dict | 
   try:
     value = json.loads((root / 'speech.json').read_text())
     now = time.monotonic() if now is None else now
-    if value['outcome'] in ('started', 'success', 'failed') and value['created'] <= now < value['expires'] <= value['created'] + 8.:
+    if value['outcome'] in ANNOUNCEMENTS and value['created'] <= now < value['expires'] <= value['created'] + 8.:
       return value
   except (OSError, ValueError, KeyError, TypeError):
     pass
