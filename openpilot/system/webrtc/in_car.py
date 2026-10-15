@@ -13,7 +13,7 @@ SERVICES = ['deviceState', 'carState', 'selfdriveState', 'driverMonitoringState'
 FIELDS = {
   'deviceState': ['deviceType', 'started', 'chestnutPresent', 'networkType', 'thermalStatus', 'gpuTempC', 'cpuTempC', 'freeSpacePercent'],
   'carState': ['vEgo', 'vEgoCluster', 'vCruiseCluster', 'steeringAngleDeg', 'leftBlinker', 'rightBlinker'],
-  'selfdriveState': ['enabled', 'state', 'experimentalMode', 'alertText1', 'alertText2', 'alertSize', 'alertStatus', 'alertType', 'alertHudVisual'],
+  'selfdriveState': ['enabled', 'state', 'alertText1', 'alertText2', 'alertSize', 'alertStatus', 'alertType', 'alertHudVisual'],
   'driverMonitoringState': ['activePolicy', 'isRHD', 'alertLevel', 'visionPolicyState'],
   'extrinsicsCalibration': ['rpyCalib', 'wideFromDeviceEuler', 'calStatus', 'height'],
   'modelV2': ['position', 'laneLines', 'laneLineProbs', 'roadEdges', 'roadEdgeStds'],
@@ -109,7 +109,7 @@ class InCarTelemetry:
       self.wide = True
     elif car.get('vEgo', 0) > 10:
       self.wide = False
-    camera = 'wideRoad' if self.wide and services.get('selfdriveState', {}).get('experimentalMode') else 'road'
+    camera = 'wideRoad' if self.wide else 'road'
     return {'services': services, 'gpu': self.gpu if ds else 'unknown', 'confidence': confidence, 'torque': torque,
             'alert': alert, 'offroadAlerts': self.alerts if not started else [], 'camera': camera,
             'isMetric': self.params.get_bool('IsMetric'), 'alwaysOnDM': self.params.get_bool('AlwaysOnDM')}

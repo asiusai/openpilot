@@ -104,7 +104,6 @@ LIVE_STATE_PARAM_KEYS = [
   "HardwareSerial",
   "LastAthenaPingTime",
   "OpenpilotEnabledToggle",
-  "ExperimentalMode",
   "DisengageOnAccelerator",
   "LongitudinalPersonality",
   "IsLdwEnabled",
