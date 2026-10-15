@@ -8,6 +8,7 @@ import requests
 import openpilot.cereal.messaging as messaging
 from openpilot.system.asius.mapbox import NAVIGATION_API, NavigationApi as Api
 from openpilot.system.asius.navigation_route import RouteStore
+from openpilot.system.asius.navigation_proxy import request_json
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
@@ -160,15 +161,16 @@ class RouteEngine:
       params.pop('annotations')
       headers['Authorization'] = f'Bearer {token}'
     try:
-      resp = requests.get(url, params=params, headers=headers, timeout=10)
-      if resp.status_code != 200:
-        cloudlog.event("API request failed", status_code=resp.status_code, text=resp.text, error=True)
-      resp.raise_for_status()
+      if self.mapbox_token is None:
+        r = request_json(url[len(NAVIGATION_API):], params, headers, params=self.params, destination=request)
+      else:
+        resp = requests.get(url, params=params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        r = resp.json()
 
       if self.params.get("NavDestination") != request:
         return
 
-      r = resp.json()
       if len(r['routes']):
         route = r['routes'][0]
         steps = route['legs'][0]['steps']
@@ -187,7 +189,7 @@ class RouteEngine:
         self.clear_route()
 
     except (requests.exceptions.RequestException, ValueError, KeyError, IndexError):
-      self.store.publish(request, status="error", error="Cannot load route. Check device internet.")
+      self.store.publish(request, status="error", error="Cannot load route. Connect the device or an app to the internet.")
       cloudlog.exception("failed to get route")
       self.clear_route()
 
