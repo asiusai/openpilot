@@ -7,6 +7,7 @@ Keep each WAV file beside these files. Use the catalog key as its filename.
 The catalog contains 13 alert phrases and 17 pairing clips.
 Pairing keys use the `pairing_` prefix. They include ten digits, instructions and results.
 Pairing speech works when `VoiceAlertsEnabled` is off.
+Digit clips use 1.25x playback tempo with unchanged pitch. Instructions retain their normal tempo.
 
 Enable optional screen alerts and offroad fault speech through the Asius app's Controls page.
 The persistent `VoiceAlertsEnabled` toggle defaults to off.
