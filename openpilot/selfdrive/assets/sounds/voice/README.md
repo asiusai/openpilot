@@ -20,7 +20,9 @@ Generate from the repository root:
 
 ```sh
 uv run openpilot/selfdrive/assets/sounds/voice/generate.py
+uv run openpilot/selfdrive/assets/sounds/voice/generate.py --directory openpilot/selfdrive/assets/sounds/pairing
 python3 openpilot/selfdrive/assets/sounds/voice/generate.py --check
+python3 openpilot/selfdrive/assets/sounds/voice/generate.py --check --directory openpilot/selfdrive/assets/sounds/pairing
 ```
 
 Generation needs ffmpeg and sends only the fixed phrases to Microsoft's speech
@@ -29,6 +31,10 @@ The voice is `en-US-JennyNeural`. `generated.json` records input and output hash
 Generation removes obsolete clips listed in the previous generated manifest.
 Commit the mono 48 kHz, 16-bit WAV files with their manifest. These small clips
 use ordinary Git storage, without uploading to comma's LFS server.
+
+Generate speech only during development. Device builds validate the committed files without TTS dependencies or network access.
+`scons speech` checks both catalogs. The normal build runs the same check.
+Tests reject missing clips, extra clips, damaged audio and text changes without regenerated files.
 
 Processing uses the louder asius-1 speech test settings: loudness normalization,
 speech-band filtering, compression and a peak limiter. Keep the Dragon mixer
