@@ -90,10 +90,7 @@ async def generate(messages):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--check", action="store_true")
-  parser.add_argument("--directory", type=Path, help="Speech catalog directory, including messages.json")
   args = parser.parse_args()
-  if args.directory:
-    ROOT = args.directory.resolve()
   messages = json.loads((ROOT / "messages.json").read_text())
   if args.check:
     check(messages)
