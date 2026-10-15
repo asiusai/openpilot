@@ -33,44 +33,44 @@
       "sha256": "eba5940543bcad25dc66ba147ca12a9d62f5c768ddbff918ce61b76d0cd022e4"
     },
     "pairing_0": {
-      "seconds": 1.872,
-      "sha256": "4fefcdc0106191713ee16ed8c2de707c40fe157f3408686dfc3bb629e8a70ddd"
+      "seconds": 1.51,
+      "sha256": "56dc455a9256a0b68e56e66686e7b9347334c521452093de5ce54493176a1435"
     },
     "pairing_1": {
-      "seconds": 1.44,
-      "sha256": "bc3cc7d99ffa1033b1a6c426753bb3d30c1fceaec201deed9044ff80f27aa222"
+      "seconds": 1.136,
+      "sha256": "bde28f4363d3b652008188df8cf697425fa8035737278cb8f0a6c9772a201085"
     },
     "pairing_2": {
-      "seconds": 1.872,
-      "sha256": "bb9df6d4cd96f02b6046bc87bd4b0db05f0d693076bf8fd6a0769c825798c4b4"
+      "seconds": 1.509,
+      "sha256": "dbea6adcd4063ea7c29ac3e7144bfa9ea4f8629340a8425d5aac456dd8f4e8d2"
     },
     "pairing_3": {
-      "seconds": 1.392,
-      "sha256": "f5844c9097d3e4b2d4ab9b5d325fb24d895dd382b2eb5effaec03bc841138d51"
+      "seconds": 1.099,
+      "sha256": "76fd94b3c260fd9b96e9d1ce5455fcabfa76b26f7cf2b632e168626f428a39b9"
     },
     "pairing_4": {
-      "seconds": 1.872,
-      "sha256": "c12892f58731fb0cbf6cb4109bd8757127521420448862e858fd502d9cd51ddd"
+      "seconds": 1.499,
+      "sha256": "ec359626624223617bda7237029fbf44de5e1097cbf0d713a1c5a7d0c92f91b3"
     },
     "pairing_5": {
-      "seconds": 1.872,
-      "sha256": "4ed2e401aa60aec6ad3eb1c3de85c834698c37959081277b722f1cc5d10312f3"
+      "seconds": 1.503,
+      "sha256": "8ecad2d138cebbdd956f83de43e1901541b4ca81a14e27f278da082a1fc0f2a9"
     },
     "pairing_6": {
-      "seconds": 1.608,
-      "sha256": "f93fb4d7eb237be6fd704062cf58771bf5b04c93d115488481cd9cf9355808f8"
+      "seconds": 1.272,
+      "sha256": "d9aec6f2e89f0255bde119b5f192c23cb66753ebffeb332604730ec79c13eb6f"
     },
     "pairing_7": {
-      "seconds": 1.872,
-      "sha256": "9e2bfafe51a771d4e26207eca9908ae757c0f1c30d8a8af026855374638161f1"
+      "seconds": 1.509,
+      "sha256": "50e35ee049a40da27774936de4de24f5fa2e29a83238592d5e97b72a361fc8fa"
     },
     "pairing_8": {
-      "seconds": 1.872,
-      "sha256": "a88e364a3eda8be8e42e332670e90d8d5e0f78fd74e65b68651d7de2051936ae"
+      "seconds": 1.508,
+      "sha256": "353bbe3be4a01e39868f40e39fd1f7a044bcff29c47a8ed5a3d9433e225a05f1"
     },
     "pairing_9": {
-      "seconds": 1.488,
-      "sha256": "1df3063923d3dc5c58de691989a4e3f77ebea96f0211a796c200be7925a64678"
+      "seconds": 1.173,
+      "sha256": "b3b589580b2094c4832b6397b0688d1aaceafc44a3997da25dd85cdd3c905d23"
     },
     "pairing_compare": {
       "seconds": 1.872,
@@ -121,7 +121,8 @@
       "sha256": "088273926de21747545d922ade047eb27b71abe62f29f50b8965e6b6260328c8"
     }
   },
+  "digit_filter": "atempo=1.25",
   "filter": "aresample=48000,aformat=channel_layouts=stereo,highpass=f=180,loudnorm=I=-11:TP=-1:LRA=4,aresample=48000,highpass=f=280,acompressor=threshold=0.05:ratio=3:attack=5:release=120:makeup=10,alimiter=limit=0.85:attack=5:release=80:level=false",
-  "source_hash": "125763dc49f013a1ec6b6119896c1b356dfd34fa5d084f0c1fbb308717bcab54",
+  "source_hash": "fc371d872776e35efaad227000d6ff3f732465a0c2be294bdb9922973461fc2b",
   "voice": "en-US-JennyNeural"
 }
