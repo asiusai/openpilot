@@ -8,7 +8,7 @@
 #include "common/util.h"
 #include "system/camerad/sensors/sensor.h"
 
-// Common sensor exposure policy for the downstream and mainline camera backends.
+// Sensor exposure policy for the Asius mainline camera backend.
 class AutoExposure {
 public:
   int exposure_time = 5;
