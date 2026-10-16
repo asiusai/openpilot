@@ -75,7 +75,3 @@ def activate_vamos_update() -> None:
     subprocess.check_output(["sudo", "/usr/bin/vamos-update", "activate"], stderr=subprocess.STDOUT, encoding="utf8")
   finally:
     set_offroad_alert("Offroad_NeosUpdate", False)
-
-
-def should_skip_noop_vamos_fetch(update_available: bool, user_request: int, fetch_request: int) -> bool:
-  return vamos_update_supported() and not update_available and user_request != fetch_request
