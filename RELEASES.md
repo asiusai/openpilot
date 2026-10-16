@@ -1,5 +1,6 @@
 Version 0.11.3 (2026-XX-XX)
 ========================
+* Asius software updates now use Check, Download, and Install & restart in the app.
 * Autospeed
   * On supported cars, openpilot will intelligently decide what speed to drive based on the scene, including:
     * stopping at red lights, and going at green lights
