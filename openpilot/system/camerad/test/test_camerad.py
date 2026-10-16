@@ -4,13 +4,14 @@ import os
 import time
 import unittest
 import numpy as np
+from msgq.visionipc import VisionIpcClient
 
 from openpilot.common.parameterized import parameterized
 from openpilot.common.test import OpenpilotTestCase
-from openpilot.common.hardware import ASIUS_HARDWARE
+from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.tools.lib.log_time_series import msgs_to_time_series
-from openpilot.system.camerad.snapshot import get_snapshots
+from openpilot.system.camerad.snapshot import VISION_STREAMS, extract_image
 from openpilot.selfdrive.pandad.pandad import panda_ready, flash_panda
 from openpilot.selfdrive.test.helpers import collect_logs, log_collector, processes_context
 
@@ -48,11 +49,19 @@ def _camera_session():
   with processes_context(["camerad"]), log_collector(CAMERAS) as (raw_logs, lock):
     images = {cam: [] for cam in CAMERAS}
     start = time.monotonic()
+    # Repeated snapshots create subscriptions that evict the log collector.
+    # Keep one VisionIPC client per stream for the complete session.
+    clients = {cam: VisionIpcClient("camerad", VISION_STREAMS[cam], True) for cam in CAMERAS}
+    for client in clients.values():
+      client.connect(True)
     while time.monotonic() - start < MAX_TEST_TIME:
-      rpic, dpic = get_snapshots(frame="narrowRoadCameraState", front_frame="cabinCameraState")
-      wpic, _ = get_snapshots(frame="wideRoadCameraState")
-      for cam, img in zip(CAMERAS, [rpic, dpic, wpic], strict=True):
-        images[cam].append(_image_stats(img))
+      for cam, client in clients.items():
+        buf = client.recv()
+        if buf is None and time.monotonic() - start < 4:
+          continue  # VisionIPC can connect before sensor streaming starts.
+        assert buf is not None, f"{cam}: missing snapshot frame"
+        if client.frame_id >= 4 * SERVICE_LIST[cam].frequency:
+          images[cam].append(_image_stats(extract_image(buf)))
 
       if time.monotonic() - start >= TEST_TIMESPAN:
         with lock:
@@ -81,10 +90,14 @@ class TestCamerad(OpenpilotTestCase):
   @classmethod
   def setUpClass(cls):
     super().setUpClass()
-    # Panda generates camera FSIN, including the cabin camera's 25ms stagger.
-    if not panda_ready():
-      flash_panda()
-    assert panda_ready(), "panda not ready for camera synchronization"
+    # The shared capture runs before the per-test hardware setup.
+    HARDWARE.initialize_hardware()
+    HARDWARE.set_power_save(False)
+    if not ASIUS_HARDWARE:
+      # Panda generates camera FSIN, including the cabin camera's 25ms stagger.
+      if not panda_ready():
+        flash_panda()
+      assert panda_ready(), "panda not ready for camera synchronization"
     cls.logs, cls.images = _camera_session()
 
   @parameterized.expand(CAMERAS, names=("cam",))
