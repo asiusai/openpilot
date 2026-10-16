@@ -96,9 +96,9 @@ def test_selfdrive_timeout_uses_stock_alert_without_replaying_enabled_state():
 
 def test_in_car_video_is_read_only_even_on_not_car_devices():
   from opendbc.car.structs import car
-  from openpilot.system.athena.athenad import startStream
+  from openpilot.system.asius.methods import startStream
   cp = car.CarParams.new_message(notCar=True)
-  with patch('openpilot.system.athena.athenad.Params') as params, \
+  with patch('openpilot.system.asius.streaming.Params') as params, \
        patch('openpilot.system.webrtc.helpers.wait_for_webrtcd'), \
        patch('openpilot.system.webrtc.helpers.post_stream_request') as post:
     params.return_value.get.return_value = cp.to_bytes()
@@ -119,7 +119,7 @@ def test_in_car_video_is_read_only_even_on_not_car_devices():
 ])
 def test_stream_forwards_selected_cameras_and_services(cameras, services):
   from openpilot.system.asius.methods import startStream
-  with patch('openpilot.system.athena.athenad.Params') as params, \
+  with patch('openpilot.system.asius.streaming.Params') as params, \
        patch('openpilot.system.webrtc.helpers.wait_for_webrtcd'), \
        patch('openpilot.system.webrtc.helpers.post_stream_request') as post:
     params.return_value.get.return_value = None
@@ -134,7 +134,7 @@ def test_stream_forwards_selected_cameras_and_services(cameras, services):
   ([], ['invalid']), ([], [None]), ([], 'can'),
 ])
 def test_stream_rejects_invalid_selection_before_starting(cameras, services):
-  from openpilot.system.athena.athenad import startStream
+  from openpilot.system.asius.methods import startStream
   with patch('openpilot.system.webrtc.helpers.wait_for_webrtcd') as wait:
     with pytest.raises(ValueError):
       startStream('sdp', cameras, services)

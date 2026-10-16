@@ -47,7 +47,6 @@ class AsiusUploader(Uploader):
   upload_attr_name = UPLOAD_ATTR_NAME
   upload_attr_value = UPLOAD_ATTR_VALUE
   max_file_size = MAX_FILE_BYTES
-  upload_all_files = False
 
   def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: DataApiClient | None = None):
     self.private_key = get_device_private_key()

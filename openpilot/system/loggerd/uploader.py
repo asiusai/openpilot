@@ -75,7 +75,6 @@ class Uploader:
   upload_attr_name = UPLOAD_ATTR_NAME
   upload_attr_value = UPLOAD_ATTR_VALUE
   max_file_size: int | None = None
-  upload_all_files = False
 
   def __init__(self, dongle_id: str, root: str):
     self.dongle_id = dongle_id
@@ -139,9 +138,6 @@ class Uploader:
     for name, key, fn in upload_files:
       if name in self.immediate_priority:
         return name, key, fn
-
-    if self.upload_all_files and upload_files:
-      return upload_files[0]
 
     return None
 

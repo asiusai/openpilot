@@ -15,7 +15,6 @@ from openpilot.common.hardware import HARDWARE
 from openpilot.system.manager.helpers import unblock_stdout, save_bootlog
 from openpilot.system.manager.process import ensure_running
 from openpilot.system.manager.process_config import managed_processes
-from openpilot.system.asius.migrate_params import migrate_cloud_params
 from openpilot.system.asius.registration import register, UNREGISTERED_DONGLE_ID
 from openpilot.system.asius.pairing_invitation import invalidate as invalidate_pairing_invitations
 from openpilot.common.swaglog import cloudlog, add_file_handler
@@ -29,7 +28,6 @@ def manager_init() -> None:
   build_metadata = get_build_metadata()
 
   params = Params()
-  migrate_cloud_params(params)
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
   invalidate_pairing_invitations()
   params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
