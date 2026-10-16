@@ -452,8 +452,7 @@ class VideoClips:
         process.stdin.write("ffconcat version 1.0\n")
         for path in inputs:
           escaped_path = path.replace("'", "'\\''")
-          framerate = f"option framerate {CAMERA_FPS}\n" if clip.camera.endswith(".hevc") else ""
-          process.stdin.write(f"file 'file:{escaped_path}'\n{framerate}duration {SEGMENT_LENGTH}\n")
+          process.stdin.write(f"file 'file:{escaped_path}'\nduration {SEGMENT_LENGTH}\n")
         process.stdin.close()
       process.wait()
       if process.returncode != 0:
@@ -805,25 +804,30 @@ def getNetworkMetered() -> bool:
 
 
 @dispatcher.add_method
-def startStream(sdp: str, cameras: list[str], bridge_services_out: list[str], enabled: bool = True, inCar: bool = False) -> dict:
+def startStream(sdp: str, enabled: bool) -> dict:
   from openpilot.system.webrtc.helpers import StreamRequestBody, post_stream_request, wait_for_webrtcd
-  if not isinstance(cameras, list) or any(c not in ("road", "wideRoad", "driver") for c in cameras) or len(set(cameras)) != len(cameras):
-    raise ValueError("cameras must contain unique road, wideRoad or driver names")
-  if not isinstance(bridge_services_out, list) or any(not isinstance(s, str) or s not in SERVICE_LIST for s in bridge_services_out):
-    raise ValueError("bridge_services_out must contain valid cereal service names")
   params = Params()
   bridge_services_in = []
 
+  # stale car params case taken care of by webrtcd being shut off on ignition
   cp_bytes = params.get("CarParamsPersistent")
   if cp_bytes is not None:
     with car.CarParams.from_bytes(cp_bytes) as CP:
-      if CP.notCar and not inCar and cameras:
+      if CP.notCar:
         bridge_services_in.append("testJoystick")
 
-  # webrtcd owns the streaming lifetime, including ignition transitions.
-  wait_for_webrtcd()
+  if params.get_bool("IsOffroad"):
+    # manager owns camerad/stream_encoderd/webrtcd; flip the param and let it bring them up.
+    # webrtcd clears IsLiveStreaming when the session ends
+    params.put_bool("IsLiveStreaming", True)
+    # wait for webrtcd end points to wake up
+    try:
+      wait_for_webrtcd()
+    except TimeoutError:
+      cloudlog.event("athena.startStream.webrtcd_offroad_start_timeout", error=True)
+      raise
 
-  return post_stream_request(StreamRequestBody(sdp, cameras, enabled, bridge_services_in, bridge_services_out, in_car=inCar))
+  return post_stream_request(StreamRequestBody(sdp, ["wideRoad"], enabled, bridge_services_in, ["carState", "deviceState"]))
 
 
 def get_logs_to_send_sorted() -> list[str]:
