@@ -46,6 +46,7 @@ from openpilot.system.asius.onboarding import Onboarding, setup_status
 from openpilot.system.asius.live_state import StateEncoder
 from openpilot.system.asius.navigation_route import getNavigationRoute, getNavigationState
 from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination, searchNavigation, retrieveNavigationLocation
+from openpilot.system.asius.navigation_preview import previewNavigation, getNavigationPreview
 from openpilot.system.asius.navigation_proxy import NavigationRequests, SEARCH_METHODS
 
 
@@ -165,6 +166,8 @@ for method in (
   getRecentNavDestinations,
   getNavigationRoute,
   getNavigationState,
+  previewNavigation,
+  getNavigationPreview,
   searchNavigation,
   retrieveNavigationLocation,
   upstream_athena.clearNavDestination,

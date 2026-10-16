@@ -57,26 +57,38 @@ def getRecentNavDestinations():
   return read_recent(Params())
 
 
-def setNavDestination(latitude, longitude, name, address):
+def setNavDestination(latitude, longitude, name, address, previewRevision=None, routeIndex=None):
   try:
     place = destination(latitude, longitude, name, address)
   except ValueError as error:
     return {"success": 0, "error": str(error)}
   params = Params()
   with history_lock(params):
+    request = {**place, "requestId": secrets.token_hex(16)}
+    selected = None
+    if previewRevision is not None or routeIndex is not None:
+      from openpilot.system.asius.navigation_preview import PreviewStore
+      try:
+        selected = PreviewStore(params).select(previewRevision, routeIndex, request)
+      except ValueError as error:
+        return {"success": 0, "error": str(error)}
     recent = [item for item in read_recent(params) if (item["latitude"], item["longitude"]) != (latitude, longitude)]
     params.put(RECENT_DESTINATIONS, [place, *recent][:MAX_RECENT_DESTINATIONS], block=True)
     params.put_bool("NavigationEnabled", True, block=True)
-    params.put("NavDestination", {**place, "requestId": secrets.token_hex(16)}, block=True)
+    params.put("NavDestination", request, block=True)
+    if selected is not None:
+      from openpilot.system.asius.navigation_route import RouteStore
+      route, origin = selected
+      RouteStore(params).publish(request, route=route, origin=origin, last_known=True)
   return {"success": 1}
 
 
-def navigation_request(path, params):
+def navigation_request(path, params, max_bytes=256 * 1024):
   import requests
   from openpilot.system.asius.mapbox import NavigationApi
   from openpilot.system.asius.navigation_proxy import request_json
   try:
-    return request_json('/' + path, params, {"Authorization": f"Bearer {NavigationApi().get_token()}"}, max_bytes=256 * 1024)
+    return request_json('/' + path, params, {"Authorization": f"Bearer {NavigationApi().get_token()}"}, max_bytes=max_bytes)
   except requests.RequestException:
     raise ValueError("Navigation service unavailable. Try again shortly.") from None
 
