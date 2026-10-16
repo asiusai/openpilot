@@ -34,7 +34,7 @@ from openpilot.system.loggerd.data_api import (
 from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4
 from openpilot.system.loggerd.data_upload_queue import (
   AUTO_UPLOAD_FILES, MAX_FILE_BYTES, REQUEST_ATTR_NAME, ROUTE_FILES, ROUTE_SEGMENT_RE, UPLOAD_ATTR_NAME, attribute_set,
-  clear_failure, record_failure, upload_failure,
+  clear_failure, clear_stale_locks, record_failure, upload_failure,
 )
 from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep, force_wifi
 
@@ -225,9 +225,17 @@ def main(exit_event: threading.Event | None = None) -> None:
   sm = messaging.SubMaster(["deviceState"])
   sm.update(1000)
   uploader = AsiusUploader(dongle_id, Paths.log_root(), params=params)
+  locks_cleared = False
   backoff = 0.1
   while not exit_event.is_set():
     sm.update(0)
+    if sm["deviceState"].started:
+      locks_cleared = False
+    elif not locks_cleared and sm.valid["deviceState"]:
+      try:
+        locks_cleared = clear_stale_locks(uploader.root)
+      except OSError:
+        cloudlog.exception("failed to clear stale recording locks")
     network_type = sm["deviceState"].networkType.raw if not force_wifi else NetworkType.wifi
     if network_type == NetworkType.none:
       if allow_sleep:
