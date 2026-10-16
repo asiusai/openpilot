@@ -23,7 +23,7 @@ from openpilot.system.asius.mapbox import NAVIGATION_API
 from openpilot.system.asius.navigation_route import CHUNK_BYTES, MAX_ROUTE_BYTES
 
 BRIDGE_METHODS = {"claimNavigationRequest", "writeNavigationResponse", "releaseNavigationRequest"}
-SEARCH_METHODS = {"searchNavigation", "retrieveNavigationLocation"}
+SEARCH_METHODS = {"searchNavigation", "retrieveNavigationLocation", "previewNavigation"}
 REQUEST_SECONDS = 90
 LEASE_SECONDS = 25
 MAX_PENDING = 4
@@ -157,7 +157,7 @@ def request_json(path, query, headers, *, params=None, destination=None, max_byt
     forwarded = "/v1/nav" + path + "?" + urlencode({key: value for key, value in query.items() if value is not None}, doseq=True)
     if len(forwarded) > 4096:
       raise ValueError("Navigation request is too large") from None
-    result = NavigationRequests(params).request(forwarded, destination, timeout=90 if destination else 30)
+    result = NavigationRequests(params).request(forwarded, destination, timeout=90 if path.startswith('/directions/') else 30)
     if len(json.dumps(result).encode()) > max_bytes:
       raise ValueError("Navigation response is too large") from None
     return result

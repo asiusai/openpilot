@@ -126,9 +126,19 @@ class RouteEngine:
     assert self.last_position is not None
     cloudlog.warning(f"Calculating route {self.last_position} -> {destination}")
     request = self.params.get("NavDestination")
+    from openpilot.system.asius.navigation_preview import PreviewStore
+    changed = isinstance(request, dict) and request.get("requestId") and request != self.destination_request
+    selected = PreviewStore(self.params).take_selected(request) if changed else None
     self.destination_request = request
     self.clear_route()
     self.nav_destination = destination
+    if selected is not None:
+      try:
+        self.accept_route(request, selected, resume=True)
+      except (ValueError, KeyError, IndexError):
+        self.store.publish(request, status="error", error="Invalid selected route. Refresh the routes.")
+        self.clear_route()
+      return
     self.store.publish(request, status="loading")
 
     lang = self.params.get('LanguageSetting')
@@ -172,17 +182,7 @@ class RouteEngine:
         return
 
       if len(r['routes']):
-        route = r['routes'][0]
-        steps = route['legs'][0]['steps']
-        geometry = [np.array(step['geometry']['coordinates'], dtype=np.float64).reshape((-1, 2)) for step in steps]
-        if not steps or any(len(path) < 2 or not np.isfinite(path).all() for path in geometry):
-          raise ValueError("Invalid route geometry")
-        origin = {'longitude': self.last_position[0], 'latitude': self.last_position[1]}
-        if not self.store.publish(request, route=route, origin=origin, last_known=self.last_known):
-          return
-        self.route = steps
-        self.route_geometry = geometry
-        self.step_idx = 0
+        self.accept_route(request, r['routes'][0])
       else:
         self.store.publish(request, status="error", error="No driving route found")
         cloudlog.warning("Got empty route response")
@@ -192,6 +192,17 @@ class RouteEngine:
       self.store.publish(request, status="error", error="Cannot load route. Connect the device or an app to the internet.")
       cloudlog.exception("failed to get route")
       self.clear_route()
+
+  def accept_route(self, request, route, resume=False):
+    steps = route['legs'][0]['steps']
+    geometry = [np.array(step['geometry']['coordinates'], dtype=np.float64).reshape((-1, 2)) for step in steps]
+    if not steps or any(len(path) < 2 or not np.isfinite(path).all() for path in geometry):
+      raise ValueError("Invalid route geometry")
+    origin = {'longitude': self.last_position[0], 'latitude': self.last_position[1]}
+    if self.store.publish(request, route=route, origin=origin, last_known=self.last_known):
+      self.route = steps
+      self.route_geometry = geometry
+      self.step_idx = min(range(len(geometry)), key=lambda i: along_path(geometry[i], self.last_position)[1]) if resume else 0
 
   def send_instruction(self):
     msg = messaging.new_message('navInstruction', valid=True)
