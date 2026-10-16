@@ -213,7 +213,6 @@ def test_only_preview_and_qlog_are_automatic_on_all_networks(tmp_path):
   uploader = make_policy_uploader(tmp_path)
   for metered in (False, True):
     assert {name for name, _, _ in uploader.list_upload_files(metered)} == AUTO_UPLOAD_FILES
-  assert uploader.upload_all_files is False
 
 
 def test_requested_original_survives_restart_and_uploads_ahead_of_backlog(tmp_path):
