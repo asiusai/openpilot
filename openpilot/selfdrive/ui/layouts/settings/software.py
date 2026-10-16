@@ -1,3 +1,4 @@
+from openpilot.system.updated.install import request_install
 import subprocess
 import time
 import datetime
@@ -176,7 +177,7 @@ class SoftwareLayout(Widget):
   def _on_install_update(self):
     # Trigger reboot to install update
     self._install_btn.action_item.set_enabled(False)
-    ui_state.params.put_bool("DoReboot", True, block=True)
+    request_install()
 
   def _on_select_branch(self):
     # Get available branches and order
