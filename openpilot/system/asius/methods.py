@@ -713,7 +713,9 @@ def _software_update_state(params: ParamsReader | None = None) -> dict[str, Any]
 
 def _signal_updated(signal_name: str) -> dict[str, int | str]:
   result = subprocess.run(["pkill", f"-{signal_name}", "-f", "openpilot.system.updated.updated"], check=False)
-  return {"success": 1 if result.returncode in (0, 1) else 0, "returncode": result.returncode}
+  if result.returncode != 0:
+    raise RuntimeError("Updater is unavailable. Turn ignition off and retry.")
+  return {"success": 1}
 
 
 def _network_capabilities() -> dict[str, bool]:
@@ -839,11 +841,13 @@ def getSoftwareUpdateState() -> dict[str, Any]:
 
 @dispatcher.add_method
 def checkSoftwareUpdate() -> dict[str, int | str]:
+  require_ignition_off()
   return _signal_updated("SIGUSR1")
 
 
 @dispatcher.add_method
 def downloadSoftwareUpdate() -> dict[str, int | str]:
+  require_ignition_off()
   return _signal_updated("SIGHUP")
 
 
@@ -860,7 +864,8 @@ def setUpdateBranch(branch: str) -> dict[str, int | str]:
 @dispatcher.add_method
 def installSoftwareUpdate() -> dict[str, int]:
   require_ignition_off()
-  Params().put_bool("DoReboot", True, block=True)
+  from openpilot.system.updated.install import request_install
+  request_install()
   return {"success": 1}
 
 

@@ -53,8 +53,8 @@ def test_interrupted_download_invalidates_staging_without_recording_failure(upda
   class StopLoop(BaseException):
     pass
 
-  helper = Mock(user_request=updated.UserRequest.FETCH)
-  helper.sleep.side_effect = [None, StopLoop()]
+  helper = Mock()
+  helper.wait_for_request.side_effect = [updated.UserRequest.FETCH, StopLoop()]
   monkeypatch.setattr(updated, 'WaitTimeHelper', lambda: helper)
   monkeypatch.setattr(updated, 'Updater', lambda: updater)
   monkeypatch.setattr(updated, 'LOCK_FILE', str(tmp_path / 'lock'))
@@ -64,7 +64,7 @@ def test_interrupted_download_invalidates_staging_without_recording_failure(upda
   monkeypatch.setattr(updated, 'init_overlay', Mock())
   monkeypatch.setattr(updated, 'set_consistent_flag', Mock())
   monkeypatch.setattr(updated, 'system_time_valid', lambda: True)
-  monkeypatch.setattr(updated, 'should_skip_noop_vamos_fetch', lambda *args: False)
+  monkeypatch.setattr(type(updater), 'update_available', PropertyMock(return_value=True))
   monkeypatch.setattr(updater, 'check_for_update', Mock(return_value=True))
   monkeypatch.setattr(updater, 'fetch_update', Mock(side_effect=subprocess.CalledProcessError(128, ['git'], output='Connection reset')))
   set_params = Mock()
@@ -103,10 +103,9 @@ def test_fetch_gets_only_selected_submodule_revisions(updater, monkeypatch):
   assert commands.index(fetch) < commands.index(checkout) < commands.index(submodules)
 
 
-def test_persistent_offroad_failure_keeps_upstream_threshold(updater, monkeypatch):
+def test_manual_update_failures_stay_in_software_settings(updater, monkeypatch):
   monkeypatch.setattr(updated.os.path, 'exists', lambda _: False)
   monkeypatch.setattr(updated, 'parse_release_notes', lambda _: b'')
-  monkeypatch.setattr(updated, 'get_build_metadata', lambda: Mock(tested_channel=True))
   alert = Mock()
   monkeypatch.setattr(updated, 'set_offroad_alert', alert)
   updater._has_internet = True
@@ -115,4 +114,84 @@ def test_persistent_offroad_failure_keeps_upstream_threshold(updater, monkeypatc
     assert not any(call.args[:2] == ('Offroad_UpdateFailed', True) for call in alert.call_args_list)
     alert.reset_mock()
     updater.set_params(False, 16, 'broken repository')
-    assert any(call.args[:2] == ('Offroad_UpdateFailed', True) for call in alert.call_args_list)
+    assert not any(call.args[1] is True for call in alert.call_args_list)
+    assert updater.params.get('LastUpdateException') == 'broken repository'
+
+
+@pytest.mark.parametrize('requests, downloads', [([], 0), ([updated.UserRequest.CHECK], 0), ([updated.UserRequest.FETCH], 1)])
+def test_only_explicit_fetch_downloads(updater, tmp_path, monkeypatch, requests, downloads):
+  class StopLoop(BaseException):
+    pass
+  helper = Mock()
+  helper.wait_for_request.side_effect = [*requests, StopLoop()]
+  monkeypatch.setattr(updated, 'WaitTimeHelper', lambda: helper)
+  monkeypatch.setattr(updated, 'Updater', lambda: updater)
+  monkeypatch.setattr(updated, 'LOCK_FILE', str(tmp_path / 'lock'))
+  monkeypatch.setattr(updated, 'system_time_valid', lambda: True)
+  initialize = Mock()
+  monkeypatch.setattr(updated, 'init_overlay', initialize)
+  monkeypatch.setattr(updater, 'set_params', Mock())
+  monkeypatch.setattr(updater, 'check_for_update', Mock(return_value=True))
+  monkeypatch.setattr(type(updater), 'update_available', PropertyMock(return_value=True))
+  fetch = Mock()
+  monkeypatch.setattr(updater, 'fetch_update', fetch)
+  with pytest.raises(StopLoop):
+    updated.main()
+  assert initialize.call_count == len(requests)
+  assert fetch.call_count == downloads
+  assert helper.wait_for_request.call_count == len(requests) + 1
+
+
+def test_install_requires_complete_download_and_explicit_request(tmp_path, monkeypatch):
+  from openpilot.system.updated import install
+  params = Params(str(tmp_path / 'params'))
+  monkeypatch.setattr(install, 'Params', lambda: params)
+  monkeypatch.setattr(install, 'BASEDIR', str(tmp_path))
+  (tmp_path / '.overlay_init').touch()
+  monkeypatch.setattr(install.subprocess, 'check_output', Mock(return_value=''))
+  monkeypatch.setattr(install.os, 'sync', Mock())
+  activate = Mock()
+  monkeypatch.setattr(install, 'activate_vamos_update', activate)
+  with pytest.raises(RuntimeError, match='complete update'):
+    install.request_install(str(tmp_path))
+  finalized = tmp_path / 'finalized'
+  finalized.mkdir()
+  (finalized / '.overlay_consistent').touch()
+  (finalized / '.vamos_update_pending').touch()
+  assert not params.get_bool('DoReboot')
+  assert not (finalized / '.install_requested').exists()
+  install.request_install(str(tmp_path))
+  assert params.get_bool('DoReboot')
+  assert (finalized / '.install_requested').exists()
+  activate.assert_called_once()
+
+
+def test_failed_os_activation_never_authorizes_install(tmp_path, monkeypatch):
+  from openpilot.system.updated import install
+  params = Params(str(tmp_path / 'params'))
+  monkeypatch.setattr(install, 'Params', lambda: params)
+  monkeypatch.setattr(install, 'BASEDIR', str(tmp_path))
+  (tmp_path / '.overlay_init').touch()
+  monkeypatch.setattr(install.subprocess, 'check_output', Mock(return_value=''))
+  monkeypatch.setattr(install, 'activate_vamos_update', Mock(side_effect=RuntimeError('activation failed')))
+  finalized = tmp_path / 'finalized'
+  finalized.mkdir()
+  (finalized / '.overlay_consistent').touch()
+  (finalized / '.vamos_update_pending').touch()
+  with pytest.raises(RuntimeError, match='activation failed'):
+    install.request_install(str(tmp_path))
+  assert not params.get_bool('DoReboot')
+  assert not (finalized / '.install_requested').exists()
+
+
+def test_install_rejects_changed_checkout(tmp_path, monkeypatch):
+  from openpilot.system.updated import install
+  monkeypatch.setattr(install, 'BASEDIR', str(tmp_path))
+  (tmp_path / '.overlay_init').touch()
+  finalized = tmp_path / 'finalized'
+  finalized.mkdir()
+  (finalized / '.overlay_consistent').touch()
+  monkeypatch.setattr(install.subprocess, 'check_output', Mock(return_value='.git/HEAD'))
+  with pytest.raises(RuntimeError, match='checkout changed'):
+    install.request_install(str(tmp_path))
+  assert not (finalized / '.install_requested').exists()
