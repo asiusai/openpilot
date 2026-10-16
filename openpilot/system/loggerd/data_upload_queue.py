@@ -3,6 +3,7 @@ import errno
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 UPLOAD_ATTR_NAME = "user.asius_upload"
@@ -13,6 +14,20 @@ AUTO_UPLOAD_FILES = {"qlog", "qlog.zst", "qcamera.mp4"}
 ROUTE_FILES = AUTO_UPLOAD_FILES | {"rlog", "rlog.zst", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 MAX_FILE_BYTES = 128 * 1024 * 1024
 ROUTE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]+--[0-9]+$")
+
+
+def clear_stale_locks(root: str | Path) -> bool:
+  # Snapshot first. A logger starting after the process check creates a new route
+  # outside this list. Never remove locks while an existing logger is running.
+  locks = [path for path in Path(root).glob("*/*.lock")
+           if ROUTE_SEGMENT_RE.fullmatch(path.parent.name) and not path.parent.is_symlink()]
+  if not locks:
+    return True
+  if subprocess.run(["pgrep", "-x", "loggerd"], stdout=subprocess.DEVNULL, check=False).returncode != 1:
+    return False
+  for path in locks:
+    path.unlink(missing_ok=True)
+  return True
 
 
 def attribute_set(path: str | Path, name: str) -> bool:
