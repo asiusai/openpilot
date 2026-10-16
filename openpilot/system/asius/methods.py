@@ -30,7 +30,7 @@ from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.version import get_build_metadata
+from openpilot.common.version import get_build_metadata, terms_version, training_version
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, handle
 from openpilot.system.asius.terminal import TerminalManager
@@ -173,8 +173,6 @@ for method in (
   upstream_athena.clearNavDestination,
   upstream_athena.listDataDirectory,
   upstream_athena.setRouteViewed,
-  upstream_athena.getSshAuthorizedKeys,
-  upstream_athena.getGithubUsername,
   upstream_athena.getSimInfo,
   upstream_athena.getNetworkType,
   upstream_athena.getNetworkMetered,
@@ -219,25 +217,39 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
 
 @dispatcher.add_method
 def getVersion() -> dict[str, str]:
-  return {**upstream_athena.getVersion(), "fork": FORK}
+  return {**upstream_athena.getVersion(), "fork": FORK, "termsVersion": terms_version, "trainingVersion": training_version}
+
+
+# These values already have dedicated read access. Their writes stay restricted.
+READ_PARAMS_BLOCKED_KEYS = SAVE_PARAMS_BLOCKED_KEYS - {
+  "HasAcceptedTerms", "CompletedTrainingVersion", "GithubUsername", "GithubSshKeys",
+}
+
+
+def _read_params(params: Params, names: list[str]) -> dict[str, Any]:
+  import datetime
+
+  result: dict[str, Any] = {}
+  for name in dict.fromkeys(names):
+    params.check_key(name)
+    if name in READ_PARAMS_BLOCKED_KEYS or params.get_type(name) == ParamKeyType.BYTES:
+      continue
+    value = params.get(name)
+    result[name] = value.timestamp() if isinstance(value, datetime.datetime) else value
+  return result
 
 
 @dispatcher.add_method
 def getAllParams() -> dict[str, Any]:
-  import datetime
-
   params = Params()
-  result: dict[str, Any] = {}
+  return _read_params(params, [key.decode('utf-8') for key in params.all_keys()])
 
-  for key in (key.decode('utf-8') for key in params.all_keys()):
-    if key in SAVE_PARAMS_BLOCKED_KEYS or params.get_type(key) == ParamKeyType.BYTES:
-      continue
-    value = params.get(key)
-    if isinstance(value, datetime.datetime):
-      value = value.timestamp()
-    result[key] = value
 
-  return result
+@dispatcher.add_method
+def getParams(names: list[str]) -> dict[str, Any]:
+  if not isinstance(names, list) or len(names) > 256 or any(not isinstance(name, str) for name in names):
+    raise ValueError("Expected a list of up to 256 parameter names")
+  return _read_params(Params(), names)
 
 
 @dispatcher.add_method
@@ -278,7 +290,6 @@ def getPublicKey() -> str | None:
   return get_device_public_key()
 
 
-@dispatcher.add_method
 def getDeviceName() -> str:
   return Params().get("DeviceName") or {
     "tici": "comma 3", "tizi": "comma 3X", "mici": "comma four",
@@ -835,11 +846,6 @@ def setCurrentNetworkMetered(metered: int | str) -> dict[str, int]:
 
 
 @dispatcher.add_method
-def getSoftwareUpdateState() -> dict[str, Any]:
-  return _software_update_state()
-
-
-@dispatcher.add_method
 def checkSoftwareUpdate() -> dict[str, int | str]:
   require_ignition_off()
   return _signal_updated("SIGUSR1")
@@ -1253,11 +1259,6 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
     except Exception:
       cloudlog.exception("relayd.ws_send.exception")
       end_event.set()
-
-
-@dispatcher.add_method
-def getOnboardingStatus() -> dict:
-  return setup_status(Params())
 
 
 @dispatcher.add_method
