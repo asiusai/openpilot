@@ -7,7 +7,7 @@ import shutil
 import signal
 import fcntl
 import time
-import threading
+import queue
 from collections import defaultdict
 from pathlib import Path
 
@@ -19,9 +19,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import AGNOS, HARDWARE
 from openpilot.common.hardware.base import NetworkType
-from openpilot.common.version import get_build_metadata
-from openpilot.system.updated.vamos_update import (activate_vamos_update, prepare_vamos_update,
-                                                   should_skip_noop_vamos_fetch, vamos_update_supported)
+from openpilot.system.updated.vamos_update import prepare_vamos_update, vamos_update_supported
 
 LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
 STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
@@ -33,14 +31,6 @@ FINALIZED = os.path.join(STAGING_ROOT, "finalized")
 
 OVERLAY_INIT = Path(os.path.join(BASEDIR, ".overlay_init"))
 
-# do not allow to engage after this many hours onroad and this many routes
-HOURS_NO_CONNECTIVITY_MAX = 27
-ROUTES_NO_CONNECTIVITY_MAX = 84
-# send an offroad prompt after this many hours onroad and this many routes
-HOURS_NO_CONNECTIVITY_PROMPT = 23
-ROUTES_NO_CONNECTIVITY_PROMPT = 80
-
-
 class UserRequest:
   NONE = 0
   CHECK = 1
@@ -48,23 +38,21 @@ class UserRequest:
 
 class WaitTimeHelper:
   def __init__(self):
-    self.ready_event = threading.Event()
-    self.user_request = UserRequest.NONE
+    self.requests: queue.SimpleQueue[int] = queue.SimpleQueue()
     signal.signal(signal.SIGHUP, self.update_now)
     signal.signal(signal.SIGUSR1, self.check_now)
 
   def update_now(self, signum: int, frame) -> None:
     cloudlog.info("caught SIGHUP, attempting to downloading update")
-    self.user_request = UserRequest.FETCH
-    self.ready_event.set()
+    self.requests.put(UserRequest.FETCH)
 
   def check_now(self, signum: int, frame) -> None:
     cloudlog.info("caught SIGUSR1, checking for updates")
-    self.user_request = UserRequest.CHECK
-    self.ready_event.set()
+    self.requests.put(UserRequest.CHECK)
 
-  def sleep(self, t: float) -> None:
-    self.ready_event.wait(timeout=t)
+  def wait_for_request(self) -> int:
+    return self.requests.get()
+
 
 def write_time_to_param(params, param) -> None:
   t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
@@ -185,7 +173,7 @@ def init_overlay() -> None:
   cloudlog.info(f"git diff output:\n{git_diff}")
 
 
-def finalize_update() -> None:
+def finalize_update(vamos_update_pending: bool = False) -> None:
   """Take the current OverlayFS merged view and finalize a copy outside of
   OverlayFS, ready to be swapped-in at BASEDIR. Copy using shutil.copytree"""
 
@@ -210,6 +198,10 @@ def finalize_update() -> None:
   except subprocess.CalledProcessError:
     cloudlog.exception(f"Failed git cleanup, took {time.monotonic() - t:.3f} s")
 
+  for marker in (".install_requested", ".vamos_update_pending"):
+    Path(FINALIZED, marker).unlink(missing_ok=True)
+  if vamos_update_pending:
+    Path(FINALIZED, ".vamos_update_pending").touch()
   set_consistent_flag(True)
   cloudlog.info("done finalizing overlay")
 
@@ -264,7 +256,7 @@ class Updater:
   def update_ready(self) -> bool:
     consistent_file = Path(os.path.join(FINALIZED, ".overlay_consistent"))
     if consistent_file.is_file():
-      hash_mismatch = self.get_commit_hash(BASEDIR) != self.branches[self.target_branch]
+      hash_mismatch = self.get_commit_hash(BASEDIR) != self.get_commit_hash(FINALIZED)
       branch_mismatch = self.get_branch(BASEDIR) != self.target_branch
       on_target_branch = self.get_branch(FINALIZED) == self.target_branch
       return ((hash_mismatch or branch_mismatch) and on_target_branch)
@@ -337,22 +329,6 @@ class Updater:
     # Handle user prompt
     for alert in ("Offroad_UpdateFailed", "Offroad_ConnectivityNeeded", "Offroad_ConnectivityNeededPrompt"):
       set_offroad_alert(alert, False)
-
-    dt_uptime_onroad = (self.params.get("UptimeOnroad", return_default=True) - last_uptime_onroad) / (60*60)
-    dt_route_count = self.params.get("RouteCount", return_default=True) - last_route_count
-    build_metadata = get_build_metadata()
-    if failed_count > 15 and exception is not None and self.has_internet:
-      if build_metadata.tested_channel:
-        extra_text = "Ensure the software is correctly installed. Uninstall and re-install if this error persists."
-      else:
-        extra_text = exception
-      set_offroad_alert("Offroad_UpdateFailed", True, extra_text=extra_text)
-    elif failed_count > 0 or not self.has_internet:
-      if dt_uptime_onroad > HOURS_NO_CONNECTIVITY_MAX and dt_route_count > ROUTES_NO_CONNECTIVITY_MAX:
-        set_offroad_alert("Offroad_ConnectivityNeeded", True)
-      elif dt_uptime_onroad > HOURS_NO_CONNECTIVITY_PROMPT and dt_route_count > ROUTES_NO_CONNECTIVITY_PROMPT:
-        remaining = max(HOURS_NO_CONNECTIVITY_MAX - dt_uptime_onroad, 1)
-        set_offroad_alert("Offroad_ConnectivityNeededPrompt", True, extra_text=f"{remaining} hour{'' if remaining == 1 else 's'}.")
 
   def check_for_update(self) -> bool:
     cloudlog.info("checking for updates")
@@ -432,13 +408,9 @@ class Updater:
     self.params.put("UpdaterState", "finalizing update...", block=True)
     if vamos_update_pending:
       self.params.put("UpdaterProgress", 99, block=True)
-    finalize_update()
+    finalize_update(vamos_update_pending)
     if vamos_update_pending:
-      try:
-        activate_vamos_update()
-      except Exception:
-        set_consistent_flag(False)
-        raise
+      set_offroad_alert("Offroad_NeosUpdate", False)
       self.params.put("UpdaterProgress", 100, block=True)
     cloudlog.info("finalize success!")
 
@@ -465,89 +437,45 @@ def main() -> None:
       params.put("InstallDate", t, block=True)
 
     updater = Updater()
-    update_failed_count = 0 # TODO: Load from param?
+    update_failed_count = params.get("UpdateFailedCount") or 0
     wait_helper = WaitTimeHelper()
-
-    # invalidate old finalized update
-    set_consistent_flag(False)
-
-    # set initial state
     params.put("UpdaterState", "idle", block=True)
+    updater.set_params(False, update_failed_count, params.get("LastUpdateException"))
 
-    # Run the update loop
-    first_run = True
     while True:
-      wait_helper.ready_event.clear()
-
-      # Attempt an update
+      request = wait_helper.wait_for_request()
+      if request not in (UserRequest.CHECK, UserRequest.FETCH):
+        continue
       exception = None
       try:
-        # TODO: reuse overlay from previous updated instance if it looks clean
-        init_overlay()
-
-        # ensure we have some params written soon after startup
-        updater.set_params(False, update_failed_count, exception)
-
-        if not system_time_valid() or first_run:
-          first_run = False
-          wait_helper.sleep(60)
-          continue
-
-        # check for update
+        if not system_time_valid():
+          raise RuntimeError("Waiting for device time synchronization. Connect the app and retry.")
         params.put("UpdaterState", "checking...", block=True)
+        init_overlay()
         if not updater.check_for_update():
           params.put("UpdaterState", "waiting for internet", block=True)
-          wait_helper.sleep(60)
           continue
-
-        # download update
-        last_fetch = params.get("UpdaterLastFetchTime")
-        timed_out = last_fetch is None or (datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - last_fetch > datetime.timedelta(days=3))
-        user_requested_fetch = wait_helper.user_request == UserRequest.FETCH
-        if should_skip_noop_vamos_fetch(updater.update_available, wait_helper.user_request, UserRequest.FETCH):
-          cloudlog.info("skipping fetch, vamOS checkout is already up to date")
-        elif params.get_bool("NetworkMetered") and not timed_out and not user_requested_fetch:
-          cloudlog.info("skipping fetch, connection metered")
-        elif wait_helper.user_request == UserRequest.CHECK:
-          cloudlog.info("skipping fetch, only checking")
-        else:
+        if request == UserRequest.FETCH and updater.update_available:
           updater.fetch_update()
           write_time_to_param(params, "UpdaterLastFetchTime")
         update_failed_count = 0
-      except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        if network_unavailable(e):
+      except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        OVERLAY_INIT.unlink(missing_ok=True)
+        if network_unavailable(error):
           updater._has_internet = False
-          # A dropped download can leave the parent at the new revision with
-          # incomplete submodules. Rebuild staging before the next attempt.
-          OVERLAY_INIT.unlink(missing_ok=True)
           params.put("UpdaterState", "waiting for internet", block=True)
-          wait_helper.sleep(60)
           continue
         update_failed_count += 1
-        cloudlog.event(
-          "update process failed",
-          cmd=e.cmd,
-          output=e.output,
-          returncode=getattr(e, 'returncode', None)
-        )
-        exception = f"command failed: {e.cmd}\n{e.output}"
-        OVERLAY_INIT.unlink(missing_ok=True)
-      except Exception as e:
+        cloudlog.event("update process failed", cmd=error.cmd, output=error.output,
+                       returncode=getattr(error, "returncode", None))
+        exception = f"command failed: {error.cmd}\n{error.output}"
+      except Exception as error:
         update_failed_count += 1
-        cloudlog.exception("uncaught updated exception, shouldn't happen")
-        exception = str(e)
+        cloudlog.exception("manual update failed")
+        exception = str(error)
         OVERLAY_INIT.unlink(missing_ok=True)
-
-      try:
-        params.put("UpdaterState", "idle", block=True)
-        update_successful = (update_failed_count == 0)
-        updater.set_params(update_successful, update_failed_count, exception)
-      except Exception:
-        cloudlog.exception("uncaught updated exception while setting params, shouldn't happen")
-
-      # infrequent attempts if we successfully updated recently
-      wait_helper.user_request = UserRequest.NONE
-      wait_helper.sleep(5*60 if update_failed_count > 0 else 1.5*60*60)
+      params.put("UpdaterState", "idle", block=True)
+      updater.set_params(exception is None, update_failed_count, exception)
 
 
 if __name__ == "__main__":
