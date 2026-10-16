@@ -151,36 +151,33 @@ static int v0_ioctl(int fd, unsigned long request, void *arg = nullptr) {
 static constexpr int ONE_PIX_CSID_SOURCE_PAD = 4;
 
 static constexpr uint32_t ONE_SENSOR_DELAY_MS = 0xffffffffU;
-static constexpr uint32_t OS04_RAW10_20FPS_VTS = 0x1275;
+static constexpr uint32_t OS04_RAW12_20FPS_VTS = 2270;
 
 static const std::vector<i2c_random_wr_payload> &os04_default_init_regs() {
   static const std::vector<i2c_random_wr_payload> regs = [] {
     std::vector<i2c_random_wr_payload> result(std::begin(init_array_os04c10), std::end(init_array_os04c10));
-    // Two-lane RAW10 sensor mode. Retain this module's white balance in the
-    // VFE, after black-level subtraction.
+    // Two-lane RAW12 mode: milkv-duo/duo-buildroot-sdk, 89f501af2a5c,
+    // middleware/v2/component/isp/sensor/cv180x/ov_os04c10/os04c10_sensor_ctl.c.
+    // Use the board's 24 MHz clock, 20 FPS timing, crop and VFE white balance.
+    // Keep comma's shared initialization and apply only the mode differences.
     result.insert(result.end(), {
-      {0x0301, 0x84}, {0x0305, 0x5b}, {0x0306, 0x00}, {0x3016, 0x32},
-      {0x3106, 0x25}, {0x3501, 0x04}, {0x3502, 0x40}, {0x3511, 0x01},
-      {0x3512, 0x20}, {0x3660, 0x00}, {0x366a, 0x64}, {0x3698, 0x40},
-      {0x369a, 0x18}, {0x369c, 0x14}, {0x36a1, 0x5d}, {0x370a, 0x00},
-      {0x370e, 0x0c}, {0x3713, 0x00}, {0x3748, 0x00}, {0x374a, 0x00},
-      {0x374c, 0x00}, {0x374e, 0x00}, {0x3757, 0x0e}, {0x377b, 0x20},
-      {0x37be, 0x08}, {0x37c7, 0x08}, {0x3c8c, 0x20}, {0x4090, 0x14},
-      {0x40ba, 0x00}, {0x4507, 0x64}, {0x4803, 0x10}, {0x480e, 0x00},
-      {0x4813, 0x00}, {0x4823, 0x3c}, {0x4825, 0x32}, {0x484b, 0x07},
-      {0x5036, 0x00}, {0x301c, 0xf0}, {0x301f, 0xd0}, {0x3022, 0x01},
-      {0x3621, 0x90}, {0x3681, 0xa6}, {0x3682, 0x53}, {0x3683, 0x2a},
-      {0x3684, 0x15}, {0x3706, 0x4a}, {0x370b, 0xa2}, {0x370f, 0x04},
-      {0x3716, 0x24}, {0x3741, 0x4a}, {0x3743, 0x4a}, {0x3745, 0x4a},
-      {0x3747, 0x4a}, {0x3749, 0xa2}, {0x374b, 0xa2}, {0x374d, 0xa2},
-      {0x374f, 0xa2}, {0x378d, 0x30}, {0x3790, 0x4a}, {0x3791, 0xa2},
-      {0x3798, 0xc0}, {0x37a1, 0x01}, {0x37a8, 0x01}, {0x380c, 0x04},
-      {0x380d, 0x2e}, {0x380e, 0x12}, {0x380f, 0x75}, {0x3811, 0x09},
-      {0x3813, 0x09}, {0x3820, 0x88}, {0x3880, 0x25}, {0x4809, 0x1e},
-      {0x4837, 0x0a}, {0x4c01, 0x00}, {0x3822, 0x14}, {0x0100, 0x00},
-      {0x5100, 0x04}, {0x5101, 0x00}, {0x5102, 0x04}, {0x5103, 0x00},
-      {0x5104, 0x04}, {0x5105, 0x00}, {0x5140, 0x04}, {0x5141, 0x00},
-      {0x5142, 0x04}, {0x5143, 0x00}, {0x5144, 0x04}, {0x5145, 0x00},
+      {0x0100, 0x00}, {0x0305, 0x6a}, {0x0306, 0x00}, {0x0325, 0x54},
+      {0x3016, 0x32}, {0x3106, 0x25}, {0x3501, 0x06}, {0x3502, 0x1e},
+      {0x3512, 0x20}, {0x3660, 0x00}, {0x366a, 0x60}, {0x3698, 0x40},
+      {0x369a, 0x18}, {0x369c, 0x14}, {0x36a1, 0x5d}, {0x370e, 0x0c},
+      {0x3713, 0x00}, {0x3757, 0x0e}, {0x377b, 0x20}, {0x37be, 0x08},
+      {0x37c7, 0x08}, {0x3832, 0x00}, {0x40ba, 0x00}, {0x4507, 0x64},
+      {0x480e, 0x00}, {0x4813, 0x00}, {0x484b, 0x07}, {0x5036, 0x00},
+      {0x301f, 0xd0}, {0x3610, 0x95}, {0x3681, 0xa6}, {0x3682, 0x53},
+      {0x3683, 0x2a}, {0x3684, 0x15}, {0x370f, 0x04}, {0x3716, 0x24},
+      {0x380e, 0x08}, {0x380f, 0xde}, {0x3811, 0x09}, {0x3813, 0x09},
+      {0x3820, 0x88}, {0x3880, 0x25}, {0x4003, 0x80}, {0x4809, 0x1e},
+      {0x4837, 0x12}, {0x3c8c, 0x10}, {0x37e0, 0x00}, {0x37e1, 0x04},
+      {0x37e2, 0x08}, {0x37e4, 0x18}, {0x37e3, 0x04}, {0x3002, 0x21},
+      {0x3663, 0x26}, {0x368a, 0x00}, {0x3822, 0x14}, {0x3823, 0x08},
+      {0x3844, 0x08}, {0x382b, 0x00}, {0x5100, 0x04}, {0x5101, 0x00},
+      {0x5140, 0x04}, {0x5141, 0x00}, {0x5104, 0x04}, {0x5105, 0x00},
+      {0x5144, 0x04}, {0x5145, 0x00},
     });
     return result;
   }();
@@ -260,8 +257,8 @@ static bool write_sensor_regs(int sensor_fd, const std::vector<i2c_random_wr_pay
 
 static bool apply_os04_20fps_timing(int sensor_fd, int cam_idx) {
   return write_sensor_regs(sensor_fd, {
-    {0x380e, (OS04_RAW10_20FPS_VTS >> 8) & 0xff},
-    {0x380f, OS04_RAW10_20FPS_VTS & 0xff},
+    {0x380e, (OS04_RAW12_20FPS_VTS >> 8) & 0xff},
+    {0x380f, OS04_RAW12_20FPS_VTS & 0xff},
   }, "20fps timing", cam_idx);
 }
 
@@ -386,7 +383,7 @@ void OneCamera::setup_media_links() {
 void OneCamera::set_formats() {
   int cam_idx = cc.camera_num;
   auto &dcfg = v0_cams[cam_idx];
-  constexpr uint32_t media_bus_code = MEDIA_BUS_FMT_SBGGR10_1X10;
+  constexpr uint32_t media_bus_code = MEDIA_BUS_FMT_SBGGR12_1X12;
   // set format on CSIPHY subdev
   int csiphy_fd = open(util::string_format("/dev/v4l-subdev%d", dcfg.csiphy_subdev).c_str(), O_RDWR);
   if (csiphy_fd >= 0) {
@@ -531,10 +528,10 @@ bool OneCamera::apply_vfe_tuning() {
   regs.push_back({0x050, sensor->bayer_pattern});
   regs.push_back({0xce4, sensor->frame_width - 1});
   regs.push_back({0xce8, sensor->frame_height - 1});
-  // Preserve the module white balance; C4's sensor-side gains increased noise
-  // in RAW10 captures. The rest of the ISP program is shared.
-  regs.push_back({0x6fc, (0xbc << 16) | 0x80});
-  regs.push_back({0x700, 0xd1});
+  // Apply module white balance in the ISP. Keep unity green gain so clipped
+  // highlights remain neutral. The rest of the ISP program is shared.
+  regs.push_back({0x6fc, (0xc6 << 16) | 0x80});  // blue, green
+  regs.push_back({0x700, 0xe8});                 // red
   // Clear the extra interpolation slots initialized by the kernel baseline.
   for (uint32_t offset = 0x724; offset <= 0x75c; offset += 4) regs.push_back({offset, 0});
   if (!write_vfe_regs(regs, "upstream IFE")) return false;
@@ -570,17 +567,18 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   int cam_idx = cc.camera_num;
   auto &dcfg = v0_cams[cam_idx];
   sensor = std::make_unique<OS04C10>();
-  LOG("cam %d: using OS04C10 RAW10 media path", cam_idx);
-  sensor->bits_per_pixel = 10;
-  sensor->black_level = 64;
+  LOG("cam %d: using OS04C10 RAW12 media path", cam_idx);
+  sensor->bits_per_pixel = 12;
+  sensor->black_level = 128;
   sensor->bayer_pattern = CAM_ISP_PATTERN_BAYER_RGRGRG;
-  sensor->mipi_format = CAM_FORMAT_MIPI_RAW_10;
-  sensor->frame_data_type = CSI_RAW10;
-  sensor->frame_stride = sensor->frame_width * 10 / 8;
-  // This RAW10 mode uses HTS=1070, half the qcom2 mode's 2140. Scale EV by
-  // half as much so target-grey calculations represent the same exposure.
-  sensor->ev_scale = 75.0f;
-  sensor->exposure_time_max = 4717;
+  sensor->mipi_format = CAM_FORMAT_MIPI_RAW_12;
+  sensor->frame_data_type = CSI_RAW12;
+  sensor->frame_stride = sensor->frame_width * 12 / 8;
+  // HTS=2140. PLL2 changes from 354 to 340, increasing each exposure line.
+  sensor->ev_scale = 150.0f * 354.0f / 340.0f;
+  sensor->exposure_time_max = OS04_RAW12_20FPS_VTS - 8;
+  // Measured CSID SOF-to-EOF interval is 34.23 ms for this two-lane mode.
+  sensor->readout_time_ns = 34234000;
   sensor->max_ev = sensor->exposure_time_max * sensor->dc_gain_factor *
                    sensor->sensor_analog_gains[sensor->analog_gain_max_idx];
 
@@ -823,7 +821,7 @@ void CameraState::init(VisionIpcServer *v) {
 
   pm = std::make_unique<PubMaster>(std::vector{camera.cc.publish_name});
 
-  AutoExposure::init(camera.sensor.get(), camera.cc.camera_num, 600);
+  AutoExposure::init(camera.sensor.get(), camera.cc.camera_num, 200);
   camera.set_exposure(exposure_time, gain_idx, dc_gain_enabled);
 
   set_exposure_rect();
@@ -875,7 +873,9 @@ void CameraState::set_camera_exposure(const Os04AeSample &ae_sample) {
 
 void CameraState::process_pix_frame(int buf_idx, uint64_t timestamp) {
   frame_id++;
-  uint64_t timestamp_eof = timestamp + camera.sensor->readout_time_ns;
+  // Mainline VFE timestamps DMA completion. Estimate SOF from the readout time.
+  const uint64_t timestamp_eof = timestamp;
+  timestamp -= camera.sensor->readout_time_ns;
 
   VisionBuf *capture = &camera.vfe_buffers[buf_idx];
   VisionBuf *vb = camera.vipc_server->get_buffer(camera.stream_type, buf_idx);
