@@ -16,10 +16,8 @@ from openpilot.selfdrive.test.helpers import collect_logs, log_collector, proces
 TEST_TIMESPAN = 10
 CAMERAS = ('narrowRoadCameraState', 'cabinCameraState', 'wideRoadCameraState')
 EXPOSURE_STABLE_COUNT = 3
-EXPOSURE_RANGE = (0.10, 0.65) if ASIUS_HARDWARE else (0.15, 0.35)
+EXPOSURE_RANGE = (0.15, 0.35)
 MAX_TEST_TIME = 25
-STARTUP_FRAME_IGNORE = 10
-MAX_ISOLATED_FRAME_DROPS = 2
 
 
 def _numpy_rgb2gray(im):
@@ -39,6 +37,7 @@ def _exposure_stable(results):
     len(v) >= EXPOSURE_STABLE_COUNT and all(_in_range(*s) for s in v[-EXPOSURE_STABLE_COUNT:])
     for v in results.values()
   )
+
 
 def run_and_log(procs, services, duration):
   with processes_context(procs):
@@ -69,15 +68,8 @@ def _camera_session():
     cnt = len(ts[cam]['t'])
     assert expected_frames*0.8 < cnt < expected_frames*1.2, f"unexpected frame count {cam}: {expected_frames=}, got {cnt}"
 
-    timestamps = ts[cam]['timestampSof'][STARTUP_FRAME_IGNORE if ASIUS_HARDWARE else 0:] / 1e6
-    dts = np.abs(np.diff(timestamps) - 1000/SERVICE_LIST[cam].frequency)
-    if ASIUS_HARDWARE:
-      bad_intervals = np.count_nonzero(dts >= 1.0)
-      assert bad_intervals <= MAX_ISOLATED_FRAME_DROPS, \
-        f"{cam} dts(ms) out of spec: {bad_intervals} bad intervals, max diff {dts.max()}, 99 percentile {np.percentile(dts, 99)}"
-      assert dts.max() < 1000/SERVICE_LIST[cam].frequency + 1.0, f"{cam} dropped consecutive frames"
-    else:
-      assert (dts < 1.0).all(), f"{cam} dts(ms) out of spec: max diff {dts.max()}, 99 percentile {np.percentile(dts, 99)}"
+    dts = np.abs(np.diff([ts[cam]['timestampSof']/1e6]) - 1000/SERVICE_LIST[cam].frequency)
+    assert (dts < 1.0).all(), f"{cam} dts(ms) out of spec: max diff {dts.max()}, 99 percentile {np.percentile(dts, 99)}"
 
   return ts, exposure
 
@@ -112,14 +104,7 @@ class TestCamerad(OpenpilotTestCase):
 
   def test_frame_skips(self):
     for c in CAMERAS:
-      frame_diffs = np.diff(self.logs[c]['frameId'][STARTUP_FRAME_IGNORE:] if ASIUS_HARDWARE else self.logs[c]['frameId'])
-      if ASIUS_HARDWARE:
-        assert frame_diffs.min() == 1, f"{c} has duplicate or decreasing frame IDs"
-        assert frame_diffs.max() <= 2, f"{c} dropped consecutive frames"
-        dropped_frames = np.count_nonzero(frame_diffs != 1)
-        assert dropped_frames <= MAX_ISOLATED_FRAME_DROPS, f"{c} dropped too many frames: {dropped_frames}"
-      else:
-        assert set(frame_diffs) == {1, }, f"{c} has frame skips"
+      assert set(np.diff(self.logs[c]['frameId'])) == {1, }, f"{c} has frame skips"
 
   def test_frame_sync(self):
     if ASIUS_HARDWARE:
@@ -150,9 +135,11 @@ class TestCamerad(OpenpilotTestCase):
       assert c in ts
       assert len(ts[c]['t']) > 20
 
+      # not a valid request id
+      assert 0 not in ts[c]['requestId']
+
       # should monotonically increase
       assert np.all(np.diff(ts[c]['frameId']) >= 1)
-      assert 0 not in ts[c]['requestId']
       assert np.all(np.diff(ts[c]['requestId']) >= 1)
 
       # EOF > SOF
@@ -161,10 +148,8 @@ class TestCamerad(OpenpilotTestCase):
       # logMonoTime > SOF
       assert np.all((ts[c]['t'] - ts[c]['timestampSof']/1e9) > 1e-7)
 
-      # EOF timestamps can be reconstructed from SOF or supplied directly by the camera driver.
-      if not ASIUS_HARDWARE:
-        # logMonoTime > EOF, needs some tolerance since EOF is (SOF + readout time) but there is noise in the SOF timestamping (done via IRQ)
-        assert np.mean((ts[c]['t'] - ts[c]['timestampEof']/1e9) > 1e-7) > 0.7  # should be mostly logMonoTime > EOF
+      # logMonoTime > EOF, needs some tolerance since EOF is (SOF + readout time) but there is noise in the SOF timestamping (done via IRQ)
+      assert np.mean((ts[c]['t'] - ts[c]['timestampEof']/1e9) > 1e-7) > 0.7  # should be mostly logMonoTime > EOF
       assert np.all((ts[c]['t'] - ts[c]['timestampEof']/1e9) > -0.10)        # when EOF > logMonoTime, it should never be more than two frames
 
   @unittest.skipIf(ASIUS_HARDWARE, "Spectra fault injection is unavailable on Asius")
@@ -177,10 +162,11 @@ class TestCamerad(OpenpilotTestCase):
     ts = msgs_to_time_series(logs)
 
     # we should see some jumps from introduced errors
-    assert np.max([np.max(np.diff(ts[c]['frameId'])) for c in CAMERAS]) > 1
-    assert np.max([np.max(np.diff(ts[c]['requestId'])) for c in CAMERAS]) > 1
+    assert np.max([ np.max(np.diff(ts[c]['frameId'])) for c in CAMERAS ]) > 1
+    assert np.max([ np.max(np.diff(ts[c]['requestId'])) for c in CAMERAS ]) > 1
 
     self._sanity_checks(ts)
+
 
 if __name__ == "__main__":
   unittest.main()
