@@ -254,6 +254,65 @@ def test_requests_reject_unsafe_or_incomplete_recordings(tmp_path):
   assert not list(make_policy_uploader(tmp_path).list_upload_files(False))
 
 
+def test_stale_locks_release_finished_recordings_without_deleting_data(tmp_path, monkeypatch):
+  from openpilot.system.loggerd import data_upload_queue as queue
+  segment = tmp_path / '00000001--abc--0'
+  segment.mkdir()
+  recording = segment / 'qcamera.mp4'
+  recording.write_bytes(b'recorded video')
+  lock = segment / 'qcamera.mp4.lock'
+  lock.touch()
+  uploader = make_policy_uploader(tmp_path)
+  assert uploader.next_file_to_upload(False) is None
+  monkeypatch.setattr(queue.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=1))
+  assert queue.clear_stale_locks(tmp_path)
+  assert not lock.exists()
+  assert recording.read_bytes() == b'recorded video'
+  assert uploader.next_file_to_upload(False)[1] == '00000001--abc--0/qcamera.mp4'
+
+
+@pytest.mark.parametrize('returncode', [0, 2])
+def test_active_logger_or_failed_process_check_preserves_locks(tmp_path, monkeypatch, returncode):
+  from openpilot.system.loggerd import data_upload_queue as queue
+  segment = tmp_path / '00000001--abc--0'
+  segment.mkdir()
+  lock = segment / 'rlog.lock'
+  lock.touch()
+  monkeypatch.setattr(queue.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(returncode=returncode))
+  assert not queue.clear_stale_locks(tmp_path)
+  assert lock.exists()
+
+
+def test_logger_starting_after_snapshot_keeps_its_new_locks(tmp_path, monkeypatch):
+  from openpilot.system.loggerd import data_upload_queue as queue
+  old = tmp_path / '00000001--abc--0'
+  old.mkdir()
+  (old / 'rlog.lock').touch()
+  new = tmp_path / '00000002--def--0'
+
+  def process_check(*args, **kwargs):
+    new.mkdir()
+    (new / 'rlog.lock').touch()
+    return SimpleNamespace(returncode=1)
+
+  monkeypatch.setattr(queue.subprocess, 'run', process_check)
+  assert queue.clear_stale_locks(tmp_path)
+  assert not (old / 'rlog.lock').exists()
+  assert (new / 'rlog.lock').exists()
+
+
+def test_lock_cleanup_does_not_follow_route_symlinks(tmp_path):
+  from openpilot.system.loggerd.data_upload_queue import clear_stale_locks
+  root = tmp_path / 'recordings'
+  root.mkdir()
+  external = tmp_path / 'external'
+  external.mkdir()
+  (external / 'rlog.lock').touch()
+  (root / '00000001--abc--0').symlink_to(external, target_is_directory=True)
+  assert clear_stale_locks(root)
+  assert (external / 'rlog.lock').exists()
+
+
 def test_damaged_recording_does_not_block_other_automatic_uploads(tmp_path):
   import pytest
   from openpilot.system.loggerd.data_upload_queue import request_uploads, upload_status
