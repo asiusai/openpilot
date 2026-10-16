@@ -15,6 +15,21 @@ CHUNK_BYTES = 3072
 MAX_ROUTE_BYTES = 8 * 1024 * 1024
 
 
+def validate_chunk_request(revision, offset):
+  if not isinstance(revision, str) or len(revision) != 64 or any(c not in "0123456789abcdef" for c in revision):
+    raise ValueError("Invalid route revision")
+  if type(offset) is not int or offset < 0 or offset % CHUNK_BYTES:
+    raise ValueError("Invalid route offset")
+
+
+def route_chunk(revision, offset, data):
+  if offset >= len(data):
+    raise ValueError("Invalid route offset")
+  part = data[offset:offset + CHUNK_BYTES]
+  return {"revision": revision, "offset": offset, "total": len(data), "chunk": base64.b64encode(part).decode(),
+          "nextOffset": offset + len(part), "done": offset + len(part) == len(data)}
+
+
 def atomic_write(path, data):
   path.parent.mkdir(parents=True, exist_ok=True)
   with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as f:
@@ -76,19 +91,12 @@ class RouteStore:
     return True
 
   def chunk(self, revision, offset=0):
-    if not isinstance(revision, str) or len(revision) != 64 or any(c not in "0123456789abcdef" for c in revision):
-      raise ValueError("Invalid route revision")
-    if type(offset) is not int or offset < 0 or offset % CHUNK_BYTES:
-      raise ValueError("Invalid route offset")
+    validate_chunk_request(revision, offset)
     state = self.state()
     if state.get("revision") != revision:
       raise ValueError("Route changed")
     data = (self.root / f"{revision}.gz").read_bytes()
-    if offset >= len(data):
-      raise ValueError("Invalid route offset")
-    part = data[offset:offset + CHUNK_BYTES]
-    return {"revision": revision, "offset": offset, "total": len(data), "chunk": base64.b64encode(part).decode(),
-            "nextOffset": offset + len(part), "done": offset + len(part) == len(data)}
+    return route_chunk(revision, offset, data)
 
   def save_position(self, position):
     atomic_write(self.root / "position.json", json.dumps(position).encode())
