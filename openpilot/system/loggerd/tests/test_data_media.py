@@ -96,3 +96,23 @@ def test_cenc_upload_recovers_complete_frames_from_interrupted_recording(tmp_pat
   assert len(frame_hash(encrypted, key)) == 40
   assert frame_hash(encrypted, key) == frame_hash(reference)
   assert source.read_bytes() == truncated
+
+
+def test_embedded_index_keeps_video_seekable_and_hashes_each_range(tmp_path):
+  from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+  from openpilot.system.loggerd.data_api import public_identity, canonical_json
+  from openpilot.system.loggerd.data_media import embed_index, INDEX_BYTES
+  clear, encrypted = tmp_path/'clear.mp4', tmp_path/'encrypted.mp4'
+  make_video(clear, 3)
+  key = bytes(range(16))
+  manifest = package_cenc_mp4(clear, encrypted, key, bytes(reversed(key)))
+  private = Ed25519PrivateKey.generate()
+  signed = embed_index(str(encrypted), manifest, public_identity(private), 'routes/00000001--1234567890/0/qcamera.mp4','key',private)
+  data = encrypted.read_bytes()
+  assert len(data) == signed['encryptedLength']
+  assert signed['fragments'][0]['offset'] == INDEX_BYTES
+  private.public_key().verify(base64.urlsafe_b64decode(signed['signature']+'=='), canonical_json({k:v for k,v in signed.items() if k!='signature'}).encode())
+  for fragment in signed['fragments']:
+    chunk=data[fragment['offset']:fragment['offset']+fragment['length']]
+    assert base64.urlsafe_b64encode(hashlib.sha256(chunk).digest()).decode().rstrip('=') == fragment['sha256']
+  assert frame_hash(clear)==frame_hash(encrypted,key)

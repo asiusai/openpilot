@@ -133,6 +133,7 @@ procs = [
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
+  PythonProcess("route_summaryd", "openpilot.system.loggerd.route_summary", always_run),
   PythonProcess("asius_uploader", "openpilot.system.loggerd.asius_uploader", asius_upload),
   # debug procs
   NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),
