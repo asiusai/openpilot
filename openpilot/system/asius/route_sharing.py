@@ -3,7 +3,7 @@ import re
 
 
 def publication_request(route_id: str, enabled: bool, files: list[dict]) -> dict:
-  if not isinstance(route_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{3,160}", route_id):
+  if not isinstance(route_id, str) or not re.fullmatch(r"[0-9a-f]{8}--[0-9a-f]{10}", route_id):
     raise ValueError("Invalid route identifier")
   if type(enabled) is not bool or not isinstance(files, list) or len(files) > 4096:
     raise ValueError("Invalid route publication")
@@ -17,7 +17,8 @@ def publication_request(route_id: str, enabled: bool, files: list[dict]) -> dict
     if not isinstance(entry, dict):
       raise ValueError("Invalid public file")
     path, checksum, key = (entry.get(field) for field in ("path", "checksumSha256", "key"))
-    if not isinstance(path, str) or not re.fullmatch(rf"routes/{re.escape(route_id)}--\d{{1,5}}/{names}", path):
+    from openpilot.system.loggerd.route_summary import cloud_path
+    if not isinstance(path, str) or (path != cloud_path(route_id) and not re.fullmatch(rf"routes/{re.escape(route_id)}/\d{{1,5}}/{names}", path)):
       raise ValueError("Only files belonging to this route can be published")
     if not isinstance(checksum, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", checksum):
       raise ValueError("Invalid public file checksum")
@@ -33,6 +34,6 @@ def authorize_publication(private_key, route_id: str, enabled: bool, files: list
     raise ValueError("Invalid request time")
   body = publication_request(route_id, enabled, files)
   client = DataApiClient("", private_key)
-  path = f"/v1/{client.owner}/routes/{route_id}/publication"
+  path = f"/v1/{client.owner}/routes/{route_id}/public"
   encoded, authorization = client.authorization("PUT", path, body, timestamp=timestamp)
   return {"path": path, "body": encoded.decode(), "authorization": authorization}
