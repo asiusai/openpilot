@@ -507,3 +507,25 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     "checksumSha256": b64url(hashlib.sha256(output).digest()),
     "fragments": fragments,
   }
+
+
+# A bounded MP4 UUID box stores the signed seek index before the media payload.
+# It is excluded from fragment hashes to avoid a self-referential signature.
+INDEX_BYTES = 65536
+INDEX_UUID = b"ASIUS-INDEX-V001"
+
+
+def embed_index(filename: str, media: dict[str, Any], owner: str, path: str, key_id: str, private_key) -> dict[str, Any]:
+  import json
+  payload = Path(filename).read_bytes()
+  indexed = media | {"owner": owner, "path": path, "keyId": key_id,
+                     "encryptedLength": len(payload) + INDEX_BYTES,
+                     "fragments": [fragment | {"offset": fragment["offset"] + INDEX_BYTES} for fragment in media["fragments"]]}
+  canonical = json.dumps(indexed, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+  indexed["signature"] = b64url(private_key.sign(canonical))
+  encoded = json.dumps(indexed, separators=(",", ":")).encode()
+  if len(encoded) > INDEX_BYTES - 28:
+    raise ValueError("MP4 index exceeds reserved space")
+  box = struct.pack(">I4s", INDEX_BYTES, b"uuid") + INDEX_UUID + struct.pack(">I", len(encoded)) + encoded
+  Path(filename).write_bytes(box.ljust(INDEX_BYTES, b"\0") + payload)
+  return indexed

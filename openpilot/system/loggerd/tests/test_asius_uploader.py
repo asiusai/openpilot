@@ -1,3 +1,5 @@
+import hashlib
+from openpilot.system.loggerd.data_api import b64url
 import base64
 import json
 from types import SimpleNamespace
@@ -60,7 +62,7 @@ def test_access_document_and_object_crypto() -> None:
   aad = {**{key: grant[key] for key in ("v", "alg", "from", "to", "keyId", "iv", "ephemeral")}, "owner": owner}
   folder_key = AESGCM(wrap_key).decrypt(decode64(grant["iv"]), decode64(grant["ciphertext"]), canonical_json(aad).encode())
 
-  path = "routes/2026-08-10--12-00-00--0/qlog.zst"
+  path = "routes/00000001--1234567890/0/qlog.zst"
   plaintext = b"route bytes"
   encrypted = encrypt_object(owner, path, plaintext, state)
   assert encrypted.startswith(ENCRYPTION_MAGIC)
@@ -149,20 +151,21 @@ def test_custom_upload_step_only_adds_compression_encryption_and_transport(tmp_p
   captured = {}
 
   class Client:
-    def upload(self, path, encrypted, *, plaintext_length, route_start_time):
-      captured.update(path=path, encrypted=encrypted, plaintext_length=plaintext_length, route_start_time=route_start_time)
+    def upload(self, path, encrypted, *, plaintext_length, source_checksum=None):
+      captured.update(path=path, encrypted=encrypted, plaintext_length=plaintext_length)
       return SimpleNamespace(status_code=204)
 
   uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.owner = owner
   uploader.client = Client()
+  uploader.root = str(tmp_path)
+  uploader.sync_summary = lambda route_id: None
   uploader.sync_access = lambda: state
 
-  response = uploader.do_upload("2026-08-10--12-00-00--0/qlog.zst", str(source))
+  response = uploader.do_upload("00000001--1234567890--0/qlog.zst", str(source))
   assert response.status_code == 204
-  assert captured["path"] == "routes/2026-08-10--12-00-00--0/qlog.zst"
+  assert captured["path"] == "routes/00000001--1234567890/0/qlog.zst"
   assert captured["plaintext_length"] < source.stat().st_size
-  assert captured["route_start_time"] > 0
   assert captured["encrypted"].startswith(ENCRYPTION_MAGIC)
   assert b"uncompressed log bytes" not in captured["encrypted"]
 
@@ -173,7 +176,7 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
 
   source = tmp_path / 'qlog.zst'
   source.write_bytes(b'compressed log')
-  key = '00000001--abc--0/qlog.zst'
+  key = '00000001--1234567890--0/qlog.zst'
   conflict = requests.Response()
   conflict.status_code = 409
   existing = requests.Response()
@@ -186,9 +189,9 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
 
   uploader._upload_recording = upload
   uploader.client = SimpleNamespace(request=lambda method, path: existing)
-  existing._content = json.dumps({'files': [{'path': f'routes/{key}', 'uploadedAt': 1, 'plaintextLength': source.stat().st_size}]}).encode()
+  existing._content = json.dumps({'files': [{'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'sourceSha256': b64url(hashlib.sha256(source.read_bytes()).digest())}]}).encode()
   assert uploader.do_upload(key, str(source)).status_code == 200
-  existing._content = json.dumps({'files': [{'path': f'routes/{key}', 'uploadedAt': 1, 'plaintextLength': 1}]}).encode()
+  existing._content = json.dumps({'files': [{'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'plaintextLength': 1}]}).encode()
   with pytest.raises(requests.HTTPError):
     uploader.do_upload(key, str(source))
 
@@ -206,7 +209,7 @@ def test_only_preview_and_qlog_are_automatic_on_all_networks(tmp_path):
   from openpilot.system.loggerd.data_upload_queue import ROUTE_FILES, AUTO_UPLOAD_FILES
   assert AUTO_UPLOAD_FILES == {'qlog', 'qlog.zst', 'qcamera.mp4'}
   assert ROUTE_FILES == AUTO_UPLOAD_FILES | {'rlog', 'rlog.zst', 'fcamera.mp4', 'ecamera.mp4', 'dcamera.mp4'}
-  segment = tmp_path / '00000001--abc--0'
+  segment = tmp_path / '00000001--1234567890--0'
   segment.mkdir()
   for name in ROUTE_FILES:
     (segment / name).write_bytes(b'recording')
@@ -218,13 +221,13 @@ def test_only_preview_and_qlog_are_automatic_on_all_networks(tmp_path):
 def test_requested_original_survives_restart_and_uploads_ahead_of_backlog(tmp_path):
   from openpilot.system.loggerd.data_upload_queue import request_uploads, upload_status, UPLOAD_ATTR_NAME, ATTR_VALUE
   from openpilot.system.loggerd.xattr_cache import setxattr
-  segment = tmp_path / '00000001--abc--0'
+  segment = tmp_path / '00000001--1234567890--0'
   segment.mkdir()
   for name in ('qlog.zst', 'qcamera.mp4', 'fcamera.mp4', 'rlog.zst'):
     (segment / name).write_bytes(b'recording')
   uploader = make_policy_uploader(tmp_path)
   assert uploader.next_file_to_upload(False)[0] == 'qlog.zst'
-  path = '00000001--abc--0/rlog.zst'
+  path = '00000001--1234567890--0/rlog.zst'
   assert request_uploads(tmp_path, [path]) == {'queued': [path], 'uploaded': []}
   uploader = make_policy_uploader(tmp_path)
   assert uploader.next_file_to_upload(False)[1] == path
@@ -239,12 +242,12 @@ def test_requested_original_survives_restart_and_uploads_ahead_of_backlog(tmp_pa
 def test_requests_reject_unsafe_or_incomplete_recordings(tmp_path):
   import pytest
   from openpilot.system.loggerd.data_upload_queue import request_uploads, upload_status
-  segment = tmp_path / '00000001--abc--0'
+  segment = tmp_path / '00000001--1234567890--0'
   segment.mkdir()
   (segment / 'fcamera.mp4').write_bytes(b'video')
   (segment / 'ecamera.mp4').symlink_to(segment / 'fcamera.mp4')
-  good = '00000001--abc--0/fcamera.mp4'
-  for path in ('../secret', '/etc/passwd', '00000001--abc--0/unknown', '00000001--abc--0/ecamera.mp4'):
+  good = '00000001--1234567890--0/fcamera.mp4'
+  for path in ('../secret', '/etc/passwd', '00000001--1234567890--0/unknown', '00000001--1234567890--0/ecamera.mp4'):
     with pytest.raises(ValueError):
       request_uploads(tmp_path, [good, path])
     assert not upload_status(segment / 'fcamera.mp4')['uploadRequested']
@@ -256,7 +259,7 @@ def test_requests_reject_unsafe_or_incomplete_recordings(tmp_path):
 
 def test_stale_locks_release_finished_recordings_without_deleting_data(tmp_path, monkeypatch):
   from openpilot.system.loggerd import data_upload_queue as queue
-  segment = tmp_path / '00000001--abc--0'
+  segment = tmp_path / '00000001--1234567890--0'
   segment.mkdir()
   recording = segment / 'qcamera.mp4'
   recording.write_bytes(b'recorded video')
@@ -268,13 +271,13 @@ def test_stale_locks_release_finished_recordings_without_deleting_data(tmp_path,
   assert queue.clear_stale_locks(tmp_path)
   assert not lock.exists()
   assert recording.read_bytes() == b'recorded video'
-  assert uploader.next_file_to_upload(False)[1] == '00000001--abc--0/qcamera.mp4'
+  assert uploader.next_file_to_upload(False)[1] == '00000001--1234567890--0/qcamera.mp4'
 
 
 @pytest.mark.parametrize('returncode', [0, 2])
 def test_active_logger_or_failed_process_check_preserves_locks(tmp_path, monkeypatch, returncode):
   from openpilot.system.loggerd import data_upload_queue as queue
-  segment = tmp_path / '00000001--abc--0'
+  segment = tmp_path / '00000001--1234567890--0'
   segment.mkdir()
   lock = segment / 'rlog.lock'
   lock.touch()
@@ -285,7 +288,7 @@ def test_active_logger_or_failed_process_check_preserves_locks(tmp_path, monkeyp
 
 def test_logger_starting_after_snapshot_keeps_its_new_locks(tmp_path, monkeypatch):
   from openpilot.system.loggerd import data_upload_queue as queue
-  old = tmp_path / '00000001--abc--0'
+  old = tmp_path / '00000001--1234567890--0'
   old.mkdir()
   (old / 'rlog.lock').touch()
   new = tmp_path / '00000002--def--0'
@@ -308,7 +311,7 @@ def test_lock_cleanup_does_not_follow_route_symlinks(tmp_path):
   external = tmp_path / 'external'
   external.mkdir()
   (external / 'rlog.lock').touch()
-  (root / '00000001--abc--0').symlink_to(external, target_is_directory=True)
+  (root / '00000001--1234567890--0').symlink_to(external, target_is_directory=True)
   assert clear_stale_locks(root)
   assert (external / 'rlog.lock').exists()
 
@@ -317,11 +320,11 @@ def test_damaged_recording_does_not_block_other_automatic_uploads(tmp_path):
   import pytest
   from openpilot.system.loggerd.data_upload_queue import request_uploads, upload_status
   for index in (0, 1):
-    segment = tmp_path / f'00000001--abc--{index}'
+    segment = tmp_path / f'00000001--1234567890--{index}'
     segment.mkdir()
     (segment / 'qcamera.mp4').write_bytes(b'incomplete MP4')
   uploader = make_policy_uploader(tmp_path)
-  damaged = '00000001--abc--0/qcamera.mp4'
+  damaged = '00000001--1234567890--0/qcamera.mp4'
 
   def fail(*_):
     raise ValueError('invalid MP4 box size')
@@ -330,8 +333,8 @@ def test_damaged_recording_does_not_block_other_automatic_uploads(tmp_path):
   with pytest.raises(ValueError):
     uploader.do_upload(damaged, str(tmp_path / damaged))
   assert upload_status(tmp_path / damaged)['uploadError'] == 'Recording is incomplete or invalid'
-  assert uploader.next_file_to_upload(False)[1] == '00000001--abc--1/qcamera.mp4'
-  assert make_policy_uploader(tmp_path).next_file_to_upload(False)[1] == '00000001--abc--1/qcamera.mp4'
+  assert uploader.next_file_to_upload(False)[1] == '00000001--1234567890--1/qcamera.mp4'
+  assert make_policy_uploader(tmp_path).next_file_to_upload(False)[1] == '00000001--1234567890--1/qcamera.mp4'
   request_uploads(tmp_path, [damaged])
   assert uploader.next_file_to_upload(False)[1] == damaged
 
@@ -340,12 +343,12 @@ def test_transient_upload_failure_defers_only_that_file(tmp_path):
   import pytest
   import requests
   from openpilot.system.loggerd.data_upload_queue import upload_status
-  segment = tmp_path / '00000001--abc--0'
+  segment = tmp_path / '00000001--1234567890--0'
   segment.mkdir()
   for name in ('qlog.zst', 'qcamera.mp4'):
     (segment / name).write_bytes(b'recording')
   uploader = make_policy_uploader(tmp_path)
-  key = '00000001--abc--0/qlog.zst'
+  key = '00000001--1234567890--0/qlog.zst'
 
   def fail(*_):
     raise requests.ConnectionError('network unavailable')
@@ -366,7 +369,7 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
   from pathlib import Path
   from openpilot.system.loggerd.tests.media_fixture import make_video
   root = tmp_path / 'logs'
-  segment = root / '00000001--abc--0'
+  segment = root / '00000001--1234567890--0'
   segment.mkdir(parents=True)
   source = segment / name
   make_video(source, 1, codec=codec)
@@ -376,12 +379,14 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
   uploader.private_key = ed25519.Ed25519PrivateKey.generate()
   uploader.owner = public_identity(uploader.private_key)
   uploader.sync_access = lambda: initial_state([])
+  uploader.sync_summary = lambda route_id: None
 
   def upload_file(path, filename, **options):
     assert Path(filename).parent == tmp_path
-    assert options['route_start_time'] == 1700000000000
-    media = options['media']
-    assert path == f'routes/00000001--abc--0/{name}'
+    data = Path(filename).read_bytes()
+    assert data[4:24] == b'uuidASIUS-INDEX-V001'
+    media = json.loads(data[28:28+int.from_bytes(data[24:28],'big')])
+    assert path == f'routes/00000001--1234567890/0/{name}'
     assert media['owner'] == uploader.owner
     assert media['alg'] == 'CENC-AES-CTR'
     assert media['codec'].startswith('avc1.' if name == 'qcamera.mp4' else ('hvc1.', 'hev1.'))
@@ -390,5 +395,5 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
     return SimpleNamespace(status_code=200)
 
   uploader.client = SimpleNamespace(upload_file=upload_file)
-  assert uploader.do_upload(f'00000001--abc--0/{name}', str(source)).status_code == 200
+  assert uploader.do_upload(f'00000001--1234567890--0/{name}', str(source)).status_code == 200
   assert segment.stat().st_mtime_ns == directory_mtime

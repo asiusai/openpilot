@@ -183,37 +183,44 @@ class DataApiClient:
     return self._config
 
   def register_upload(self, path: str, *, content_type: str, content_length: int, plaintext_length: int,
-                      route_start_time: int, checksum: str, media: dict[str, Any] | None = None) -> dict[str, Any]:
+                      checksum: str, source_checksum: str | None = None) -> dict[str, Any]:
     request_path = f"/v1/{self.owner}/uploads"
     body = {
       "path": path,
       "contentType": content_type,
       "contentLength": content_length,
       "plaintextLength": plaintext_length,
-      "routeStartTime": route_start_time,
+      **({"sourceSha256": source_checksum} if source_checksum else {}),
       "checksumSha256": checksum,
-      **({"media": media} if media is not None else {}),
     }
     return self.request("POST", request_path, body).json()
 
   def complete_upload(self, path: str, checksum: str) -> None:
     self.request("POST", f"/v1/{self.owner}/uploads/complete", {"path": path, "checksumSha256": checksum})
 
-  def upload(self, path: str, encrypted: bytes, *, plaintext_length: int, route_start_time: int) -> requests.Response:
+  def upload(self, path: str, encrypted: bytes, *, plaintext_length: int, source_checksum: str | None = None) -> requests.Response:
     checksum = b64url(hashlib.sha256(encrypted).digest())
     signed = self.register_upload(path, content_type="application/octet-stream", content_length=len(encrypted),
-                                  plaintext_length=plaintext_length, route_start_time=route_start_time, checksum=checksum)
+                                  plaintext_length=plaintext_length, checksum=checksum, source_checksum=source_checksum)
+    if signed.get("uploaded"):
+      response = requests.Response()
+      response.status_code = 200
+      return response
     response = self.session.put(signed["url"], data=encrypted, headers=signed["headers"], timeout=120)
     response.raise_for_status()
     self.complete_upload(path, checksum)
     return response
 
   def upload_file(self, path: str, filename: str, *, content_type: str, plaintext_length: int,
-                  route_start_time: int, checksum: str, media: dict[str, Any]) -> requests.Response:
+                  checksum: str, source_checksum: str | None = None) -> requests.Response:
     content_length = os.path.getsize(filename)
     signed = self.register_upload(path, content_type=content_type, content_length=content_length,
-                                  plaintext_length=plaintext_length, route_start_time=route_start_time,
-                                  checksum=checksum, media=media)
+                                  plaintext_length=plaintext_length,
+                                  checksum=checksum, source_checksum=source_checksum)
+    if signed.get("uploaded"):
+      response = requests.Response()
+      response.status_code = 200
+      return response
     with open(filename, "rb") as stream:
       response = self.session.put(signed["url"], data=stream, headers=signed["headers"], timeout=120)
     response.raise_for_status()

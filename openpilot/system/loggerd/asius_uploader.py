@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import base64
+import json
+import hashlib
 import os
+from pathlib import Path
 import random
 import tempfile
 import threading
@@ -24,18 +27,18 @@ from openpilot.system.loggerd.data_api import (
   access_document,
   b64url,
   can_wrap_for,
-  canonical_json,
   encrypt_object,
   initial_state,
   public_identity,
   recover_state,
   update_state,
 )
-from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4
+from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4, embed_index
 from openpilot.system.loggerd.data_upload_queue import (
   AUTO_UPLOAD_FILES, MAX_FILE_BYTES, REQUEST_ATTR_NAME, ROUTE_FILES, ROUTE_SEGMENT_RE, UPLOAD_ATTR_NAME, attribute_set,
   clear_failure, clear_stale_locks, record_failure, upload_failure,
 )
+from openpilot.system.loggerd.route_summary import summary_path, cloud_path, save_json, recover_counters
 from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep, force_wifi
 
 UPLOAD_ATTR_VALUE = b"1"
@@ -60,12 +63,16 @@ class AsiusUploader(Uploader):
     self.params = params or self.params
     self.client = client or DataApiClient(self.params.get("CloudHost", return_default=True), self.private_key)
     self.retry_after: dict[str, float] = {}
+    self.counter_conflict = None
 
   def list_upload_files(self, metered: bool) -> Iterator[tuple[str, str, str]]:
     # Preview and qlog are automatic on network connections. Viewing a route
     # does not request any other files, even on an unmetered connection.
     for name, key, filename in super().list_upload_files(False):
       folder = key.split("/", 1)[0]
+      route_id = folder.rsplit("--", 1)[0]
+      if summary_path(self.root, route_id).with_suffix(".deleted").exists():
+        continue
       if name not in ROUTE_FILES or not ROUTE_SEGMENT_RE.fullmatch(folder):
         continue
       if os.path.islink(filename) or os.path.islink(os.path.dirname(filename)):
@@ -75,6 +82,48 @@ class AsiusUploader(Uploader):
           yield name, key, filename
       except FileNotFoundError:
         continue
+
+  def sync_summary(self, route_id):
+    path = summary_path(self.root, route_id)
+    if not path.exists():
+      raise RuntimeError("Waiting for local route summary")
+    marker = path.with_suffix('.uploaded')
+    content = path.read_bytes()
+    fingerprint = hashlib.sha256(content).hexdigest()
+    saved = json.loads(marker.read_text()) if marker.exists() else {}
+    if saved.get('fingerprint') == fingerprint:
+      return
+    state = self.sync_access()
+    encrypted = encrypt_object(self.owner, cloud_path(route_id), content, state)
+    body = {'encrypted': b64url(encrypted), **({'etag': saved['etag']} if saved.get('etag') else {})}
+    try:
+      response = self.client.request('PUT', f'/v1/{self.owner}/routes/{route_id}', body)
+    except requests.HTTPError as error:
+      if error.response.status_code == 410:
+        path.with_suffix('.deleted').touch()
+        return
+      detail = error.response.json()
+      if error.response.status_code == 409 and 'maxCounter' in detail:
+        self.counter_conflict = (route_id, detail['maxCounter'])
+      elif error.response.status_code == 412 and detail.get('etag'):
+        save_json(marker, {'etag':detail['etag']})
+      raise
+    save_json(marker, {'fingerprint':fingerprint, 'etag':response.json()['etag']})
+
+  def sync_summaries(self):
+    journal = Path(self.root) / '.summaries' / 'rename-plan.json'
+    if journal.exists() and not self.counter_conflict:
+      self.counter_conflict = ('', -1)
+    if self.counter_conflict:
+      if recover_counters(self.root, self.params, *self.counter_conflict):
+        self.counter_conflict = None
+      else:
+        return False
+    for path in sorted((Path(self.root)/'.summaries').glob('*.json')):
+      if path.stem == 'rename-plan' or path.with_suffix('.deleted').exists():
+        continue
+      self.sync_summary(path.stem)
+    return True
 
   def next_file_to_upload(self, metered: bool) -> tuple[str, str, str] | None:
     automatic = None
@@ -129,6 +178,9 @@ class AsiusUploader(Uploader):
       clear_failure(fn)
       return response
     except Exception as error:
+      if isinstance(error, requests.HTTPError) and error.response is not None and error.response.status_code == 410:
+        route_id = key.split("/", 1)[0].rsplit("--", 1)[0]
+        summary_path(self.root, route_id).with_suffix(".deleted").touch()
       record_failure(fn, isinstance(error, ValueError))
       if not hasattr(self, "retry_after"):
         self.retry_after = {}
@@ -147,22 +199,25 @@ class AsiusUploader(Uploader):
       response = self.client.request("GET", f"/v1/{self.owner}/routes/{route_id}")
       stream, _ = get_upload_stream(fn, key.endswith(".zst") and not fn.endswith(".zst"))
       try:
-        plaintext_length = len(stream.read())
+        source_checksum = b64url(hashlib.sha256(stream.read()).digest())
       finally:
         stream.close()
+      object_path = "routes/" + key.rsplit("--", 1)[0] + "/" + key.rsplit("--", 1)[1]
       for file in response.json().get("files", []):
-        if file.get("path") == f"routes/{key}" and file.get("uploadedAt") and file.get("plaintextLength") == plaintext_length:
+        if file.get("path") == object_path and file.get("uploadedAt") and file.get("sourceSha256") == source_checksum:
           return response
       raise
 
   def _upload_recording(self, key: str, fn: str) -> requests.Response:
-    state = self.sync_access()
     first_component = key.split("/", 1)[0]
     if not ROUTE_SEGMENT_RE.fullmatch(first_component):
       raise ValueError("data uploader only accepts route segments")
-    object_path = f"routes/{key}"
-    segment = int(first_component.rsplit("--", 1)[1])
-    route_start_time = int((os.path.getmtime(fn) - segment * 60) * 1000)
+    route_id, segment_text = first_component.rsplit("--", 1)
+    self.sync_summary(route_id)
+    if summary_path(self.root, route_id).with_suffix(".deleted").exists():
+      raise RuntimeError("Route is deleted")
+    state = self.sync_access()
+    object_path = f"routes/{route_id}/{segment_text}/{os.path.basename(key)}"
 
     if os.path.basename(object_path) in CENC_FILES:
       active = next(entry for entry in state["keys"] if entry["id"] == state["activeKey"])
@@ -173,16 +228,17 @@ class AsiusUploader(Uploader):
         with tempfile.NamedTemporaryFile(prefix=".asius-cenc-", suffix=".mp4", dir=os.path.dirname(os.path.abspath(self.root)), delete=False) as temporary:
           temporary_name = temporary.name
         media = package_cenc_mp4(fn, temporary_name, content_key, kid)
-        unsigned_media = media | {"owner": self.owner, "path": object_path, "keyId": active["id"]}
-        signed_media = unsigned_media | {"signature": b64url(self.private_key.sign(canonical_json(unsigned_media).encode()))}
+        embed_index(temporary_name, media, self.owner, object_path, active["id"], self.private_key)
+        checksum = b64url(hashlib.sha256(Path(temporary_name).read_bytes()).digest())
         response = self.client.upload_file(
           object_path,
           temporary_name,
           content_type="video/mp4",
           plaintext_length=os.path.getsize(fn),
-          route_start_time=route_start_time,
-          checksum=media["checksumSha256"],
-          media=signed_media,
+
+          checksum=checksum,
+          source_checksum=b64url(hashlib.sha256(Path(fn).read_bytes()).digest()),
+
         )
         cloudlog.event("data_upload_cenc", key=key, path=object_path, encrypted_size=media["encryptedLength"], fragments=len(media["fragments"]))
         return response
@@ -204,7 +260,8 @@ class AsiusUploader(Uploader):
       object_path,
       encrypted,
       plaintext_length=len(plaintext),
-      route_start_time=route_start_time,
+      source_checksum=b64url(hashlib.sha256(plaintext).digest()),
+
     )
     cloudlog.event("data_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
     return response
@@ -244,6 +301,9 @@ def main(exit_event: threading.Event | None = None) -> None:
 
     try:
       uploader.sync_access()
+      if not uploader.sync_summaries():
+        exit_event.wait(2)
+        continue
     except Exception:
       cloudlog.exception("data access sync failed")
       if allow_sleep:
