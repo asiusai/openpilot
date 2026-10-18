@@ -197,6 +197,10 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
 
 
 def make_policy_uploader(root):
+  from openpilot.system.loggerd.route_summary import summary_path
+  summary = summary_path(root, '00000001--1234567890')
+  summary.parent.mkdir(parents=True, exist_ok=True)
+  summary.write_text('{}')
   uploader = AsiusUploader.__new__(AsiusUploader)
   uploader.root = str(root)
   uploader.params = SimpleNamespace(get=lambda _: None)
@@ -397,3 +401,22 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
   uploader.client = SimpleNamespace(upload_file=upload_file)
   assert uploader.do_upload(f'00000001--1234567890--0/{name}', str(source)).status_code == 200
   assert segment.stat().st_mtime_ns == directory_mtime
+
+
+def test_missing_summary_does_not_block_ready_routes(tmp_path):
+  from openpilot.system.loggerd.route_summary import summary_path
+  from openpilot.system.loggerd.data_upload_queue import upload_failure
+  uploader = make_policy_uploader(tmp_path)
+  ready = '00000001--1234567890'
+  waiting = '00000002--1234567890'
+  items = []
+  for route in (waiting, ready):
+    path = tmp_path / f'{route}--0' / 'qcamera.mp4'
+    path.parent.mkdir()
+    path.write_bytes(b'recording')
+    items.append(('qcamera.mp4', f'{route}--0/qcamera.mp4', str(path)))
+  uploader.list_upload_files = lambda _: iter(items)
+  assert uploader.next_file_to_upload(False) == items[1]
+  assert not upload_failure(items[0][2])
+  summary_path(tmp_path, waiting).write_text('{}')
+  assert uploader.next_file_to_upload(False) == items[0]
