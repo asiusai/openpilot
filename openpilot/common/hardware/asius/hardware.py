@@ -2,7 +2,7 @@ import subprocess
 from functools import cached_property
 
 from openpilot.common.hardware.base import ThermalConfig, ThermalZone
-from openpilot.common.hardware.comma.hardware import HardwareComma
+from openpilot.common.hardware.comma.hardware import HardwareComma, affine_irq
 
 
 class HardwareAsius(HardwareComma):
@@ -30,6 +30,14 @@ class HardwareAsius(HardwareComma):
   def set_power_save(self, powersave_enabled):
     subprocess.run(["sudo", "/usr/bin/vamos-hardware", "gpu-power-save", "on" if powersave_enabled else "off"], check=True)
     super().set_power_save(powersave_enabled)
+    if not powersave_enabled:
+      # Mainline CAMSS uses different IRQ names from AGNOS. Keep camera work
+      # on camerad's core after the big CPUs come online.
+      for action in ("ac4a000.cci", "ac4b000.cci"):
+        affine_irq(6, action)
+      for i in range(5):
+        affine_irq(6, f"acb3000.isp_msm_csid{i}")
+        affine_irq(6, f"acb3000.isp_msm_vfe{i}")
 
   def initialize_hardware(self):
     subprocess.run(["sudo", "/usr/bin/vamos-hardware", "initialize"], check=True)
