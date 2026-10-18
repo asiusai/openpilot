@@ -271,6 +271,7 @@ public:
   int video_fd = -1;
   int sensor_fd = -1;
   bool streaming = false;
+  uint64_t last_capture_timestamp = 0;
 
   int n_bufs = 4;
   std::unique_ptr<VisionBuf[]> vfe_buffers;
@@ -757,6 +758,14 @@ int OneCamera::dequeue_frame(uint64_t *timestamp) {
 
   *timestamp = (uint64_t)dbuf.timestamp.tv_sec * 1000000000ULL +
                (uint64_t)dbuf.timestamp.tv_usec * 1000ULL;
+  // Use capture timestamps: the VFE sequence only counts completed buffers,
+  // so a frame lost before DMA completion does not leave a sequence gap.
+  if (last_capture_timestamp && (*timestamp <= last_capture_timestamp || *timestamp - last_capture_timestamp > 75000000ULL)) {
+    LOGW("cam %d: capture gap %.2f ms, dequeue delay %.2f ms, sequence=%u flags=0x%x",
+         cc.camera_num, (int64_t)(*timestamp - last_capture_timestamp) / 1e6,
+         (int64_t)(nanos_since_boot() - *timestamp) / 1e6, dbuf.sequence, dbuf.flags);
+  }
+  last_capture_timestamp = *timestamp;
   return dbuf.index;
 }
 
