@@ -128,6 +128,9 @@ class AsiusUploader(Uploader):
   def next_file_to_upload(self, metered: bool) -> tuple[str, str, str] | None:
     automatic = None
     for item in self.list_upload_files(metered):
+      route_id = item[1].split("/", 1)[0].rsplit("--", 1)[0]
+      if not summary_path(self.root, route_id).exists():
+        continue
       failure = upload_failure(item[2])
       if failure and (failure.get("permanent") or getattr(self, "retry_after", {}).get(item[2], 0) > time.monotonic()):
         continue
