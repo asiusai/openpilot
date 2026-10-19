@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from openpilot.system.loggerd.upload_progress import ProgressReader
 from openpilot.system.asius.identity import bytes_to_identity
 from openpilot.system.asius.recording_keys import decode_public, get_recording_key, public_text
 
@@ -75,12 +77,14 @@ def access_document(private_key: ed25519.Ed25519PrivateKey, state: dict[str, Any
     "version": state["version"],
     "updatedAt": int(wall_time() * 1000),
     "activeKey": state["activeKey"],
+    "authorizedApps": state.get("authorizedApps", []),
     "keys": keys,
   }
   return unsigned | {"signature": b64url(private_key.sign(canonical_json(unsigned).encode()))}
 
 
-def recover_state(private_key: ed25519.Ed25519PrivateKey, document: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
+def recover_state(private_key: ed25519.Ed25519PrivateKey, document: dict[str, Any], readers: list[dict[str, str]],
+                  authorized_apps: list[str] | None = None) -> dict[str, Any]:
   owner = public_identity(private_key)
   if document.get("owner") != owner:
     raise ValueError("access document owner mismatch")
@@ -99,27 +103,31 @@ def recover_state(private_key: ed25519.Ed25519PrivateKey, document: dict[str, An
     ciphertext = base64.urlsafe_b64decode(grant["ciphertext"] + "=" * (-len(grant["ciphertext"]) % 4))
     folder_key = AESGCM(wrap_key).decrypt(iv, ciphertext, canonical_json(aad).encode())
     recovered.append({"id": entry["id"], "createdAt": entry["createdAt"], "key": b64url(folder_key)})
-  return {"version": document["version"] + 1, "activeKey": document["activeKey"], "readers": readers, "keys": recovered}
+  return {"version": document["version"] + 1, "activeKey": document["activeKey"], "readers": readers,
+          "authorizedApps": sorted(set(authorized_apps or [])), "keys": recovered}
 
 
-def initial_state(readers: list[dict[str, str]]) -> dict[str, Any]:
+def initial_state(readers: list[dict[str, str]], authorized_apps: list[str] | None = None) -> dict[str, Any]:
   key_id = f"k_{b64url(os.urandom(18))}"
   return {
     "version": 1,
     "activeKey": key_id,
     "readers": readers,
+    "authorizedApps": sorted(set(authorized_apps or [])),
     "keys": [{"id": key_id, "createdAt": int(wall_time() * 1000), "key": b64url(os.urandom(32))}],
   }
 
 
-def update_state(state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
+def update_state(state: dict[str, Any], readers: list[dict[str, str]], authorized_apps: list[str] | None = None) -> dict[str, Any]:
   previous = {(reader["publicKey"], reader["storagePublicKey"]) for reader in state.get("readers", [])}
   current = {(reader["publicKey"], reader["storagePublicKey"]) for reader in readers}
-  if previous == current:
+  apps = sorted(set(authorized_apps or []))
+  if previous == current and state.get("authorizedApps") == apps:
     return state
   state = json.loads(json.dumps(state))
   state["version"] += 1
   state["readers"] = readers
+  state["authorizedApps"] = apps
   if previous - current:
     key_id = f"k_{b64url(os.urandom(18))}"
     state["activeKey"] = key_id
@@ -183,7 +191,7 @@ class DataApiClient:
     return self._config
 
   def register_upload(self, path: str, *, content_type: str, content_length: int, plaintext_length: int,
-                      checksum: str, source_checksum: str | None = None) -> dict[str, Any]:
+                      checksum: str, source_checksum: str | None = None, replace_checksum: str | None = None) -> dict[str, Any]:
     request_path = f"/v1/{self.owner}/uploads"
     body = {
       "path": path,
@@ -192,37 +200,43 @@ class DataApiClient:
       "plaintextLength": plaintext_length,
       **({"sourceSha256": source_checksum} if source_checksum else {}),
       "checksumSha256": checksum,
+      **({"replaceChecksumSha256": replace_checksum} if replace_checksum else {}),
     }
     return self.request("POST", request_path, body).json()
 
   def complete_upload(self, path: str, checksum: str) -> None:
     self.request("POST", f"/v1/{self.owner}/uploads/complete", {"path": path, "checksumSha256": checksum})
 
-  def upload(self, path: str, encrypted: bytes, *, plaintext_length: int, source_checksum: str | None = None) -> requests.Response:
+  def upload(self, path: str, encrypted: bytes, *, plaintext_length: int, source_checksum: str | None = None,
+             replace_checksum: str | None = None) -> requests.Response:
     checksum = b64url(hashlib.sha256(encrypted).digest())
     signed = self.register_upload(path, content_type="application/octet-stream", content_length=len(encrypted),
-                                  plaintext_length=plaintext_length, checksum=checksum, source_checksum=source_checksum)
+                                  plaintext_length=plaintext_length, checksum=checksum, source_checksum=source_checksum, replace_checksum=replace_checksum)
     if signed.get("uploaded"):
       response = requests.Response()
       response.status_code = 200
       return response
-    response = self.session.put(signed["url"], data=encrypted, headers=signed["headers"], timeout=120)
+    stream = ProgressReader(io.BytesIO(encrypted), path, len(encrypted))
+    response = self.session.put(signed["url"], data=stream, headers=signed["headers"], timeout=120)
     response.raise_for_status()
     self.complete_upload(path, checksum)
+    stream.complete()
     return response
 
   def upload_file(self, path: str, filename: str, *, content_type: str, plaintext_length: int,
-                  checksum: str, source_checksum: str | None = None) -> requests.Response:
+                  checksum: str, source_checksum: str | None = None, replace_checksum: str | None = None) -> requests.Response:
     content_length = os.path.getsize(filename)
     signed = self.register_upload(path, content_type=content_type, content_length=content_length,
                                   plaintext_length=plaintext_length,
-                                  checksum=checksum, source_checksum=source_checksum)
+                                  checksum=checksum, source_checksum=source_checksum, replace_checksum=replace_checksum)
     if signed.get("uploaded"):
       response = requests.Response()
       response.status_code = 200
       return response
-    with open(filename, "rb") as stream:
+    with open(filename, "rb") as source:
+      stream = ProgressReader(source, path, content_length)
       response = self.session.put(signed["url"], data=stream, headers=signed["headers"], timeout=120)
     response.raise_for_status()
     self.complete_upload(path, checksum)
+    stream.complete()
     return response

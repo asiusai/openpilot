@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import random
 import tempfile
+from urllib.parse import quote
 import threading
 import time
 from collections.abc import Iterator
@@ -96,18 +97,23 @@ class AsiusUploader(Uploader):
     state = self.sync_access()
     encrypted = encrypt_object(self.owner, cloud_path(route_id), content, state)
     body = {'encrypted': b64url(encrypted), **({'etag': saved['etag']} if saved.get('etag') else {})}
-    try:
-      response = self.client.request('PUT', f'/v1/{self.owner}/routes/{route_id}', body)
-    except requests.HTTPError as error:
-      if error.response.status_code == 410:
-        path.with_suffix('.deleted').touch()
-        return
-      detail = error.response.json()
-      if error.response.status_code == 409 and 'maxCounter' in detail:
-        self.counter_conflict = (route_id, detail['maxCounter'])
-      elif error.response.status_code == 412 and detail.get('etag'):
-        save_json(marker, {'etag':detail['etag']})
-      raise
+    for attempt in range(2):
+      try:
+        response = self.client.request('PUT', f'/v1/{self.owner}/routes/{route_id}', body)
+        break
+      except requests.HTTPError as error:
+        if error.response.status_code == 410:
+          path.with_suffix('.deleted').touch()
+          return
+        detail = error.response.json()
+        if error.response.status_code == 409 and 'maxCounter' in detail:
+          self.counter_conflict = (route_id, detail['maxCounter'])
+        elif error.response.status_code == 412 and detail.get('etag'):
+          save_json(marker, {'etag': detail['etag']})
+          if attempt == 0:
+            body['etag'] = detail['etag']
+            continue
+        raise
     save_json(marker, {'fingerprint':fingerprint, 'etag':response.json()['etag']})
 
   def sync_summaries(self):
@@ -150,6 +156,7 @@ class AsiusUploader(Uploader):
       if not is_dongle_id(key) or not can_wrap_for(reader):
         raise ValueError("Authorized app has no valid recording public key")
       readers.append(reader)
+    authorized_apps = [reader['publicKey'] for reader in readers]
     if self.params.get_bool("ShareDrivingData"):
       config = self.client.get_config()
       reader = {"publicKey": config.get("sharingPublicKey"), "storagePublicKey": config.get("sharingStoragePublicKey")}
@@ -158,7 +165,7 @@ class AsiusUploader(Uploader):
       readers.append(reader)
     readers = sorted({reader['publicKey']: reader for reader in readers}.values(), key=lambda reader: reader['publicKey'])
     state = self.params.get(STATE_PARAM)
-    state = initial_state(readers) if not isinstance(state, dict) else update_state(state, readers)
+    state = initial_state(readers, authorized_apps) if not isinstance(state, dict) else update_state(state, readers, authorized_apps)
     if state.get("publishedVersion") == state["version"] and state.get("publishedHost") == self.client.base_url:
       return state
 
@@ -167,7 +174,7 @@ class AsiusUploader(Uploader):
     except requests.HTTPError as error:
       if error.response is None or error.response.status_code != 409:
         raise
-      state = recover_state(self.private_key, self.client.get_access(), readers)
+      state = recover_state(self.private_key, self.client.get_access(), readers, authorized_apps)
       self.client.put_access(access_document(self.private_key, state, readers))
 
     state["publishedVersion"] = state["version"]
@@ -196,22 +203,31 @@ class AsiusUploader(Uploader):
     except requests.HTTPError as error:
       if error.response is None or error.response.status_code != 409:
         raise
-      # Finished route paths are immutable. A lost completion response (or a
+      # Ordinary uploads cannot replace recordings. A lost completion response (or a
       # missing local xattr) must not re-encrypt and overwrite an uploaded file.
       route_id = key.split("/", 1)[0].rsplit("--", 1)[0]
-      response = self.client.request("GET", f"/v1/{self.owner}/routes/{route_id}")
+      files = []
+      cursor = None
+      while True:
+        suffix = "?cursor=" + quote(cursor, safe="") if cursor else ""
+        response = self.client.request("GET", f"/v1/{self.owner}/routes/{route_id}/files{suffix}")
+        page = response.json()
+        files.extend(page.get("files", []))
+        cursor = page.get("cursor")
+        if not cursor:
+          break
       stream, _ = get_upload_stream(fn, key.endswith(".zst") and not fn.endswith(".zst"))
       try:
         source_checksum = b64url(hashlib.sha256(stream.read()).digest())
       finally:
         stream.close()
       object_path = "routes/" + key.rsplit("--", 1)[0] + "/" + key.rsplit("--", 1)[1]
-      for file in response.json().get("files", []):
+      for file in files:
         if file.get("path") == object_path and file.get("uploadedAt") and file.get("sourceSha256") == source_checksum:
           return response
       raise
 
-  def _upload_recording(self, key: str, fn: str) -> requests.Response:
+  def _upload_recording(self, key: str, fn: str, *, replace_checksum: str | None = None) -> requests.Response:
     first_component = key.split("/", 1)[0]
     if not ROUTE_SEGMENT_RE.fullmatch(first_component):
       raise ValueError("data uploader only accepts route segments")
@@ -241,7 +257,7 @@ class AsiusUploader(Uploader):
 
           checksum=checksum,
           source_checksum=b64url(hashlib.sha256(Path(fn).read_bytes()).digest()),
-
+          **({"replace_checksum": replace_checksum} if replace_checksum else {}),
         )
         cloudlog.event("data_upload_cenc", key=key, path=object_path, encrypted_size=media["encryptedLength"], fragments=len(media["fragments"]))
         return response
@@ -264,7 +280,7 @@ class AsiusUploader(Uploader):
       encrypted,
       plaintext_length=len(plaintext),
       source_checksum=b64url(hashlib.sha256(plaintext).digest()),
-
+      **({"replace_checksum": replace_checksum} if replace_checksum else {}),
     )
     cloudlog.event("data_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
     return response

@@ -107,6 +107,7 @@ void VideoWriter::write(uint8_t *data, int len, long long timestamp, bool codecc
 
   if (remuxing) {
     if (codecconfig) {
+      video_origin_us = timestamp;
       if (len > 0) {
         codec_ctx->extradata = (uint8_t*)av_mallocz(len + AV_INPUT_BUFFER_PADDING_SIZE);
         codec_ctx->extradata_size = len;
@@ -133,8 +134,10 @@ void VideoWriter::write(uint8_t *data, int len, long long timestamp, bool codecc
       pkt.stream_index = this->out_stream->index;
 
       pkt.duration = av_rescale_q(1, AVRational{1, fps}, out_stream->time_base);
-      pkt.pts = pkt.dts = next_video_pts;
-      next_video_pts += pkt.duration;
+      // Both tracks use the first saved video frame as their origin. Preserve
+      // capture timing, including dropped frames, instead of counting packets.
+      pkt.pts = pkt.dts = av_rescale_q(timestamp - video_origin_us, AVRational{1, 1000000}, out_stream->time_base);
+      video_end_us = timestamp - video_origin_us + 1000000 / fps;
 
       if (keyframe) {
         pkt.flags |= AV_PKT_FLAG_KEY;
@@ -145,6 +148,7 @@ void VideoWriter::write(uint8_t *data, int len, long long timestamp, bool codecc
       if (err < 0) { LOGW("video writer packet issue len: %d ts: %lld", len, timestamp); }
 
       av_packet_unref(&pkt);
+      write_pending_audio();
     }
   }
 }
@@ -157,8 +161,9 @@ void VideoWriter::write_audio(uint8_t *data, int len, long long timestamp, int s
   }
   if (!audio_codec_ctx) return;
   // sync logMonoTime of first audio packet with the timestampEof of first video packet
-  if (audio_pts == 0) {
+  if (!audio_pts_initialized) {
     audio_pts = (timestamp * audio_codec_ctx->sample_rate) / 1000000ULL;
+    audio_pts_initialized = true;
   }
 
   // convert s16le samples to fltp and add to buffer
@@ -180,12 +185,37 @@ void VideoWriter::write_audio(uint8_t *data, int len, long long timestamp, int s
   std::transform(raw_samples, raw_samples + sample_count, audio_buffer.begin() + original_size,
                 [](int16_t sample) { return sample * normalizer; });
 
-  if (!header_written) return; // header not written yet, process audio frame after header is written
-  while (audio_buffer.size() >= audio_codec_ctx->frame_size) {
+  write_pending_audio();
+}
+
+void VideoWriter::write_pending_audio() {
+  if (!header_written || !audio_pts_initialized) return;
+  if (!audio_clock_relative) {
+    audio_pts -= av_rescale_q(video_origin_us, AVRational{1, 1000000}, audio_codec_ctx->time_base);
+    audio_clock_relative = true;
+    // Keep both tracks playable from the first video frame if microphone
+    // initialization or segment rotation delays the first audio packet.
+    if (audio_pts > 0) {
+      audio_silence_samples = audio_pts;
+      audio_pts = 0;
+    }
+  }
+  // Audio may arrive before the first usable keyframe. Discard that prefix.
+  if (audio_pts < 0) {
+    const size_t drop = std::min<int64_t>(audio_buffer.size(), -audio_pts);
+    audio_buffer.erase(audio_buffer.begin(), audio_buffer.begin() + drop);
+    audio_pts += drop;
+  }
+  const int64_t end = av_rescale_q(video_end_us, AVRational{1, 1000000}, audio_codec_ctx->time_base);
+  while (audio_silence_samples + audio_buffer.size() >= audio_codec_ctx->frame_size && audio_pts + audio_codec_ctx->frame_size <= end) {
     audio_frame->pts = audio_pts;
     float *f_samples = reinterpret_cast<float*>(audio_frame->data[0]);
-    std::copy(audio_buffer.begin(), audio_buffer.begin() + audio_codec_ctx->frame_size, f_samples);
-    audio_buffer.erase(audio_buffer.begin(), audio_buffer.begin() + audio_codec_ctx->frame_size);
+    const size_t silence = std::min<int64_t>(audio_silence_samples, audio_codec_ctx->frame_size);
+    const size_t samples = audio_codec_ctx->frame_size - silence;
+    std::fill_n(f_samples, silence, 0.0f);
+    std::copy_n(audio_buffer.begin(), samples, f_samples + silence);
+    audio_silence_samples -= silence;
+    audio_buffer.erase(audio_buffer.begin(), audio_buffer.begin() + samples);
     encode_and_write_audio_frame(audio_frame);
   }
 }
@@ -213,14 +243,15 @@ void VideoWriter::encode_and_write_audio_frame(AVFrame* frame) {
 }
 
 void VideoWriter::process_remaining_audio() {
-  // Process remaining audio samples by padding with silence
-  if (audio_buffer.size() > 0 && audio_buffer.size() < audio_codec_ctx->frame_size) {
-    audio_buffer.resize(audio_codec_ctx->frame_size, 0.0f);
-
-    // Encode final frame
+  if (!header_written || !audio_clock_relative || audio_pts < 0) return;
+  const int64_t end = av_rescale_q(video_end_us, AVRational{1, 1000000}, audio_codec_ctx->time_base);
+  const int64_t remaining = std::min<int64_t>(audio_silence_samples + audio_buffer.size(), end - audio_pts);
+  if (remaining > 0 && remaining < audio_codec_ctx->frame_size) {
     audio_frame->pts = audio_pts;
     float *f_samples = reinterpret_cast<float *>(audio_frame->data[0]);
-    std::copy(audio_buffer.begin(), audio_buffer.end(), f_samples);
+    const size_t silence = std::min(audio_silence_samples, remaining);
+    std::fill_n(f_samples, audio_codec_ctx->frame_size, 0.0f);
+    std::copy_n(audio_buffer.begin(), remaining - silence, f_samples + silence);
     encode_and_write_audio_frame(audio_frame);
   }
 }
@@ -228,11 +259,13 @@ void VideoWriter::process_remaining_audio() {
 VideoWriter::~VideoWriter() {
   if (this->remuxing) {
     if (this->audio_codec_ctx) {
-      process_remaining_audio();
-      encode_and_write_audio_frame(NULL); // flush encoder
+      if (header_written) {
+        process_remaining_audio();
+        encode_and_write_audio_frame(NULL); // flush encoder
+      }
       avcodec_free_context(&this->audio_codec_ctx);
     }
-    int err = av_write_trailer(this->ofmt_ctx);
+    int err = header_written ? av_write_trailer(this->ofmt_ctx) : 0;
     if (err < 0) LOGE("av_write_trailer failed %d", err);
     avcodec_free_context(&this->codec_ctx);
     if (this->audio_frame) av_frame_free(&this->audio_frame);

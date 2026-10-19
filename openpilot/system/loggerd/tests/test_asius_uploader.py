@@ -1,5 +1,4 @@
 import hashlib
-from openpilot.system.loggerd.data_api import b64url
 import base64
 import json
 from types import SimpleNamespace
@@ -140,6 +139,31 @@ def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
   assert state["readers"] == sorted([app_reader, asius_reader], key=lambda reader: reader["publicKey"])
   recipients = {grant["to"] for grant in published["keys"][0]["grants"]}
   assert recipients == {uploader.owner, app_reader["publicKey"], asius_reader["publicKey"]}
+  assert published["authorizedApps"] == [app_reader["publicKey"]]
+  assert state["authorizedApps"] == [app_reader["publicKey"]]
+
+
+def test_app_permissions_update_without_changing_recording_keys() -> None:
+  reader = reader_record()
+  state = initial_state([reader])
+  upgraded = update_state(state, [reader], [reader["publicKey"]])
+  assert upgraded["version"] == state["version"] + 1
+  assert upgraded["keys"] == state["keys"]
+  assert update_state(upgraded, [reader], [reader["publicKey"]]) is upgraded
+  revoked = update_state(upgraded, [reader], [])
+  assert revoked["version"] == upgraded["version"] + 1
+  assert revoked["authorizedApps"] == []
+  assert revoked["keys"] == state["keys"]
+
+  # Refresh an already uploaded access document once to add the explicit owner list.
+  previous = {key: value for key, value in state.items() if key != "authorizedApps"}
+  refreshed = update_state(previous, [reader], [reader["publicKey"]])
+  assert refreshed["version"] == previous["version"] + 1
+  device_key = ed25519.Ed25519PrivateKey.generate()
+  document = access_document(device_key, refreshed, [reader])
+  recovered = recover_state(device_key, document, [reader], [reader["publicKey"]])
+  assert recovered["authorizedApps"] == [reader["publicKey"]]
+  assert recovered["keys"] == refreshed["keys"]
 
 
 def test_custom_upload_step_only_adds_compression_encryption_and_transport(tmp_path) -> None:
@@ -189,7 +213,9 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
 
   uploader._upload_recording = upload
   uploader.client = SimpleNamespace(request=lambda method, path: existing)
-  existing._content = json.dumps({'files': [{'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'sourceSha256': b64url(hashlib.sha256(source.read_bytes()).digest())}]}).encode()
+  existing._content = json.dumps({'files': [{
+    'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'sourceSha256': b64url(hashlib.sha256(source.read_bytes()).digest()),
+  }]}).encode()
   assert uploader.do_upload(key, str(source)).status_code == 200
   existing._content = json.dumps({'files': [{'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'plaintextLength': 1}]}).encode()
   with pytest.raises(requests.HTTPError):
@@ -366,7 +392,7 @@ def test_transient_upload_failure_defers_only_that_file(tmp_path):
   assert uploader.next_file_to_upload(False)[0] == 'qlog.zst'
 
 
-@pytest.mark.parametrize('name,codec', [('qcamera.mp4', 'libx264'), ('fcamera.mp4', 'libx265'),
+@pytest.mark.parametrize('name,codec', [('qcamera.mp4', 'libx264'), ('qcamera.mp4', 'libx265'), ('fcamera.mp4', 'libx265'),
                                        ('ecamera.mp4', 'libx265'), ('dcamera.mp4', 'libx265')])
 def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_route(tmp_path, name, codec):
   import os
@@ -393,7 +419,7 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
     assert path == f'routes/00000001--1234567890/0/{name}'
     assert media['owner'] == uploader.owner
     assert media['alg'] == 'CENC-AES-CTR'
-    assert media['codec'].startswith('avc1.' if name == 'qcamera.mp4' else ('hvc1.', 'hev1.'))
+    assert media['codec'].startswith('avc1.' if codec == 'libx264' else ('hvc1.', 'hev1.'))
     unsigned = {key: value for key, value in media.items() if key != 'signature'}
     uploader.private_key.public_key().verify(decode64(media['signature']), canonical_json(unsigned).encode())
     return SimpleNamespace(status_code=200)
