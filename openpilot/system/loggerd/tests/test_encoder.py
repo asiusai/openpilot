@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import math
+import json
 import os
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ CAMERAS = [
   ("fcamera.mp4", 20, hevc_size, "narrowRoadEncodeIdx"),
   ("dcamera.mp4", 20, hevc_size, "cabinEncodeIdx"),
   ("ecamera.mp4", 20, hevc_size, "wideRoadEncodeIdx"),
-  ("qcamera.mp4", 20, lambda x: 130000, None),
+  ("qcamera.mp4", 20, lambda x: 384000 * SEGMENT_LENGTH // 8 if ASIUS_HARDWARE else 130000, None),
 ]
 WARMUP_SEGMENTS = 1 if ASIUS_HARDWARE else 0
 
@@ -92,13 +93,18 @@ class TestEncoder(OpenpilotTestCase):
 
         # TODO: this ffprobe call is really slow
         # get width and check frame count
-        cmd = f"ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets,width -of csv=p=0 {file_path}"
+        fields = "nb_read_packets,width,height,codec_name,profile,r_frame_rate"
+        cmd = f"ffprobe -v error -select_streams v:0 -count_packets -show_entries stream={fields} -of json {file_path}"
         if COMMA_HARDWARE:
           cmd = "LD_LIBRARY_PATH=/usr/local/lib " + cmd
 
         expected_frames = fps * SEGMENT_LENGTH
-        probe = subprocess.check_output(cmd, shell=True, encoding='utf8').split('\n')[0].strip().split(',')
-        frame_width, frame_count = int(probe[0]), int(probe[1])
+        probe = json.loads(subprocess.check_output(cmd, shell=True, encoding='utf8'))["streams"][0]
+        frame_width, frame_count = int(probe["width"]), int(probe["nb_read_packets"])
+        if ASIUS_HARDWARE and camera == "qcamera.mp4":
+          assert probe["codec_name"] == "hevc" and probe["profile"] == "Main", f"qcamera used unexpected codec: {probe}"
+          assert (frame_width, int(probe["height"])) == (672, 380), f"qcamera used unexpected dimensions: {probe}"
+          assert probe["r_frame_rate"] == "20/1", f"qcamera used unexpected frame rate: {probe}"
         counts.append(frame_count)
         if ASIUS_HARDWARE:
           min_frames = expected_frames - fps
