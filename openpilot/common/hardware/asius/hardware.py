@@ -2,10 +2,18 @@ import subprocess
 from functools import cached_property
 
 from openpilot.common.hardware.base import ThermalConfig, ThermalZone
+from openpilot.common.hardware.asius.gpu import GpuUsage
 from openpilot.common.hardware.comma.hardware import HardwareComma, affine_irq
 
 
 class HardwareAsius(HardwareComma):
+  @cached_property
+  def gpu_usage(self):
+    return GpuUsage()
+
+  def get_gpu_usage_percent(self):
+    return self.gpu_usage.read()
+
   @cached_property
   def amplifier(self):
     return None
