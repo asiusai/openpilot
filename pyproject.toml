@@ -54,6 +54,7 @@ dependencies = [
 [project.optional-dependencies]
 testing = [
   "pytest>=9.1.1",
+  "pytest-asyncio==1.4.0",  # Asius pairing and Bluetooth tests
   "coverage",   # line coverage
   "ty",         # type checking
   "ruff",       # linting
