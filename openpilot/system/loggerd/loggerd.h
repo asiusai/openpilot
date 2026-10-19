@@ -50,6 +50,7 @@ struct EncoderSettings {
   int bitrate;
   int gop_size;
   int b_frames = 0; // we don't use b frames
+  bool constant_bitrate = false;
 
   static EncoderSettings MainEncoderSettings(int in_width) {
     if (in_width <= 1344) {
@@ -60,7 +61,13 @@ struct EncoderSettings {
   }
 
   static EncoderSettings QcamEncoderSettings() {
-    return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::QCAMERA_H264, .bitrate = 256'000, .gop_size = 15};
+    const bool v0 = Hardware::get_device_type() == cereal::InitData::DeviceType::V0;
+    return EncoderSettings{
+      .encode_type = v0 ? cereal::EncodeIndex::Type::FULL_H_E_V_C : cereal::EncodeIndex::Type::QCAMERA_H264,
+      .bitrate = v0 ? 384'000 : 256'000,
+      .gop_size = v0 ? 40 : 15,
+      .constant_bitrate = v0,
+    };
   }
 
   static EncoderSettings StreamEncoderSettings() {

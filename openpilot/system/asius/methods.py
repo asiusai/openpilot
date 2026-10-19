@@ -882,22 +882,18 @@ def startStream(sdp: str, cameras: list[str], bridge_services_out: list[str], en
 
 
 @dispatcher.add_method
+def getRouteUploadProgress() -> dict | None:
+  from openpilot.system.loggerd.upload_progress import read_progress
+  return read_progress()
+
+
+@dispatcher.add_method
 def requestRouteUpload(paths: list[str]) -> dict:
   from openpilot.common.hardware.hw import Paths
   from openpilot.system.loggerd.data_upload_queue import request_uploads
   if not Params().get_bool("CloudUploadEnabled"):
     raise ValueError("Device cloud uploads are disabled")
   return request_uploads(Paths.log_root(), paths)
-
-
-@dispatcher.add_method
-def authorizeRoutePublication(routeId: str, enabled: bool, files: list[dict], timestamp: int) -> dict:
-  from openpilot.system.asius.identity import get_device_private_key
-  from openpilot.system.asius.route_sharing import authorize_publication
-  # Only authenticated, device-authorized peers reach this dispatcher. The app
-  # sends this narrowly scoped request over its internet connection, including
-  # when the device has Bluetooth only or an unset wall clock.
-  return authorize_publication(get_device_private_key(), routeId, enabled, files, timestamp)
 
 
 def _json_safe(value: Any) -> Any:

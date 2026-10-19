@@ -236,7 +236,7 @@ bool VenusEncoder::initialize() {
 
   current_bitrate = settings.bitrate;
   if (!set_control(V4L2_CID_MPEG_VIDEO_BITRATE_MODE,
-                   V4L2_MPEG_VIDEO_BITRATE_MODE_VBR) ||
+                   settings.constant_bitrate ? V4L2_MPEG_VIDEO_BITRATE_MODE_CBR : V4L2_MPEG_VIDEO_BITRATE_MODE_VBR) ||
       !set_control(V4L2_CID_MPEG_VIDEO_BITRATE, settings.bitrate) ||
       !set_control(V4L2_CID_MPEG_VIDEO_GOP_SIZE, settings.gop_size) ||
       !set_control(V4L2_CID_MPEG_VIDEO_B_FRAMES, settings.b_frames) ||
@@ -250,7 +250,8 @@ bool VenusEncoder::initialize() {
     if (!set_control(V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
                      V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN) ||
         !set_control(V4L2_CID_MPEG_VIDEO_HEVC_LEVEL,
-                     V4L2_MPEG_VIDEO_HEVC_LEVEL_3_1)) {
+                     V4L2_MPEG_VIDEO_HEVC_LEVEL_4) ||
+        !set_control(V4L2_CID_MPEG_VIDEO_HEVC_MAX_QP, 51)) {
       return false;
     }
   } else {

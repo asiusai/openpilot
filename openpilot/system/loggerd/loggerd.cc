@@ -82,6 +82,8 @@ size_t write_encode_data(LoggerdState *s, cereal::Event::Reader event, RemoteEnc
       if (encoder_info.record) {
         // write the header
         auto header = edata.getHeader();
+        // Retain the missing prefix when loggerd joins an encoder mid-segment.
+        re.writer->set_metadata("ai.asius.startOffsetMs", std::to_string(idx.getSegmentId() * 1000ULL / encoder_info.fps).c_str());
         re.writer->write((uint8_t *)header.begin(), header.size(), idx.getTimestampEof() / 1000, true, false);
       }
       re.recording = true;
