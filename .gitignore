@@ -99,3 +99,4 @@ build/
 .context/
 PLAN.md
 TASK.md
+openpilot/system/loggerd/tests/video_writer_fixture

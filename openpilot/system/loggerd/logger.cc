@@ -167,10 +167,10 @@ static void log_sentinel(LoggerState *log, SentinelType type, int exit_signal = 
 LoggerState::LoggerState(const std::string &log_root) {
   util::create_directories(log_root, 0775);
   counter_lock = open((log_root + "/.route-counter.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0664);
-  if (counter_lock < 0 || flock(counter_lock, LOCK_EX) != 0) throw std::runtime_error("cannot lock route counter");
+  // Loggerd is the only allocator. Summary readers must never delay recording.
+  // Recovery takes the exclusive lock only while renaming closed routes offroad.
+  if (counter_lock < 0 || flock(counter_lock, LOCK_SH) != 0) throw std::runtime_error("cannot hold recording lock");
   route_name = logger_get_identifier("RouteCount");
-  // Keep a shared lifetime lock: recovery must wait until all recording ends.
-  if (flock(counter_lock, LOCK_SH) != 0) throw std::runtime_error("cannot hold recording lock");
   route_path = log_root + "/" + route_name;
   init_data = logger_build_init_data(true);
 }

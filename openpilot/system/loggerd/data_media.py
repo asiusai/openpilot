@@ -441,6 +441,35 @@ def derive_cenc_key(folder_key: bytes, owner: str, key_id: str, path: str) -> tu
   return key, kid
 
 
+def recording_start_offset(data, moov):
+  """Read the first saved frame's position within its encoder segment."""
+  udta = next((b for b in read_boxes(data, moov.payload_start, moov.end) if b.type == b'udta'), None)
+  if udta is None:
+    return 0
+  meta = next((b for b in read_boxes(data, udta.payload_start, udta.end) if b.type == b'meta'), None)
+  if meta is None:
+    return 0
+  children = read_boxes(data, meta.payload_start + 4, meta.end)
+  keys = next((b for b in children if b.type == b'keys'), None)
+  values = next((b for b in children if b.type == b'ilst'), None)
+  if keys is None or values is None:
+    return 0
+  names = read_boxes(data, keys.payload_start + 8, keys.end)
+  for item in read_boxes(data, values.payload_start, values.end):
+    index = int.from_bytes(item.type, 'big') - 1
+    if not 0 <= index < len(names):
+      continue
+    name = names[index]
+    if data[name.payload_start:name.end] != b'ai.asius.startOffsetMs':
+      continue
+    value = child(data, item, b'data')
+    offset = int(data[value.payload_start + 8:value.end])
+    if not 0 <= offset <= 90000:
+      raise ValueError('invalid recording start offset')
+    return offset
+  return 0
+
+
 def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, kid: bytes) -> dict[str, Any]:
   if len(key) != 16 or len(kid) != 16:
     raise ValueError("CENC key and KID must be 128 bits")
@@ -500,6 +529,7 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     "alg": "CENC-AES-CTR",
     "kid": b64url(kid),
     "codec": primary.codec,
+    "startOffsetMs": recording_start_offset(clear, moov),
     "contentType": f'video/mp4; codecs="{primary.codec}"',
     "plaintextLength": len(clear),
     **({"discardedBytes": len(clear) - top_level[-1].end} if top_level[-1].end < len(clear) else {}),
