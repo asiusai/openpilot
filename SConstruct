@@ -271,6 +271,10 @@ def msgq_objects(_env, sources):
   return msgq_shared_object([str(msgq_visionbuf) if File(source).abspath == original else source for source in sources])
 
 env_msgq.AddMethod(msgq_objects, 'SharedObject')
+# Cython's generated C++ can stay unchanged when the native class layout changes.
+# Include headers in the object cache keys to prevent stale Python bindings.
+envCython.Depends(['#msgq_repo/msgq/ipc_pyx.o', '#msgq_repo/msgq/visionipc/visionipc_pyx.o'],
+                  Glob('#msgq_repo/msgq/*.h') + Glob('#msgq_repo/msgq/visionipc/*.h'))
 SConscript(['msgq_repo/SConscript'], exports={'env': env_msgq})
 
 SConscript(['openpilot/cereal/SConscript'])
