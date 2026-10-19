@@ -138,7 +138,8 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
     for service, updated in self.sm.updated.items():
       if not updated:
         continue
-      msg_dict = self.to_json(self.sm[service])
+      # Cabana needs the fingerprint, not binary firmware records or vehicle identity.
+      msg_dict = {"carFingerprint": self.sm[service].carFingerprint} if service == "carParams" else self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]
       outgoing_msg = {"type": service, "logMonoTime": mono_time, "valid": valid, "data": msg_dict}
       encoded_msg = json.dumps(outgoing_msg).encode()

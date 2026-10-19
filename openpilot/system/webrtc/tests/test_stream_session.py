@@ -69,6 +69,23 @@ class TestStreamSession(OpenpilotTestCase):
       assert received["encoding"] == "base64"
       assert base64.b64decode(received["data"][0]["dat"]) == bytes([0, 128, 255, index])
 
+  def test_car_params_sends_fingerprint_without_binary_firmware_or_vin(self, mocker):
+    packet = messaging.new_message("carParams")
+    packet.valid = True
+    packet.carParams.carFingerprint = "TESLA_MODEL_3"
+    packet.carParams.carVin = "private"
+    packet.carParams.init("carFw", 1)[0].fwVersion = bytes([0, 128, 255])
+    proxy = CerealOutgoingMessageProxy(["carParams"])
+    channel = mocker.Mock()
+    channel.is_open.return_value = True
+    proxy.add_channel(channel)
+    mocker.patch.object(messaging.SubMaster, "update", side_effect=lambda _: proxy.sm.update_msgs(0, [packet]))
+    proxy.update()
+    received = json.loads(channel.send.call_args.args[0])
+    assert received["type"] == "carParams"
+    assert received["valid"]
+    assert received["data"] == {"carFingerprint": "TESLA_MODEL_3"}
+
   def test_can_ack_releases_only_received_packets(self, mocker):
     mocker.patch.object(messaging, "sub_sock", return_value=object())
     proxy = CerealOutgoingMessageProxy(["can"])
