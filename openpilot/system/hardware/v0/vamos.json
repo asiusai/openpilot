@@ -3,26 +3,26 @@
   "minimum_updater_version": 2,
   "partitions": [
     {
-      "compressed_sha256": "b4845d704d925a749188138afbbbe2f876a01fa2466dacb100b9ec6f6b6820f1",
+      "compressed_sha256": "6b862027326a6e3ee74da5cb4aa6a557539b3910c27d962a13f8d6a62a3eb2e8",
       "compressed_size": 19525008,
       "compression": "xz",
-      "hash": "8627363c6b86af87770dd6537e08f8c196ace468bb0c52876a788fedc9872873",
+      "hash": "41406a95e48f5281245bd389e6c22c4eacf41a892a58849a40aeaaebb79b9cc4",
       "name": "esp",
-      "sha256": "8627363c6b86af87770dd6537e08f8c196ace468bb0c52876a788fedc9872873",
+      "sha256": "41406a95e48f5281245bd389e6c22c4eacf41a892a58849a40aeaaebb79b9cc4",
       "size": 268435456,
-      "url": "https://vamos.asius.ai/vamos/objects/esp-8627363c6b86af87770dd6537e08f8c196ace468bb0c52876a788fedc9872873.img.xz"
+      "url": "https://vamos.asius.ai/vamos/objects/esp-41406a95e48f5281245bd389e6c22c4eacf41a892a58849a40aeaaebb79b9cc4.img.xz"
     },
     {
-      "compressed_sha256": "bd8cf7d4b770a5c76d446f926b79db0c74742dffc25924a3781046bc90795392",
-      "compressed_size": 654168064,
+      "compressed_sha256": "1b50b34170bc5a0d0c5b1f33b2845f18ed21750d3029173eaed5bf905dfe2b98",
+      "compressed_size": 654184448,
       "compression": "none",
-      "hash": "bd8cf7d4b770a5c76d446f926b79db0c74742dffc25924a3781046bc90795392",
+      "hash": "1b50b34170bc5a0d0c5b1f33b2845f18ed21750d3029173eaed5bf905dfe2b98",
       "name": "system",
-      "sha256": "bd8cf7d4b770a5c76d446f926b79db0c74742dffc25924a3781046bc90795392",
-      "size": 654168064,
-      "url": "https://vamos.asius.ai/vamos/objects/system-bd8cf7d4b770a5c76d446f926b79db0c74742dffc25924a3781046bc90795392.img"
+      "sha256": "1b50b34170bc5a0d0c5b1f33b2845f18ed21750d3029173eaed5bf905dfe2b98",
+      "size": 654184448,
+      "url": "https://vamos.asius.ai/vamos/objects/system-1b50b34170bc5a0d0c5b1f33b2845f18ed21750d3029173eaed5bf905dfe2b98.img"
     }
   ],
   "product": "asius-v0",
-  "version": "18.7"
+  "version": "18.8"
 }
