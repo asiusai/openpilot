@@ -37,6 +37,29 @@ def digest(value):
   return hashlib.sha256(canonical(value)).digest()
 
 
+def message_nonce(counter):
+  if type(counter) is not int or not 1 <= counter < 0xffffffff:
+    raise ValueError('Invalid message counter')
+  return counter.to_bytes(12, 'big')
+
+
+def data_header(message):
+  """The same authenticated envelope protects private calls and shared status."""
+  return {key: message[key] for key in ('v', 'type', 'from', 'to', 'transport', 'sid', 'n')}
+
+
+def encrypt_data(key, sender, recipient, transport, sid, counter, plaintext):
+  header = {'v': 5, 'type': 'data', 'from': sender, 'to': recipient, 'transport': transport, 'sid': sid, 'n': counter}
+  return {**header, 'ciphertext': b64(AESGCM(key).encrypt(message_nonce(counter), plaintext, canonical(header)))}
+
+
+def decrypt_data(key, message):
+  header = data_header(message)
+  if header['v'] != 5 or header['type'] != 'data':
+    raise ValueError('Invalid encrypted message')
+  return AESGCM(key).decrypt(message_nonce(header['n']), unb64(message['ciphertext']), canonical(header))
+
+
 @dataclass
 class Channel:
   sid: str
@@ -126,12 +149,6 @@ class SecureSession:
     return Channel(b64(salt), (welcome if initiator else hello)['from'], forward if initiator else reverse,
                    reverse if initiator else forward, self.now())
 
-  @staticmethod
-  def nonce(counter):
-    if type(counter) is not int or not 1 <= counter < 0xffffffff:
-      raise ValueError('Invalid session counter')
-    return counter.to_bytes(12, 'big')
-
   def encrypt(self, peer, text, expected_sid=None):
     with self.lock:
       channel = self.active.get(peer)
@@ -141,8 +158,7 @@ class SecureSession:
         raise SessionChanged('Session changed before delivery')
       channel.created = self.now()
       channel.tx += 1
-      header = {'v': 5, 'type': 'data', 'from': self.public_key, 'to': peer, 'transport': self.transport, 'sid': channel.sid, 'n': channel.tx}
-      return {**header, 'ciphertext': b64(AESGCM(channel.send).encrypt(self.nonce(channel.tx), text.encode(), canonical(header)))}
+      return encrypt_data(channel.send, self.public_key, peer, self.transport, channel.sid, channel.tx, text.encode())
 
   def receive(self, message):
     with self.lock:
@@ -158,11 +174,10 @@ class SecureSession:
         if channel is None or channel.sid != message.get('sid'):
           channel = self.candidates.get(message.get('sid'))
         counter = message.get('n')
-        nonce = self.nonce(counter)
+        message_nonce(counter)
         if channel is None or channel.peer != peer or counter <= channel.rx:
           raise ValueError('Replayed or unknown session')
-        header = {key: message[key] for key in ('v', 'type', 'from', 'to', 'transport', 'sid', 'n')}
-        text = AESGCM(channel.receive).decrypt(nonce, unb64(message['ciphertext']), canonical(header)).decode()
+        text = decrypt_data(channel.receive, message).decode()
         channel.rx = counter
         self.activate(channel)
         self.candidates = {sid: candidate for sid, candidate in self.candidates.items() if candidate.peer != peer}

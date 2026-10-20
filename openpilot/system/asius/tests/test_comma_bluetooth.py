@@ -49,6 +49,8 @@ def test_comma_bluetooth_keeps_builtin_gps(monkeypatch, tmp_path):
   engine = bluetoothd.BlePeerEngine(Mock())
   pubmaster.assert_called_once_with([])
   engine.send_body = AsyncMock()
+  engine.peer_devices = {'app': '/test'}
+  engine.sessions = {'/test': Mock(session_id=lambda _peer: 'test-session')}
   for method in ('startPhoneGps', 'updatePhoneGps', 'stopPhoneGps'):
     asyncio.run(engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 1, 'method': method}))
     assert engine.send_body.call_args.args[1]['error']['code'] == -32601
