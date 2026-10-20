@@ -1,0 +1,11 @@
+{
+  "channel": "master-ci",
+  "openpilot": {
+    "version": "0.11.3",
+    "release_notes": "",
+    "git_commit": "e71583381d9fc685429bb59e159b5c3f7d63ce67",
+    "git_origin": "https://github.com/asiusai/openpilot.git",
+    "git_commit_date": "2026-10-20 17:17:14 +0000",
+    "build_style": "prebuilt"
+  }
+}

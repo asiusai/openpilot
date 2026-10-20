@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+import os
+import re
+import datetime
+import subprocess
+import shutil
+import signal
+import fcntl
+import time
+import queue
+from collections import defaultdict
+from pathlib import Path
+
+from openpilot.common.basedir import BASEDIR
+from openpilot.common.params import Params
+from openpilot.common.time_helpers import system_time_valid
+from openpilot.common.markdown import parse_markdown
+from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+from openpilot.common.hardware import AGNOS, HARDWARE
+from openpilot.common.hardware.base import NetworkType
+from openpilot.system.updated.vamos_update import prepare_vamos_update, vamos_update_supported
+
+LOCK_FILE = os.getenv("UPDATER_LOCK_FILE", "/tmp/safe_staging_overlay.lock")
+STAGING_ROOT = os.getenv("UPDATER_STAGING_ROOT", "/data/safe_staging")
+
+OVERLAY_UPPER = os.path.join(STAGING_ROOT, "upper")
+OVERLAY_METADATA = os.path.join(STAGING_ROOT, "metadata")
+OVERLAY_MERGED = os.path.join(STAGING_ROOT, "merged")
+FINALIZED = os.path.join(STAGING_ROOT, "finalized")
+
+OVERLAY_INIT = Path(os.path.join(BASEDIR, ".overlay_init"))
+
+class UserRequest:
+  NONE = 0
+  CHECK = 1
+  FETCH = 2
+
+class WaitTimeHelper:
+  def __init__(self):
+    self.requests: queue.SimpleQueue[int] = queue.SimpleQueue()
+    signal.signal(signal.SIGHUP, self.update_now)
+    signal.signal(signal.SIGUSR1, self.check_now)
+
+  def update_now(self, signum: int, frame) -> None:
+    cloudlog.info("caught SIGHUP, attempting to downloading update")
+    self.requests.put(UserRequest.FETCH)
+
+  def check_now(self, signum: int, frame) -> None:
+    cloudlog.info("caught SIGUSR1, checking for updates")
+    self.requests.put(UserRequest.CHECK)
+
+  def wait_for_request(self) -> int:
+    return self.requests.get()
+
+
+def write_time_to_param(params, param) -> None:
+  t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+  params.put(param, t, block=True)
+
+def run(cmd: list[str], cwd: str | None = None, timeout: float | None = None) -> str:
+  return subprocess.check_output(cmd, cwd=cwd, stderr=subprocess.STDOUT, encoding='utf8', timeout=timeout)
+
+
+def network_unavailable(error: Exception) -> bool:
+  if isinstance(error, subprocess.TimeoutExpired):
+    return True
+  output = str(getattr(error, 'output', '') or error)
+  return re.search(r'could not resolve|temporary failure in name resolution|network is (?:unreachable|down)|' +
+                   r'no route to host|failed to connect|connection (?:refused|reset)|' +
+                   r'(?:connection|connect|read|request|operation) timed out', output, re.IGNORECASE) is not None
+
+
+def set_consistent_flag(consistent: bool) -> None:
+  os.sync()
+  consistent_file = Path(os.path.join(FINALIZED, ".overlay_consistent"))
+  if consistent:
+    consistent_file.touch()
+  elif not consistent:
+    consistent_file.unlink(missing_ok=True)
+  os.sync()
+
+def parse_release_notes(basedir: str) -> bytes:
+  try:
+    with open(os.path.join(basedir, "RELEASES.md"), "rb") as f:
+      r = f.read().split(b'\n\n', 1)[0]  # Slice latest release notes
+    try:
+      return bytes(parse_markdown(r.decode("utf-8")), encoding="utf-8")
+    except Exception:
+      return r + b"\n"
+  except FileNotFoundError:
+    pass
+  except Exception:
+    cloudlog.exception("failed to parse release notes")
+  return b""
+
+def setup_git_options(cwd: str) -> None:
+  # We sync FS object atimes (which NEOS doesn't use) and mtimes, but ctimes
+  # are outside user control. Make sure Git is set up to ignore system ctimes,
+  # because they change when we make hard links during finalize. Otherwise,
+  # there is a lot of unnecessary churn. This appears to be a common need on
+  # OSX as well: https://www.git-tower.com/blog/make-git-rebase-safe-on-osx/
+
+  # We are using copytree to copy the directory, which also changes
+  # inode numbers. Ignore those changes too.
+
+  # Set protocol to the new version (default after git 2.26) to reduce data
+  # usage on git fetch --dry-run from about 400KB to 18KB.
+  git_cfg = [
+    ("core.trustctime", "false"),
+    ("core.checkStat", "minimal"),
+    ("protocol.version", "2"),
+    ("gc.auto", "0"),
+    ("gc.autoDetach", "false"),
+  ]
+  for option, value in git_cfg:
+    run(["git", "config", option, value], cwd)
+
+
+def dismount_overlay() -> None:
+  if os.path.ismount(OVERLAY_MERGED):
+    cloudlog.info("unmounting existing overlay")
+    run(["sudo", "umount", "-l", OVERLAY_MERGED])
+
+
+def init_overlay() -> None:
+
+  # Re-create the overlay if BASEDIR/.git has changed since we created the overlay
+  if OVERLAY_INIT.is_file() and os.path.ismount(OVERLAY_MERGED):
+    git_dir_path = os.path.join(BASEDIR, ".git")
+    new_files = run(["find", git_dir_path, "-newer", str(OVERLAY_INIT)])
+    if not len(new_files.splitlines()):
+      # A valid overlay already exists
+      return
+    else:
+      cloudlog.info(".git directory changed, recreating overlay")
+
+  cloudlog.info("preparing new safe staging area")
+
+  params = Params()
+  params.put_bool("UpdateAvailable", False, block=True)
+  set_consistent_flag(False)
+  dismount_overlay()
+  run(["sudo", "rm", "-rf", STAGING_ROOT])
+  if os.path.isdir(STAGING_ROOT):
+    shutil.rmtree(STAGING_ROOT)
+
+  for dirname in [STAGING_ROOT, OVERLAY_UPPER, OVERLAY_METADATA, OVERLAY_MERGED]:
+    os.mkdir(dirname, 0o755)
+
+  if os.lstat(BASEDIR).st_dev != os.lstat(OVERLAY_MERGED).st_dev:
+    raise RuntimeError("base and overlay merge directories are on different filesystems; not valid for overlay FS!")
+
+  # Leave a timestamped canary in BASEDIR to check at startup. The device clock
+  # should be correct by the time we get here. If the init file disappears, or
+  # critical mtimes in BASEDIR are newer than .overlay_init, continue.sh can
+  # assume that BASEDIR has used for local development or otherwise modified,
+  # and skips the update activation attempt.
+  consistent_file = Path(os.path.join(BASEDIR, ".overlay_consistent"))
+  if consistent_file.is_file():
+    consistent_file.unlink()
+  OVERLAY_INIT.touch()
+
+  os.sync()
+  overlay_opts = f"lowerdir={BASEDIR},upperdir={OVERLAY_UPPER},workdir={OVERLAY_METADATA}"
+
+  mount_cmd = ["mount", "-t", "overlay", "-o", overlay_opts, "none", OVERLAY_MERGED]
+  run(["sudo"] + mount_cmd)
+  run(["sudo", "chmod", "755", os.path.join(OVERLAY_METADATA, "work")])
+
+  git_diff = run(["git", "diff", "--submodule=diff"], OVERLAY_MERGED)
+  params.put("GitDiff", git_diff, block=True)
+  cloudlog.info(f"git diff output:\n{git_diff}")
+
+
+def finalize_update(vamos_update_pending: bool = False) -> None:
+  """Take the current OverlayFS merged view and finalize a copy outside of
+  OverlayFS, ready to be swapped-in at BASEDIR. Copy using shutil.copytree"""
+
+  # Remove the update ready flag and any old updates
+  cloudlog.info("creating finalized version of the overlay")
+  set_consistent_flag(False)
+
+  # Copy the merged overlay view and set the update ready flag
+  if os.path.exists(FINALIZED):
+    shutil.rmtree(FINALIZED)
+  shutil.copytree(OVERLAY_MERGED, FINALIZED, symlinks=True)
+
+  run(["git", "reset", "--hard"], FINALIZED)
+  run(["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"], FINALIZED)
+
+  cloudlog.info("Starting git cleanup in finalized update")
+  t = time.monotonic()
+  try:
+    run(["git", "gc"], FINALIZED)
+    run(["git", "lfs", "prune"], FINALIZED)
+    cloudlog.event("Done git cleanup", duration=time.monotonic() - t)
+  except subprocess.CalledProcessError:
+    cloudlog.exception(f"Failed git cleanup, took {time.monotonic() - t:.3f} s")
+
+  for marker in (".install_requested", ".vamos_update_pending"):
+    Path(FINALIZED, marker).unlink(missing_ok=True)
+  if vamos_update_pending:
+    Path(FINALIZED, ".vamos_update_pending").touch()
+  set_consistent_flag(True)
+  cloudlog.info("done finalizing overlay")
+
+
+def handle_agnos_update() -> None:
+  from openpilot.common.hardware.comma.agnos import flash_agnos_update, get_target_slot_number
+
+  cur_version = HARDWARE.get_os_version()
+  updated_version = run(["bash", "-c", r"unset AGNOS_VERSION && source launch_env.sh && \
+                          echo -n $AGNOS_VERSION"], OVERLAY_MERGED).strip()
+
+  cloudlog.info(f"AGNOS version check: {cur_version} vs {updated_version}")
+  if cur_version == updated_version:
+    return
+
+  # prevent an openpilot getting swapped in with a mismatched or partially downloaded agnos
+  set_consistent_flag(False)
+
+  cloudlog.info(f"Beginning background installation for AGNOS {updated_version}")
+
+  manifest_path = os.path.join(OVERLAY_MERGED, "openpilot/system/hardware/comma/agnos.json")
+  if not os.path.isfile(manifest_path):  # releases before the openpilot/ move
+    manifest_path = os.path.join(OVERLAY_MERGED, "system/hardware/tici/agnos.json")
+  target_slot_number = get_target_slot_number()
+  flash_agnos_update(manifest_path, target_slot_number, cloudlog)
+
+
+class Updater:
+  def __init__(self):
+    self.params = Params()
+    self.branches = defaultdict(str)
+    self._has_internet: bool = False
+
+  @property
+  def has_internet(self) -> bool:
+    return self._has_internet
+
+  @property
+  def target_branch(self) -> str:
+    b: str | None = self.params.get("UpdaterTargetBranch")
+    if b is None:
+      b = self.get_branch(BASEDIR)
+    b = {
+      ("tizi", "release3"): "release-tizi",
+      ("tizi", "release3-staging"): "release-tizi-staging",
+      ("mici", "release3"): "release-mici",
+      ("mici", "release3-staging"): "release-mici-staging",
+    }.get((HARDWARE.get_device_type(), b), b)
+    return b
+
+  @property
+  def update_ready(self) -> bool:
+    consistent_file = Path(os.path.join(FINALIZED, ".overlay_consistent"))
+    if consistent_file.is_file():
+      hash_mismatch = self.get_commit_hash(BASEDIR) != self.get_commit_hash(FINALIZED)
+      branch_mismatch = self.get_branch(BASEDIR) != self.target_branch
+      on_target_branch = self.get_branch(FINALIZED) == self.target_branch
+      return ((hash_mismatch or branch_mismatch) and on_target_branch)
+    return False
+
+  @property
+  def update_available(self) -> bool:
+    if os.path.isdir(OVERLAY_MERGED) and len(self.branches) > 0:
+      hash_mismatch = self.get_commit_hash(OVERLAY_MERGED) != self.branches[self.target_branch]
+      branch_mismatch = self.get_branch(OVERLAY_MERGED) != self.target_branch
+      return hash_mismatch or branch_mismatch
+    return False
+
+  def get_branch(self, path: str) -> str:
+    return run(["git", "rev-parse", "--abbrev-ref", "HEAD"], path).rstrip()
+
+  def get_commit_hash(self, path: str = OVERLAY_MERGED) -> str:
+    return run(["git", "rev-parse", "HEAD"], path).rstrip()
+
+  def set_params(self, update_success: bool, failed_count: int, exception: str | None) -> None:
+    self.params.put("UpdateFailedCount", failed_count, block=True)
+    self.params.put("UpdaterTargetBranch", self.target_branch, block=True)
+
+    self.params.put_bool("UpdaterFetchAvailable", self.update_available, block=True)
+    if len(self.branches):
+      self.params.put("UpdaterAvailableBranches", ','.join(self.branches.keys()), block=True)
+
+    last_uptime_onroad = self.params.get("UptimeOnroad", return_default=True)
+    last_route_count = self.params.get("RouteCount", return_default=True)
+    if update_success:
+      self.params.put("LastUpdateTime", datetime.datetime.now(datetime.UTC).replace(tzinfo=None), block=True)
+      self.params.put("LastUpdateUptimeOnroad", last_uptime_onroad, block=True)
+      self.params.put("LastUpdateRouteCount", last_route_count, block=True)
+    else:
+      last_uptime_onroad = self.params.get("LastUpdateUptimeOnroad", return_default=True)
+      last_route_count = self.params.get("LastUpdateRouteCount", return_default=True)
+
+    if exception is None:
+      self.params.remove("LastUpdateException")
+    else:
+      self.params.put("LastUpdateException", exception, block=True)
+
+    # Write out current and new version info
+    def get_description(basedir: str) -> str:
+      if not os.path.exists(basedir):
+        return ""
+
+      version = ""
+      branch = ""
+      commit = ""
+      commit_date = ""
+      try:
+        branch = self.get_branch(basedir)
+        commit = self.get_commit_hash(basedir)[:7]
+        with open(os.path.join(basedir, "openpilot", "common", "version.h")) as f:
+          version = f.read().split('"')[1]
+
+        commit_unix_ts = run(["git", "show", "-s", "--format=%ct", "HEAD"], basedir).rstrip()
+        dt = datetime.datetime.fromtimestamp(int(commit_unix_ts))
+        commit_date = dt.strftime("%b %d")
+      except Exception:
+        cloudlog.exception("updater.get_description")
+      return f"{version} / {branch} / {commit} / {commit_date}"
+    self.params.put("UpdaterCurrentDescription", get_description(BASEDIR), block=True)
+    self.params.put("UpdaterCurrentReleaseNotes", parse_release_notes(BASEDIR), block=True)
+    self.params.put("UpdaterNewDescription", get_description(FINALIZED), block=True)
+    self.params.put("UpdaterNewReleaseNotes", parse_release_notes(FINALIZED), block=True)
+    self.params.put_bool("UpdateAvailable", self.update_ready, block=True)
+
+    # Handle user prompt
+    for alert in ("Offroad_UpdateFailed", "Offroad_ConnectivityNeeded", "Offroad_ConnectivityNeededPrompt"):
+      set_offroad_alert(alert, False)
+
+  def check_for_update(self) -> bool:
+    cloudlog.info("checking for updates")
+
+    excluded_branches = ('release2', 'release2-staging')
+
+    self._has_internet = False
+    if HARDWARE.get_network_type() == NetworkType.none:
+      return False
+    setup_git_options(OVERLAY_MERGED)
+    try:
+      output = run(["git", "ls-remote", "--heads", "origin"], OVERLAY_MERGED, timeout=30)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+      if network_unavailable(e):
+        return False
+      raise
+    self._has_internet = True
+
+    self.branches.clear()
+    for line in output.split('\n'):
+      ls_remotes_re = r'(?P<commit_sha>\b[0-9a-f]{5,40}\b)(\s+)(refs\/heads\/)(?P<branch_name>.*$)'
+      x = re.fullmatch(ls_remotes_re, line.strip())
+      if x is not None and x.group('branch_name') not in excluded_branches:
+        self.branches[x.group('branch_name')] = x.group('commit_sha')
+
+    cur_branch = self.get_branch(OVERLAY_MERGED)
+    cur_commit = self.get_commit_hash(OVERLAY_MERGED)
+    new_branch = self.target_branch
+    new_commit = self.branches[new_branch]
+    if (cur_branch, cur_commit) != (new_branch, new_commit):
+      cloudlog.info(f"update available, {cur_branch} ({str(cur_commit)[:7]}) -> {new_branch} ({str(new_commit)[:7]})")
+    else:
+      cloudlog.info(f"up to date on {cur_branch} ({str(cur_commit)[:7]})")
+    return True
+
+  def fetch_update(self) -> None:
+    cloudlog.info("attempting git fetch inside staging overlay")
+
+    self.params.put("UpdaterState", "downloading...", block=True)
+    self.params.remove("UpdaterProgress")
+
+    # TODO: cleanly interrupt this and invalidate old update
+    set_consistent_flag(False)
+    self.params.put_bool("UpdateAvailable", False, block=True)
+
+    setup_git_options(OVERLAY_MERGED)
+
+    run(["git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], OVERLAY_MERGED)
+
+    branch = self.target_branch
+    # Historical commits can reference retired fork submodules. Fetch only the
+    # parent here; the selected checkout's exact submodules are updated below.
+    git_fetch_output = run(["git", "fetch", "--no-recurse-submodules", "origin", branch], OVERLAY_MERGED)
+    cloudlog.info("git fetch success: %s", git_fetch_output)
+
+    cloudlog.info("git reset in progress")
+    cmds = [
+      ["git", "checkout", "--force", "--no-recurse-submodules", "-B", branch, "FETCH_HEAD"],
+      ["git", "branch", "--set-upstream-to", f"origin/{branch}"],
+      ["git", "reset", "--hard"],
+      ["git", "clean", "-xdff"],
+      ["git", "submodule", "sync"],
+      ["git", "submodule", "update", "--init", "--recursive"],
+      ["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"],
+    ]
+    r = [run(cmd, OVERLAY_MERGED) for cmd in cmds]
+    cloudlog.info("git reset success: %s", '\n'.join(r))
+
+    # TODO: show OS download progress
+    vamos_update_pending = False
+    if AGNOS:
+      handle_agnos_update()
+    elif vamos_update_supported():
+      vamos_update_pending = prepare_vamos_update(OVERLAY_MERGED, HARDWARE.get_os_version(), set_consistent_flag)
+
+    # Create the finalized, ready-to-swap update
+    self.params.put("UpdaterState", "finalizing update...", block=True)
+    if vamos_update_pending:
+      self.params.put("UpdaterProgress", 99, block=True)
+    finalize_update(vamos_update_pending)
+    if vamos_update_pending:
+      self.params.put("UpdaterProgress", 100, block=True)
+    cloudlog.info("finalize success!")
+
+
+def main() -> None:
+  params = Params()
+
+  if params.get_bool("DisableUpdates"):
+    cloudlog.warning("updates are disabled by the DisableUpdates param")
+    exit(0)
+
+  with open(LOCK_FILE, 'w') as ov_lock_fd:
+    try:
+      fcntl.flock(ov_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as e:
+      raise RuntimeError("couldn't get overlay lock; is another instance running?") from e
+
+    # Check if we just performed an update
+    if Path(os.path.join(STAGING_ROOT, "old_openpilot")).is_dir():
+      cloudlog.event("update installed")
+
+    if not params.get("InstallDate"):
+      t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+      params.put("InstallDate", t, block=True)
+
+    updater = Updater()
+    update_failed_count = params.get("UpdateFailedCount") or 0
+    wait_helper = WaitTimeHelper()
+    params.put("UpdaterState", "idle", block=True)
+    updater.set_params(False, update_failed_count, params.get("LastUpdateException"))
+
+    while True:
+      request = wait_helper.wait_for_request()
+      if request not in (UserRequest.CHECK, UserRequest.FETCH):
+        continue
+      exception = None
+      try:
+        if not system_time_valid():
+          raise RuntimeError("Waiting for device time synchronization. Connect the app and retry.")
+        params.put("UpdaterState", "checking...", block=True)
+        init_overlay()
+        if not updater.check_for_update():
+          params.put("UpdaterState", "waiting for internet", block=True)
+          continue
+        if request == UserRequest.FETCH and updater.update_available:
+          updater.fetch_update()
+          write_time_to_param(params, "UpdaterLastFetchTime")
+        update_failed_count = 0
+      except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        OVERLAY_INIT.unlink(missing_ok=True)
+        if network_unavailable(error):
+          updater._has_internet = False
+          params.put("UpdaterState", "waiting for internet", block=True)
+          continue
+        update_failed_count += 1
+        cloudlog.event("update process failed", cmd=error.cmd, output=error.output,
+                       returncode=getattr(error, "returncode", None))
+        exception = f"command failed: {error.cmd}\n{error.output}"
+      except Exception as error:
+        update_failed_count += 1
+        cloudlog.exception("manual update failed")
+        exception = str(error)
+        OVERLAY_INIT.unlink(missing_ok=True)
+      params.put("UpdaterState", "idle", block=True)
+      updater.set_params(exception is None, update_failed_count, exception)
+
+
+if __name__ == "__main__":
+  main()
