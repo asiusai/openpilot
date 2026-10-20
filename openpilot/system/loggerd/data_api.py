@@ -62,7 +62,8 @@ def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_k
 
 def access_document(private_key: ed25519.Ed25519PrivateKey, state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
   owner = public_identity(private_key)
-  recipients = list({reader["publicKey"]: reader for reader in [*readers, {"publicKey": owner, "storagePublicKey": public_text(get_recording_key(private_key))}]}.values())
+  device = {"publicKey": owner, "storagePublicKey": public_text(get_recording_key(private_key))}
+  recipients = list({reader["publicKey"]: reader for reader in [*readers, device]}.values())
   keys = []
   for entry in state["keys"]:
     raw_key = base64.urlsafe_b64decode(entry["key"] + "=" * (-len(entry["key"]) % 4))
