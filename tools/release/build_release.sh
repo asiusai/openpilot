@@ -5,12 +5,22 @@ set -x
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 cd "$DIR"
 
-BUILD_DIR=/data/openpilot
 SOURCE_DIR="$(git rev-parse --show-toplevel)"
+ARTIFACTS_DIR="${PREBUILT_ARTIFACTS:-}"
+if [ -n "$ARTIFACTS_DIR" ]; then
+  test -f /ASIUS
+  test "$(uname -m)" = aarch64
+  mkdir -p "$ARTIFACTS_DIR"
+  ARTIFACTS_DIR="$(realpath "$ARTIFACTS_DIR")"
+  BUILD_DIR="$(mktemp -d "${RUNNER_TEMP:-/tmp}/openpilot-prebuilt.XXXXXX")"
+  trap 'rm -rf "$BUILD_DIR"' EXIT
+else
+  BUILD_DIR=/data/openpilot
+fi
 
 export PYTHONPATH="$BUILD_DIR:$BUILD_DIR/msgq_repo:$BUILD_DIR/opendbc_repo:$BUILD_DIR/rednose_repo:$BUILD_DIR/teleoprtc_repo:$BUILD_DIR/tinygrad_repo"
 
-if [ -z "$RELEASE_BRANCH" ]; then
+if [ -z "$RELEASE_BRANCH" ] && [ -z "$ARTIFACTS_DIR" ]; then
   echo "RELEASE_BRANCH is not set"
   exit 1
 fi
@@ -22,15 +32,23 @@ BUILD_BRANCH=release-mici-staging
 source "$DIR/identity.sh"
 
 echo "[-] Setting up repo T=$SECONDS"
-if ! git -C "$SOURCE_DIR" worktree remove --force "$BUILD_DIR" 2>/dev/null; then
-  rm -rf "$BUILD_DIR"
+if [ -n "$ARTIFACTS_DIR" ]; then
+  # The artifact has its own Git objects and no source history or release branch.
+  git init "$BUILD_DIR"
+  cd "$BUILD_DIR"
+  EMPTY_TREE="$(git hash-object -t tree -w --stdin </dev/null)"
+  git commit-tree "$EMPTY_TREE" -m "Prebuilt artifact" > .git/HEAD
+else
+  if ! git -C "$SOURCE_DIR" worktree remove --force "$BUILD_DIR" 2>/dev/null; then
+    rm -rf "$BUILD_DIR"
+  fi
+  git -C "$SOURCE_DIR" worktree prune
+  git -C "$SOURCE_DIR" worktree add --detach --no-checkout "$BUILD_DIR"
+  cd "$BUILD_DIR"
+  git update-ref -d "refs/heads/$BUILD_BRANCH"
+  git symbolic-ref HEAD "refs/heads/$BUILD_BRANCH"
+  git read-tree --empty
 fi
-git -C "$SOURCE_DIR" worktree prune
-git -C "$SOURCE_DIR" worktree add --detach --no-checkout "$BUILD_DIR"
-cd "$BUILD_DIR"
-git update-ref -d "refs/heads/$BUILD_BRANCH"
-git symbolic-ref HEAD "refs/heads/$BUILD_BRANCH"
-git read-tree --empty
 
 # do the files copy
 echo "[-] copying files T=$SECONDS"
@@ -49,7 +67,7 @@ for policy in /sys/devices/system/cpu/cpufreq/policy*; do
   echo "$hardware_max" | sudo tee "$policy/scaling_max_freq" >/dev/null
 done
 
-scons
+scons ${SCONS_JOBS:+-j"$SCONS_JOBS"}
 
 if [ -z "$PANDA_DEBUG_BUILD" ]; then
   # release panda fw
@@ -64,9 +82,9 @@ if [ -n "$INCLUDE_BIG_MODEL" ]; then
 fi
 
 # Ensure no submodules in release
-if test "$(git submodule--helper list | wc -l)" -gt "0"; then
+if [ -n "$(git ls-files --stage | awk '$1 == "160000"')" ]; then
   echo "submodules found:"
-  git submodule--helper list
+  git submodule status
   exit 1
 fi
 git submodule status
@@ -77,11 +95,16 @@ find . -name '*.o' -delete
 find . -name '*.os' -delete
 find . -name '*.pyc' -delete
 find . -name '__pycache__' -delete
-rm -rf .sconsign.dblite tools/release/
+rm -rf .sconsign.dblite tools/release/ .cache/
 rm -f openpilot/selfdrive/modeld/models/*.onnx*
 
 # Mark as prebuilt release
 touch prebuilt
+
+if [ -n "$ARTIFACTS_DIR" ]; then
+  python3 "$SOURCE_DIR/tools/release/package_prebuilt.py" "$SOURCE_DIR" "$BUILD_DIR" "$ARTIFACTS_DIR"
+  exit 0
+fi
 
 VERSION=$(cat openpilot/common/version.h | awk -F[\"-]  '{print $2}')
 # Add built files to git
