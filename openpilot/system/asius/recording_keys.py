@@ -1,15 +1,13 @@
-"""Separate P-256 recording keys. App enrollment binds each public key."""
+"""Recording access keys derived from the device signing identity."""
 import base64
-import fcntl
-import os
-from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat, load_pem_private_key
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from openpilot.system.asius.identity import _atomic_key, secure_seed
-
-KEY_PATH = Path('/data/persist/comma/recording_p256.pem')
+# Order of NIST P-256. Use 512 derived bits before reduction to avoid bias.
+P256_ORDER = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
 
 def decode_public(value: str) -> ec.EllipticCurvePublicKey:
@@ -25,18 +23,8 @@ def public_text(key: ec.EllipticCurvePrivateKey) -> str:
   return base64.urlsafe_b64encode(key.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)).decode().rstrip('=')
 
 
-def get_recording_key() -> ec.EllipticCurvePrivateKey:
-  KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
-  fd = os.open(KEY_PATH.with_suffix('.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-  with os.fdopen(fd, 'w') as lock:
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    if KEY_PATH.exists():
-      key = load_pem_private_key(KEY_PATH.read_bytes(), password=None)
-      if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(key.curve, ec.SECP256R1):
-        raise ValueError('Invalid stored recording key')
-      KEY_PATH.chmod(0o600)
-      return key
-    secure_seed()  # Wait for the OS CSPRNG before the library generates a key.
-    key = ec.generate_private_key(ec.SECP256R1())
-    _atomic_key(KEY_PATH, key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()), 0o600)
-    return key
+def get_recording_key(identity: ed25519.Ed25519PrivateKey) -> ec.EllipticCurvePrivateKey:
+  material = HKDF(algorithm=hashes.SHA256(), length=64, salt=b"asius-device-keys-v1",
+                  info=b"asius-device-recording-p256-v1").derive(identity.private_bytes_raw())
+  scalar = int.from_bytes(material, 'big') % (P256_ORDER - 1) + 1
+  return ec.derive_private_key(scalar, ec.SECP256R1())

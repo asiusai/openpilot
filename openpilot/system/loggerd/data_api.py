@@ -62,7 +62,7 @@ def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_k
 
 def access_document(private_key: ed25519.Ed25519PrivateKey, state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
   owner = public_identity(private_key)
-  recipients = list({reader["publicKey"]: reader for reader in [*readers, {"publicKey": owner, "storagePublicKey": public_text(get_recording_key())}]}.values())
+  recipients = list({reader["publicKey"]: reader for reader in [*readers, {"publicKey": owner, "storagePublicKey": public_text(get_recording_key(private_key))}]}.values())
   keys = []
   for entry in state["keys"]:
     raw_key = base64.urlsafe_b64decode(entry["key"] + "=" * (-len(entry["key"]) % 4))
@@ -95,7 +95,7 @@ def recover_state(private_key: ed25519.Ed25519PrivateKey, document: dict[str, An
     grant = next(grant for grant in entry["grants"] if grant["to"] == owner)
     if grant.get('alg') != 'P256-HKDF-SHA256-A256GCM' or grant.get('from') != owner or grant.get('keyId') != entry['id']:
       raise ValueError('Invalid recording grant')
-    shared = get_recording_key().exchange(ec.ECDH(), decode_public(grant['ephemeral']))
+    shared = get_recording_key(private_key).exchange(ec.ECDH(), decode_public(grant['ephemeral']))
     wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-access-p256-v1:{owner}:{entry['id']}".encode(),
                     info=f"{owner}:{owner}".encode()).derive(shared)
     aad = {key: value for key, value in grant.items() if key != 'ciphertext'} | {'owner': owner}
