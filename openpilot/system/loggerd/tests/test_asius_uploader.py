@@ -27,11 +27,6 @@ from openpilot.system.loggerd.uploader import Uploader
 from openpilot.system.asius.recording_keys import decode_public, public_text
 
 
-@pytest.fixture(autouse=True)
-def isolated_recording_key(tmp_path, monkeypatch):
-  monkeypatch.setattr("openpilot.system.asius.recording_keys.KEY_PATH", tmp_path / "recording.pem")
-
-
 def reader_record():
   return {"publicKey": public_identity(ed25519.Ed25519PrivateKey.generate()), "storagePublicKey": public_text(ec.generate_private_key(ec.SECP256R1()))}
 
