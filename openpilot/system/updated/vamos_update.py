@@ -6,7 +6,6 @@ from pathlib import Path
 
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 
 VAMOS_UPDATE = Path("/usr/bin/vamos-update")
 
@@ -60,18 +59,9 @@ def prepare_vamos_update(overlay_merged: str, current_version: str,
   # been written and verified. Trial activation happens only after finalization.
   set_consistent_flag(False)
   cloudlog.info(f"Beginning background installation for vamOS {updated_version}")
-  set_offroad_alert("Offroad_NeosUpdate", True)
-
-  try:
-    run_vamos_update(["sudo", "/usr/bin/vamos-update", "install", str(manifest_path), "--defer-activation"])
-  except Exception:
-    set_offroad_alert("Offroad_NeosUpdate", False)
-    raise
+  run_vamos_update(["sudo", "/usr/bin/vamos-update", "install", str(manifest_path), "--defer-activation"])
   return True
 
 
 def activate_vamos_update() -> None:
-  try:
-    subprocess.check_output(["sudo", "/usr/bin/vamos-update", "activate"], stderr=subprocess.STDOUT, encoding="utf8")
-  finally:
-    set_offroad_alert("Offroad_NeosUpdate", False)
+  subprocess.check_output(["sudo", "/usr/bin/vamos-update", "activate"], stderr=subprocess.STDOUT, encoding="utf8")
