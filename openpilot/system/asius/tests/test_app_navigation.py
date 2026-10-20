@@ -36,6 +36,8 @@ def test_navigation_rpc_uses_upstream_params(tmp_path, monkeypatch):
       engine = BlePeerEngine.__new__(BlePeerEngine)
       engine.rpc_active = 0
       engine.send_body = AsyncMock()
+      engine.peer_devices = {'test': '/test'}
+      engine.sessions = {'/test': MagicMock(session_id=lambda _peer: 'test-session')}
       asyncio.run(engine.handle_rpc('test', {'id': 4, 'method': 'setNavDestination', 'params': place}))
       assert engine.send_body.call_args.args[1]['result']['success'] == 1
       asyncio.run(engine.handle_rpc('test', {'id': 5, 'method': 'getRecentNavDestinations'}))

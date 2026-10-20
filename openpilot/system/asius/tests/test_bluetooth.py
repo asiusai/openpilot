@@ -207,6 +207,43 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
       await self.deliver({'type': 'ble-session', 'requestId': 'still-first'})
       self.assertEqual(self.response()['requestId'], 'still-first')
 
+  async def test_reconnect_starts_a_full_status_baseline(self):
+    await self.establish()
+    frames, stop = [], asyncio.Event()
+    self.engine.sm, self.engine.params = MagicMock(), MagicMock()
+
+    async def capture(_peer, body, **_kwargs):
+      if body.get('name') == 'liveState':
+        frames.append(body['payload'])
+      return True
+
+    async def advance(_seconds):
+      if len(frames) == 1:
+        await self.establish()
+        await self.deliver({'type': 'ble-session', 'requestId': 'reconnected'})
+      else:
+        stop.set()
+
+    with patch('openpilot.system.asius.bluetoothd.load_authorized_peers', return_value={self.client.public_key: {}}):
+      await self.deliver({'type': 'ble-session', 'requestId': 'first'})
+      with patch.object(self.engine, 'send_body', side_effect=capture), \
+           patch('openpilot.system.asius.bluetoothd.methods.LiveStateSampler') as sampler, \
+           patch('openpilot.system.asius.bluetoothd.asyncio.sleep', side_effect=advance):
+        sampler.return_value.sample.return_value = {'speed': 42}
+        await self.engine.live_state(stop)
+    self.assertEqual(len(frames), 2)
+    self.assertTrue(all(frame['full'] for frame in frames))
+    self.assertNotEqual(frames[0]['stream'], frames[1]['stream'])
+
+  async def test_reply_cannot_cross_a_reconnect(self):
+    await self.establish()
+    with patch('openpilot.system.asius.bluetoothd.load_authorized_peers', return_value={self.client.public_key: {}}):
+      await self.deliver({'type': 'ble-session', 'requestId': 'first'})
+      old = self.engine.sessions['/phone'].session_id(self.client.public_key)
+      await self.establish()
+      await self.deliver({'type': 'ble-session', 'requestId': 'second'})
+      self.assertFalse(await self.engine.send_body(self.client.public_key, {'result': 'old'}, expected_sid=old))
+
   async def test_agent_rejects_just_works(self):
     agent = PairingAgent(MagicMock())
     with self.assertRaises(DBusError):

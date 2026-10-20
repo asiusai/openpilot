@@ -187,6 +187,8 @@ def test_bridge_replies_do_not_wait_for_busy_search_slots(monkeypatch):
   engine = BlePeerEngine.__new__(BlePeerEngine)
   engine.rpc_active = 4
   engine.send_body = AsyncMock()
+  engine.peer_devices = {'phone': '/test'}
+  engine.sessions = {'/test': MagicMock(session_id=lambda _peer: 'test-session')}
   asyncio.run(engine.handle_rpc("phone", {"id": 1, "method": "claimNavigationRequest", "params": {"requestId": "a" * 32}}))
   assert engine.send_body.call_args.args[1]["result"] == {"accepted": False}
 
@@ -201,8 +203,9 @@ def test_relay_search_keeps_receiver_free(monkeypatch):
     return {}
 
   monkeypatch.setattr(methods, "dispatcher_for_peer", lambda peer: {"searchNavigation": search, "writeNavigationResponse": lambda: complete.set()})
-  monkeypatch.setattr(methods, "send_peer_payload", MagicMock())
-  methods.handle_rpc("phone", {"id": 1, "method": "searchNavigation"})
+  room = MagicMock()
+  monkeypatch.setattr(methods, "relay_room", room)
+  methods.handle_rpc("phone", {"id": 1, "method": "searchNavigation"}, "connection", "session")
   assert waiting.wait(1)
-  methods.handle_rpc("phone", {"id": 2, "method": "writeNavigationResponse"})
+  methods.handle_rpc("phone", {"id": 2, "method": "writeNavigationResponse"}, "connection", "session")
   assert complete.is_set()
