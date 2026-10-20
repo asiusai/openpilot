@@ -26,9 +26,10 @@ class FakeSubMaster:
 
 def healthy_sm(*, started=True):
   sm = FakeSubMaster()
-  sm.set('deviceState', SimpleNamespace(started=started))
+  sm.set('deviceState', SimpleNamespace(started=started, thermalStatus=log.DeviceState.ThermalStatus.ok))
   sm.set('extrinsicsCalibration', SimpleNamespace(calStatus=log.ExtrinsicsCalibration.Status.calibrated, calPerc=100))
   sm.set('managerState', SimpleNamespace(processes=[]))
+  sm.set('onroadEvents', [])
   sm.set('pandaStates', [SimpleNamespace(
     pandaType=log.PandaState.PandaType.tres,
     faultStatus=None,
@@ -77,6 +78,61 @@ def test_missing_selfdrive_state_is_ignored_when_offroad():
   sm.seen['selfdriveState'] = False
   sm.alive['selfdriveState'] = False
   sm['deviceState'].started = False
+  assert ledd.led_state(sm) == ledd.BLUE
+
+
+@pytest.mark.parametrize('event', sorted(ledd.SYSTEM_FAULT_EVENTS))
+@pytest.mark.parametrize('active', [False, True])
+def test_system_fault_is_red_even_with_another_screen_alert(event, active):
+  sm = healthy_sm()
+  sm['selfdriveState'].active = active
+  sm['selfdriveState'].alertType = 'wrongGear/noEntry'
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name=event)])
+  assert ledd.led_state(sm, now=0.) == ledd.RED
+  assert ledd.led_state(sm, now=0.5) == (ledd.OFF if active else ledd.RED)
+
+  sm.set('onroadEvents', [])
+  assert ledd.led_state(sm, now=0.) == (ledd.GREEN if active else ledd.BLUE)
+
+
+@pytest.mark.parametrize('service', ['onroadEvents', 'deviceState'])
+@pytest.mark.parametrize('field', ['seen', 'alive', 'valid'])
+def test_camera_fault_requires_current_valid_state(service, field):
+  sm = healthy_sm()
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name='cameraMalfunction')])
+  getattr(sm, field)[service] = False
+  assert ledd.led_state(sm) == ledd.BLUE
+
+
+def test_camera_fault_is_ignored_offroad():
+  sm = healthy_sm(started=False)
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name='cameraMalfunction')])
+  assert ledd.led_state(sm) == ledd.BLUE
+
+
+@pytest.mark.parametrize('started', [False, True])
+@pytest.mark.parametrize('thermal_status', ['overheated', 'critical'])
+def test_overheating_is_red_including_startup_cooling(started, thermal_status):
+  sm = healthy_sm(started=started)
+  sm['deviceState'].thermalStatus = getattr(log.DeviceState.ThermalStatus, thermal_status)
+  assert ledd.led_state(sm) == ledd.RED
+  sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.ok
+  assert ledd.led_state(sm) == ledd.BLUE
+
+
+@pytest.mark.parametrize('field', ['seen', 'alive', 'valid'])
+def test_overheating_requires_current_valid_state(field):
+  sm = healthy_sm()
+  sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.critical
+  getattr(sm, field)['deviceState'] = False
+  assert ledd.led_state(sm) == ledd.BLUE
+
+
+@pytest.mark.parametrize('event', ['wrongGear', 'wrongCarMode', 'pcmDisable', 'pedalPressed', 'reverseGear',
+                                 'doorOpen', 'seatbeltNotLatched', 'driverUnresponsive1', 'startup', 'userBookmark'])
+def test_normal_events_do_not_show_a_system_fault(event):
+  sm = healthy_sm()
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name=event)])
   assert ledd.led_state(sm) == ledd.BLUE
 
 
@@ -227,7 +283,7 @@ def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
   monkeypatch.setattr(ledd, 'pairing_mode_active', lambda: True)
   monkeypatch.setattr(ledd, 'read_confirmation', lambda **kwargs: {'created': 10.})
   for now, lit in [(10., True), (10.3, False), (10.5, True), (10.9, False), (12., True)]:
-    monkeypatch.setattr(ledd.time, 'monotonic', lambda: now)
+    monkeypatch.setattr(ledd.time, 'monotonic', lambda now=now: now)
     channels = ledd.pairing_led_channels(26)
     assert channels[1] == [0] * 9
     assert channels[2] == channels[3]
