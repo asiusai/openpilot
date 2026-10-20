@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -145,8 +145,8 @@ def test_gps_methods_only_exist_on_bluetooth_dispatcher(gps, monkeypatch):
   engine.dongle_id = 'device'
   engine.active_peers = {}
   engine.send_body = AsyncMock()
-  engine.sessions = {}
-  engine.peer_devices = {}
+  engine.sessions = {'/phone': MagicMock(session_id=lambda _peer: 'test-session')}
+  engine.peer_devices = {'app': '/phone'}
   monkeypatch.setattr(bluetoothd, 'load_authorized_peers', dict)
   with pytest.raises(PermissionError):
     asyncio.run(engine.handle_authenticated('app', {'id': 'rpc', 'method': 'startPhoneGps'}, '/phone'))

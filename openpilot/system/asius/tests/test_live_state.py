@@ -138,6 +138,8 @@ def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_p
   engine = BlePeerEngine.__new__(BlePeerEngine)
   engine.rpc_active = 0
   engine.send_body = AsyncMock()
+  engine.peer_devices = {'app': '/test'}
+  engine.sessions = {'/test': Mock(session_id=lambda _peer: 'test-session')}
   params = Mock()
   params.get_bool.return_value = True
   monkeypatch.setattr(methods, 'Params', lambda: params)

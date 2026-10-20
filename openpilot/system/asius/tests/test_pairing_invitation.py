@@ -33,3 +33,16 @@ def test_concurrent_issuers_share_the_pending_limit(tmp_path):
     issued = list(workers.map(attempt, range(80)))
   assert len([token for token in issued if token]) == 32
   assert len(list(tmp_path.glob('*.json'))) == 32
+
+
+def test_admission_hash_never_consumes_or_grants_the_invitation(tmp_path):
+  import hashlib
+  token = invitation.issue('device', 30, tmp_path, 100)
+  digest = hashlib.sha256(token.encode()).hexdigest()
+  assert invitation.permits_admission(digest, 'device', tmp_path, 101)
+  assert invitation.permits_admission(digest, 'device', tmp_path, 102)
+  assert not invitation.permits_admission(token, 'device', tmp_path, 102)
+  assert not invitation.permits_admission(digest, 'another-device', tmp_path, 102)
+  assert not invitation.permits_admission(digest, 'device', tmp_path, 130)
+  assert invitation.consume(token, 'device', tmp_path, 103)
+  assert not invitation.permits_admission(digest, 'device', tmp_path, 104)

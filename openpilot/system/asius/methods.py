@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import base64
 import json
-import queue
 import subprocess
 import tempfile
 import threading
 import time
 from pathlib import Path
-from queue import Queue
 from typing import Any, Protocol, cast
 from collections.abc import Callable
 
@@ -24,7 +22,8 @@ from openpilot.system.asius.clock import ClockChallenges
 from openpilot.system.asius.fork import FORK
 from openpilot.system.asius.access_policy import check_param_write, ignition_state, require_ignition_off
 from openpilot.system.asius.identity import get_device_public_key, get_device_private_key
-from openpilot.system.asius.session import SessionChanged, SecureSession, wrap_peer, unwrap_peer
+from openpilot.system.asius.relay_room import RelayRoom
+from openpilot.system.asius.pairing_invitation import permits_admission
 from openpilot.system.asius.device_name import device_hostname
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.basedir import BASEDIR
@@ -43,7 +42,6 @@ from openpilot.system.asius.relayd import (
   verify_pair_token,
 )
 from openpilot.system.asius.onboarding import Onboarding, setup_status
-from openpilot.system.asius.live_state import StateEncoder
 from openpilot.system.asius.navigation_route import getNavigationRoute, getNavigationState
 from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination, searchNavigation, retrieveNavigationLocation
 from openpilot.system.asius.navigation_preview import previewNavigation, getNavigationPreview
@@ -179,17 +177,14 @@ for method in (
 ):
   dispatcher.add_method(method)
 
-send_queue: Queue[str | tuple] = queue.Queue()
-
-
-relay_session = None
+relay_room = None
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
-  global relay_session
-  relay_session = SecureSession(get_device_private_key(), "web")
-  while not send_queue.empty():
-    send_queue.get_nowait()
+  global relay_room
+  owner = Params().get("DongleId")
+  relay_room = RelayRoom(get_device_private_key(), load_authorized_peers,
+                         lambda admission: permits_admission(admission, owner), handle_peer_message)
   end_event = threading.Event()
 
   threads = [
@@ -212,7 +207,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
     for thread in threads:
       cloudlog.debug(f"relay.joining {thread.name}")
       thread.join()
-    relay_session.clear()
+    relay_room.clear()
 
 
 @dispatcher.add_method
@@ -1012,18 +1007,8 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
 
 
 def send_peer_payload(to: str, body: dict) -> None:
-  dongle_id = Params().get("DongleId")
-  peer = load_authorized_peers().get(to)
-  if dongle_id is None or peer is None:
-    raise Exception("unknown Athena peer")
-  recipient = peer.get("publicKey")
-  if not isinstance(recipient, str):
-    raise Exception("invalid Athena peer")
-
-  if relay_session is not None and relay_session.ready(recipient):
-    # Allocate counters at the socket writer, after all queued and live messages.
-    # Session identity prevents delayed RPC replies from crossing a reconnect.
-    send_queue.put_nowait((relay_session, relay_session.session_id(recipient), recipient, json.dumps(body)))
+  if relay_room is not None:
+    relay_room.send(to, body)
 
 
 terminal_manager = TerminalManager(send_peer_payload)
@@ -1058,22 +1043,14 @@ class LiveStateSampler:
             "navigation": navigation, "navigationRequests": NavigationRequests(self.params).pending(), "ignition": ignition_state()}
 
 
-live_state_pending = {}
-live_state_lock = threading.Lock()
-
-
 def live_state_handler(end_event: threading.Event) -> None:
   sampler = LiveStateSampler(messaging.SubMaster(LIVE_STATE_SERVICES), Params())
   while not end_event.is_set():
     started = time.monotonic()
     try:
-      peers = load_authorized_peers()
-      if peers:
-        snapshot = sampler.sample()
-        # At most one unsent snapshot per peer. Never queue old vehicle positions.
-        with live_state_lock:
-          live_state_pending.clear()
-          live_state_pending.update(dict.fromkeys(peers, snapshot))
+      room = relay_room
+      if room is not None and room.has_subscribers():
+        room.publish(sampler.sample())
     except Exception:
       cloudlog.exception("relay.live_state_handler.exception")
     end_event.wait(max(0., LIVE_STATE_INTERVAL_S - (time.monotonic() - started)))
@@ -1094,88 +1071,53 @@ def dispatcher_for_peer(sender: str):
 navigation_rpc_slots = threading.BoundedSemaphore(4)
 
 
-def handle_rpc(sender: str, body: dict) -> None:
+def handle_rpc(sender: str, body: dict, connection: str, sid: str) -> None:
+  room = relay_room
+  if room is None:
+    return
   if body.get("method") not in SEARCH_METHODS:
-    send_peer_payload(sender, json.loads(handle(body, dispatcher_for_peer(sender))))
+    room.send(connection, json.loads(handle(body, dispatcher_for_peer(sender))), sid)
     return
   # Search can wait for a response over this same socket. Keep its receiver free.
   if not navigation_rpc_slots.acquire(blocking=False):
-    send_peer_payload(sender, {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32000, "message": "Navigation is busy"}})
+    room.send(connection, {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32000, "message": "Navigation is busy"}}, sid)
     return
-  session = relay_session
-  sid = session.session_id(sender) if session is not None else None
 
   def run():
     try:
-      response = json.loads(handle(body, dispatcher_for_peer(sender)))
-      if session is relay_session and (session is None or session.session_id(sender) == sid):
-        send_peer_payload(sender, response)
+      room.send(connection, json.loads(handle(body, dispatcher_for_peer(sender))), sid)
     finally:
       navigation_rpc_slots.release()
   threading.Thread(target=run, daemon=True, name="navigation-search").start()
 
 
-def handle_peer_message(data: str) -> bool:
-  sender = None
-  session = relay_session
+def handle_peer_message(connection: str, sender: str, body: dict, sid: str) -> None:
+  room = relay_room
+  if room is None:
+    return
   try:
     dongle_id = Params().get("DongleId")
-    if dongle_id is None:
-      return True
-
-    if relay_session is None:
-      return True
-    result = session.receive(unwrap_peer(data, dongle_id))
-    sender = result['peer']
-    if 'reply' in result:
-      send_queue.put_nowait(wrap_peer(result['reply']))
-    if 'text' not in result:
-      return True
-    body = json.loads(result['text'])
-    if not isinstance(body, dict):
-      raise ValueError('Invalid session body')
-
     if body.get("type") == "pair-request":
-      if body.get("publicKey") != sender:
-        raise Exception("pair request sender mismatch")
-      if not verify_pair_token(body.get("pairToken"), dongle_id):
-        raise Exception("invalid pair token")
-      authorize_peer(body["publicKey"], body.get("storagePublicKey"), label=body.get("label") if isinstance(body.get("label"), str) else None)
-      cloudlog.event("relay.websocket.paired", sender=sender)
-      send_peer_payload(sender, {
-        "type": "pair-response",
-        "publicKey": dongle_id,
-        "device-type": HARDWARE.get_device_type(),
-        "name": getDeviceName(),
-      })
-      return True
-
+      if body.get("publicKey") != sender or not verify_pair_token(body.get("pairToken"), dongle_id):
+        raise ValueError("Invalid pairing invitation")
+      authorize_peer(sender, body.get("storagePublicKey"), label=body.get("label") if isinstance(body.get("label"), str) else None)
+      room.send(connection, {"type": "pair-response", "publicKey": dongle_id,
+                            "device-type": HARDWARE.get_device_type(), "name": getDeviceName()}, sid)
+      return
     if sender not in load_authorized_peers():
-      cloudlog.event("relay.websocket.unauthorized", sender=sender, error=True)
-      return True
-
+      return
     if body.get("type") == "event":
       if body.get("name") == "terminal":
-        terminal_manager.handle(sender, body.get("payload"))
-      else:
-        cloudlog.event("relay.websocket.event", sender=sender, name=body.get("name"), payload=body.get("payload"))
+        terminal_manager.handle(connection, body.get("payload"))
     elif body.get("method"):
-      handle_rpc(sender, body)
-    return True
+      handle_rpc(sender, body, connection, sid)
   except Exception:
     cloudlog.exception("relay.websocket.handle_peer_message_failed")
-    return True
-  finally:
-    if sender and session and sender not in load_authorized_peers():
-      # Keep the unconfirmed candidate for the handshake, but no active unauthorized key.
-      if session.ready(sender):
-        session.forget(sender)
 
 
 def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
   last_ping = int(time.monotonic() * 1e9)
   last_ping_sent = 0.0
-  received_sequences: dict[tuple[str, str], int] = {}
   while not end_event.is_set():
     try:
       # Cloudflare's hibernating relay answers control pings without an object timer.
@@ -1189,15 +1131,11 @@ def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
           data = data.decode("utf-8")
         if isinstance(data, str):
           message = json.loads(data)
-          if message.get("type") == "peer":
-            session, sequence = message.get("relaySession"), message.get("sequence")
-            key = (message.get("from"), session)
-            if not isinstance(session, str) or type(sequence) is not int or sequence <= received_sequences.get(key, 0):
-              continue
-            if len(received_sequences) >= 1024 and key not in received_sequences:
-              received_sequences.pop(next(iter(received_sequences)))
-            received_sequences[key] = sequence
-          handle_peer_message(data)
+          if relay_room is not None:
+            try:
+              relay_room.receive(message)
+            except (ValueError, KeyError, TypeError):
+              cloudlog.warning("Rejected invalid encrypted relay message")
       elif opcode in (ABNF.OPCODE_PING, ABNF.OPCODE_PONG):
         last_ping = int(time.monotonic() * 1e9)
         Params().put("LastAthenaPingTime", last_ping, block=True)
@@ -1212,46 +1150,17 @@ def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
 
 
 def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
-  sequence = 0
-  encoders = {}
   while not end_event.is_set():
     try:
-      try:
-        data = send_queue.get(timeout=0.02)
-        if isinstance(data, tuple):
-          session, sid, peer, text = data
-          if session is not relay_session or session.session_id(peer) != sid or peer not in load_authorized_peers():
-            continue
-          data = wrap_peer(session.encrypt(peer, text, expected_sid=sid))
-      except queue.Empty:
-        with live_state_lock:
-          if not live_state_pending:
-            continue
-          peer = next(iter(live_state_pending))
-          snapshot = live_state_pending.pop(peer)
-        if peer not in load_authorized_peers() or relay_session is None or not relay_session.ready(peer):
-          continue
-        session_id = relay_session.session_id(peer)
-        if peer not in encoders or encoders[peer][0] != session_id:
-          encoders[peer] = (session_id, StateEncoder())
-        payload = encoders[peer][1].encode(snapshot)
-        data = wrap_peer(relay_session.encrypt(peer, json.dumps({"type": "event", "name": "liveState", "payload": payload}), expected_sid=session_id))
-      try:
-        message = json.loads(data)
-        if message.get("type") != "peer":
-          continue
-        sequence += 1
-        message["sequence"] = sequence
-        data = json.dumps(message)
-      except Exception:
+      data = relay_room.next_message() if relay_room is not None else None
+      if data is None:
+        end_event.wait(0.01)
         continue
       for i in range(0, len(data), WS_FRAME_SIZE):
         frame = data[i:i+WS_FRAME_SIZE]
         last = i + WS_FRAME_SIZE >= len(data)
         opcode = ABNF.OPCODE_TEXT if i == 0 else ABNF.OPCODE_CONT
         ws.send_frame(ABNF.create_frame(frame, opcode, last))
-    except (queue.Empty, SessionChanged):
-      pass
     except Exception:
       cloudlog.exception("relayd.ws_send.exception")
       end_event.set()

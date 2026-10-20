@@ -84,6 +84,8 @@ def test_selected_params_read_only_requested_values(tmp_path, monkeypatch, trans
     engine = BlePeerEngine.__new__(BlePeerEngine)
     engine.rpc_active = 0
     engine.send_body = AsyncMock()
+    engine.peer_devices = {'test': '/test'}
+    engine.sessions = {'/test': Mock(session_id=lambda _peer: 'test-session')}
     asyncio.run(engine.handle_rpc('test', request))
     response = engine.send_body.call_args.args[1]
   else:

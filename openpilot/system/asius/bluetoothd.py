@@ -9,6 +9,7 @@ import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from openpilot.system.asius.live_state import StateEncoder
 from typing import Annotated, Any
 
 from dbus_fast import BusType, DBusError, Message, MessageType, PropertyAccess, Variant
@@ -446,11 +447,13 @@ class BlePeerEngine:
     if self.approvals:
       self.approvals.cancel(device)
 
-  async def send_body(self, recipient: str, body: dict[str, Any], initial: bool = False) -> bool:
+  async def send_body(self, recipient: str, body: dict[str, Any], initial: bool = False, expected_sid: str | None = None) -> bool:
     session = self.sessions.get(self.peer_devices.get(recipient, ''))
     if session is None or not session.ready(recipient):
       return False
-    return await self.tx.send_text(wrap_peer(session.encrypt(recipient, json.dumps(body))), initial=initial)
+    if expected_sid is not None and (session.session_id(recipient) != expected_sid or recipient not in load_authorized_peers()):
+      return False
+    return await self.tx.send_text(wrap_peer(session.encrypt(recipient, json.dumps(body), expected_sid=expected_sid)), initial=initial)
 
   async def send_error(self, recipient: str, message: str, request_id: Any = None) -> None:
     await self.send_body(recipient, {"type": "ble-error", "requestId": request_id, "error": message})
@@ -501,23 +504,31 @@ class BlePeerEngine:
     cloudlog.event("asius.bluetooth.paired", sender=sender, request_id=request_id)
 
   async def handle_rpc(self, sender: str, body: dict[str, Any]) -> None:
+    session = self.sessions.get(self.peer_devices.get(sender, ''))
+    sid = session.session_id(sender) if session else None
+    if sid is None:
+      return
+
+    async def respond(response):
+      await self.send_body(sender, response, expected_sid=sid)
+
     if ASIUS_HARDWARE and body.get("method") in PHONE_GPS_METHODS:
       # The publisher stays on the Bluetooth event loop, never the relay dispatcher.
       response = json.loads(methods.handle(body, self.phone_gps.dispatcher(sender)))
-      await self.send_body(sender, response)
+      await respond(response)
       return
     if body.get("method") in methods.NETWORK_ONLY_METHODS:
-      await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
+      await respond({"jsonrpc": "2.0", "id": body.get("id"),
                                     "error": {"code": -32000, "message": "Live video requires a network connection"}})
       return
     from openpilot.system.asius.navigation_proxy import BRIDGE_METHODS
     if body.get("method") in BRIDGE_METHODS:
       # A search RPC may occupy each ordinary slot while waiting for these chunks.
       response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
-      await self.send_body(sender, response)
+      await respond(response)
       return
     if self.rpc_active >= 4:
-      await self.send_body(sender, {"jsonrpc": "2.0", "id": body.get("id"),
+      await respond({"jsonrpc": "2.0", "id": body.get("id"),
                                     "error": {"code": -32000, "message": "Device is busy. Try again."}})
       return
     self.rpc_active += 1
@@ -525,7 +536,7 @@ class BlePeerEngine:
       response = await asyncio.to_thread(lambda: json.loads(methods.handle(body, methods.dispatcher_for_peer(sender))))
     finally:
       self.rpc_active -= 1
-    await self.send_body(sender, response)
+    await respond(response)
 
   async def handle_encrypted(self, payload: bytes, device: str) -> None:
     if self.dongle_id is None:
@@ -641,7 +652,13 @@ class BlePeerEngine:
           snapshot = sampler.sample()
           for peer in list(self.active_peers):
             if peer in load_authorized_peers():
-              await self.send_body(peer, {"type": "event", "name": "liveState", "payload": encoders.setdefault(peer, methods.StateEncoder()).encode(snapshot)})
+              session = self.sessions.get(self.peer_devices.get(peer, ''))
+              sid = session.session_id(peer) if session else None
+              if sid is None:
+                continue
+              if peer not in encoders or encoders[peer][0] != sid:
+                encoders[peer] = (sid, StateEncoder())
+              await self.send_body(peer, {"type": "event", "name": "liveState", "payload": encoders[peer][1].encode(snapshot)})
       except Exception:
         cloudlog.exception("asius.bluetooth.live_state_failed")
       encoders = {peer: encoder for peer, encoder in encoders.items() if peer in self.active_peers}

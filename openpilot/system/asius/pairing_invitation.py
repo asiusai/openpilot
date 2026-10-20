@@ -1,6 +1,8 @@
 """Single-use invitations shared by relay and Bluetooth processes through tmpfs."""
 from contextlib import contextmanager
 import fcntl
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -64,3 +66,20 @@ def consume(token_id: str, recipient: str, root: Path = ROOT, now: float | None 
     return value['recipient'] == recipient and value['created'] <= now < value['expires'] <= value['created'] + 300
   except (OSError, ValueError, KeyError, TypeError):
     return False
+
+
+def permits_admission(admission: str, recipient: str, root: Path = ROOT, now: float | None = None) -> bool:
+  """A hash permits a pairing handshake. Only the encrypted full invitation grants access."""
+  if not isinstance(admission, str) or not re.fullmatch('[0-9a-f]{64}', admission):
+    return False
+  now = time.monotonic() if now is None else now
+  with locked(root):
+    for path in root.glob('*.json'):
+      if not hmac.compare_digest(hashlib.sha256(path.stem.encode()).hexdigest(), admission):
+        continue
+      try:
+        value = json.loads(path.read_text())
+        return value['recipient'] == recipient and value['created'] <= now < value['expires'] <= value['created'] + 300
+      except (OSError, ValueError, KeyError, TypeError):
+        return False
+  return False

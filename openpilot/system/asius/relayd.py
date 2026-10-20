@@ -148,7 +148,7 @@ def main(exit_event: threading.Event | None = None):
       if conn_start is None:
         conn_start = time.monotonic()
 
-      ws_uri = methods.RELAY_HOST + "/ws/v2/" + dongle_id
+      ws_uri = methods.RELAY_HOST + "/room/v1/" + dongle_id + "/" + dongle_id
       cloudlog.event("relay.main.connecting_ws", ws_uri=ws_uri, retries=conn_retries)
       tls = ssl.create_default_context()
       ws = create_connection(ws_uri,
@@ -158,12 +158,12 @@ def main(exit_event: threading.Event | None = None):
       challenge = json.loads(ws.recv())
       if challenge.get("type") != "challenge" or not isinstance(challenge.get("challenge"), str):
         raise ValueError("relay did not send an authentication challenge")
-      proof = f"asius-relay-auth-v1\n{dongle_id}\n{challenge['challenge']}".encode()
+      proof = f"asius-room-auth-v1\n{dongle_id}\n{dongle_id}\n{challenge['challenge']}\n".encode()
       signature = base64url_encode(get_device_private_key().sign(proof))
       ws.send(json.dumps({"type": "authenticate", "signature": signature}))
       if json.loads(ws.recv()).get("type") != "ready":
         raise ValueError("relay authentication failed")
-      cloudlog.event("relay.main.connected_ws", ws_uri=methods.RELAY_HOST + "/ws/v2/" + dongle_id, retries=conn_retries,
+      cloudlog.event("relay.main.connected_ws", ws_uri=methods.RELAY_HOST + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,
                      duration=time.monotonic() - conn_start)
       conn_start = None
 
