@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openpilot.common.params import Params
+from openpilot.common.params import Params, ParamKeyFlag
 from openpilot.system.asius.param_editor import CHUNK_BYTES, ParameterEditor, decode_value, encode_value
 
 
@@ -147,3 +147,25 @@ def test_actual_device_registry(tmp_path):
   assert len(names) == len(params.all_keys())
   write(api, 'IsMetric', 'true')
   assert params.get_bool('IsMetric')
+
+
+def test_camera_mode_toggle(tmp_path, monkeypatch):
+  params = Params(str(tmp_path))
+  api = ParameterEditor(set(), lambda: params)
+  key = 'CameraRaw12Enabled'
+  monkeypatch.setattr('openpilot.system.asius.access_policy.ignition_state', lambda: False)
+  initial = entry(api, key)
+  assert initial['defaultValue'] == 'true' and initial['requiresIgnitionOff']
+  write(api, key, 'false')
+  params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+  assert Params(str(tmp_path)).get(key) is False
+  monkeypatch.setattr('openpilot.system.asius.access_policy.ignition_state', lambda: True)
+  with pytest.raises(PermissionError):
+    write(api, key, 'true')
+  assert params.get(key) is False
+  monkeypatch.setattr('openpilot.system.asius.access_policy.ignition_state', lambda: False)
+  write(api, key, 'true')
+  assert params.get(key) is True
+  write(api, key, '', clear=True)
+  restored = entry(api, key)
+  assert not restored['isSet'] and restored['defaultValue'] == 'true'
