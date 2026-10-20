@@ -61,11 +61,13 @@ source "$SOURCE_DIR/tools/release/setup_lfs.sh"
 
 # use the full CPU available for speeding up the build.
 # openpilot resets the CPU frequencies when test_onroad.py runs below.
-for policy in /sys/devices/system/cpu/cpufreq/policy*; do
-  [ -d "$policy" ] || continue
-  hardware_max="$(cat "$policy/cpuinfo_max_freq")"
-  echo "$hardware_max" | sudo tee "$policy/scaling_max_freq" >/dev/null
-done
+if [ -z "$ARTIFACTS_DIR" ]; then
+  for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+    [ -d "$policy" ] || continue
+    hardware_max="$(cat "$policy/cpuinfo_max_freq")"
+    echo "$hardware_max" | sudo tee "$policy/scaling_max_freq" >/dev/null
+  done
+fi
 
 scons ${SCONS_JOBS:+-j"$SCONS_JOBS"}
 
