@@ -6,7 +6,7 @@ from openpilot.cereal import log, messaging
 
 IGNITION_RESTRICTED_PARAMS = {
   'SshEnabled', 'AdbEnabled', 'JoystickDebugMode', 'LongitudinalManeuverMode', 'LateralManeuverMode',
-  'CameraDebugExpGain', 'CameraDebugExpTime', 'UpdaterTargetBranch', 'DoUninstall', 'FactoryReset', 'DoFactoryReset',
+  'CameraDebugExpGain', 'CameraDebugExpTime', 'CameraRaw12Enabled', 'UpdaterTargetBranch', 'DoUninstall', 'FactoryReset', 'DoFactoryReset',
 }
 
 _lock = threading.Lock()
