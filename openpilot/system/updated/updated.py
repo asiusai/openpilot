@@ -410,7 +410,6 @@ class Updater:
       self.params.put("UpdaterProgress", 99, block=True)
     finalize_update(vamos_update_pending)
     if vamos_update_pending:
-      set_offroad_alert("Offroad_NeosUpdate", False)
       self.params.put("UpdaterProgress", 100, block=True)
     cloudlog.info("finalize success!")
 

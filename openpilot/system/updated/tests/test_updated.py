@@ -195,3 +195,19 @@ def test_install_rejects_changed_checkout(tmp_path, monkeypatch):
   with pytest.raises(RuntimeError, match='checkout changed'):
     install.request_install(str(tmp_path))
   assert not (finalized / '.install_requested').exists()
+
+
+def test_vamos_install_uses_progress_without_obsolete_alert(tmp_path, monkeypatch):
+  from openpilot.system.updated import vamos_update
+  manifest = tmp_path / 'openpilot/system/hardware/v0/vamos.json'
+  manifest.parent.mkdir(parents=True)
+  manifest.write_text('{"version": "18.7"}')
+  run = Mock(return_value='')
+  monkeypatch.setattr(vamos_update, 'run_vamos_update', run)
+  consistent = Mock()
+  assert vamos_update.prepare_vamos_update(str(tmp_path), '18.6', consistent)
+  consistent.assert_called_once_with(False)
+  run.assert_called_once_with(['sudo', '/usr/bin/vamos-update', 'install', str(manifest), '--defer-activation'])
+  run.reset_mock()
+  assert not vamos_update.prepare_vamos_update(str(tmp_path), '18.7', consistent)
+  run.assert_not_called()
