@@ -68,7 +68,9 @@ def package(source: Path, root: Path, output: Path) -> dict:
   (root / "build.json").write_text(json.dumps(metadata, indent=2) + "\n")
   git(root, "remote", "add", "origin", metadata["openpilot"]["git_origin"])
   git(root, "add", "--force", ".")
-  git(root, "-c", "user.name=Asius CI", "-c", "user.email=ci@asius.ai",
+  # Do not race automatic repacking against the explicit cleanup below.
+  git(root, "-c", "maintenance.auto=false", "-c", "gc.auto=0",
+      "-c", "user.name=Asius CI", "-c", "user.email=ci@asius.ai",
       "commit", "--amend", "--no-gpg-sign", "-m", f"Asius prebuilt from {commit}")
   git(root, "reflog", "expire", "--expire=now", "--all")
   git(root, "gc", "--prune=now")
