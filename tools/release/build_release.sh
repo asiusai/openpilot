@@ -37,7 +37,8 @@ if [ -n "$ARTIFACTS_DIR" ]; then
   git init "$BUILD_DIR"
   cd "$BUILD_DIR"
   EMPTY_TREE="$(git hash-object -t tree -w --stdin </dev/null)"
-  git commit-tree "$EMPTY_TREE" -m "Prebuilt artifact" > .git/HEAD
+  INITIAL_COMMIT="$(git commit-tree "$EMPTY_TREE" -m "Prebuilt artifact")"
+  echo "$INITIAL_COMMIT" > .git/HEAD
 else
   if ! git -C "$SOURCE_DIR" worktree remove --force "$BUILD_DIR" 2>/dev/null; then
     rm -rf "$BUILD_DIR"
