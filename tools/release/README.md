@@ -6,7 +6,11 @@ Run the manual `Asius v0 prebuilt` GitHub Actions workflow from `master`.
 It uses a VamOS ARM64 runner with the `asius-v0-prebuilt` label and a working Adreno GPU.
 Use a dedicated bench runner. The job builds in a temporary directory and preserves `/data/openpilot`.
 It includes Chestnut models, compiled local GPU models, flattened submodules, and one Git commit.
-The artifact uses the normal development Panda firmware. It does not publish a release branch or install software.
+The artifact uses the normal development Panda firmware. It does not install software.
+After the build, a GitHub-hosted job publishes the snapshot to `asiusai/openpilot:master-ci`.
+That branch contains Asius v0 binaries. Keep source development on `master`.
+Each successful publish replaces the previous generated snapshot. The push checks that the branch has not changed concurrently.
+Actions also keeps the archive, checksum, and build report for 14 days.
 The build report records source, OS, dependency lock, model hashes, and sizes.
 Native compilation and model checks do not replace full device and Chestnut validation.
 
