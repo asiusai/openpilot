@@ -41,6 +41,7 @@ from openpilot.system.loggerd.data_upload_queue import (
 )
 from openpilot.system.loggerd.route_summary import summary_path, cloud_path, save_json, recover_counters
 from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep, force_wifi
+from openpilot.system.loggerd.upload_progress import publish_error
 
 UPLOAD_ATTR_VALUE = b"1"
 STATE_PARAM = "CloudUploadState"
@@ -65,6 +66,20 @@ class AsiusUploader(Uploader):
     self.client = client or DataApiClient(self.params.get("CloudHost", return_default=True), self.private_key)
     self.retry_after: dict[str, float] = {}
     self.counter_conflict = None
+    self.policy_retry_after = 0.0
+
+  def defer_cloud_policy(self, error: Exception, path: str = "") -> bool:
+    if not isinstance(error, requests.HTTPError) or error.response is None or error.response.status_code not in (403, 507):
+      return False
+    # Keep requests queued. Recheck after a bounded delay so support approval or
+    # deleting recordings resumes uploads without marking any file as complete.
+    self.policy_retry_after = time.monotonic() + 60
+    try:
+      message = str(error.response.json().get("error", "Cloud uploads are paused"))
+    except (ValueError, AttributeError):
+      message = "Cloud uploads are paused"
+    publish_error(path, message)
+    return True
 
   def list_upload_files(self, metered: bool) -> Iterator[tuple[str, str, str]]:
     # Preview and qlog are automatic on network connections. Viewing a route
@@ -132,6 +147,8 @@ class AsiusUploader(Uploader):
     return True
 
   def next_file_to_upload(self, metered: bool) -> tuple[str, str, str] | None:
+    if getattr(self, "policy_retry_after", 0) > time.monotonic():
+      return None
     automatic = None
     for item in self.list_upload_files(metered):
       route_id = item[1].split("/", 1)[0].rsplit("--", 1)[0]
@@ -188,6 +205,9 @@ class AsiusUploader(Uploader):
       clear_failure(fn)
       return response
     except Exception as error:
+      folder, name = key.split("/", 1)
+      route, segment = folder.rsplit("--", 1)
+      self.defer_cloud_policy(error, f"routes/{route}/{segment}/{name}")
       if isinstance(error, requests.HTTPError) and error.response is not None and error.response.status_code == 410:
         route_id = key.split("/", 1)[0].rsplit("--", 1)[0]
         summary_path(self.root, route_id).with_suffix(".deleted").touch()
@@ -224,7 +244,8 @@ class AsiusUploader(Uploader):
       object_path = "routes/" + key.rsplit("--", 1)[0] + "/" + key.rsplit("--", 1)[1]
       for file in files:
         if file.get("path") == object_path and file.get("uploadedAt") and file.get("sourceSha256") == source_checksum:
-          return response
+          return self.client.request("POST", f"/v1/{self.owner}/uploads/complete",
+                                     {"path": object_path, "checksumSha256": file["checksumSha256"]})
       raise
 
   def _upload_recording(self, key: str, fn: str, *, replace_checksum: str | None = None) -> requests.Response:
@@ -318,12 +339,16 @@ def main(exit_event: threading.Event | None = None) -> None:
         exit_event.wait(5)
       continue
 
+    if uploader.policy_retry_after > time.monotonic():
+      exit_event.wait(min(5, uploader.policy_retry_after - time.monotonic()))
+      continue
     try:
       uploader.sync_access()
       if not uploader.sync_summaries():
         exit_event.wait(2)
         continue
-    except Exception:
+    except Exception as error:
+      uploader.defer_cloud_policy(error)
       cloudlog.exception("data access sync failed")
       if allow_sleep:
         exit_event.wait(backoff + random.uniform(0, backoff))

@@ -6,6 +6,14 @@ from pathlib import Path
 
 STATUS_PATH = Path('/dev/shm/asius-upload-progress.json')
 
+def publish_error(path: str, error: str) -> None:
+  try:
+    temporary = STATUS_PATH.with_suffix(f'.{os.getpid()}.tmp')
+    temporary.write_text(json.dumps({'path': path, 'sent': 0, 'total': 0, 'error': error, 'updated': time.monotonic()}))
+    temporary.replace(STATUS_PATH)
+  except OSError:
+    pass
+
 
 def read_progress():
   try:
