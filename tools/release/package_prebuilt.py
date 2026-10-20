@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the native Asius build without publishing a release branch."""
+"""Package the native Asius build for the master-ci branch."""
 import hashlib
 import json
 import os
@@ -57,7 +57,7 @@ def package(source: Path, root: Path, output: Path) -> dict:
 
   version = re.search(r'COMMA_VERSION\s+"([^"]+)"', (root / "openpilot/common/version.h").read_text())[1]
   metadata = {
-    "channel": "master",
+    "channel": "master-ci",
     "openpilot": {
       "version": version, "release_notes": "", "git_commit": commit,
       "git_origin": "https://github.com/asiusai/openpilot.git",
@@ -72,6 +72,9 @@ def package(source: Path, root: Path, output: Path) -> dict:
   git(root, "-c", "maintenance.auto=false", "-c", "gc.auto=0",
       "-c", "user.name=Asius CI", "-c", "user.email=ci@asius.ai",
       "commit", "--amend", "--no-gpg-sign", "-m", f"Asius prebuilt from {commit}")
+  git(root, "update-ref", "refs/heads/master-ci", "HEAD")
+  git(root, "symbolic-ref", "HEAD", "refs/heads/master-ci")
+  subprocess.run(["bash", str(source / "tools/release/check_file_sizes.sh")], cwd=root, check=True)
   git(root, "reflog", "expire", "--expire=now", "--all")
   git(root, "gc", "--prune=now")
 
@@ -92,7 +95,7 @@ def package(source: Path, root: Path, output: Path) -> dict:
   with archive.open("wb") as destination:
     tar = subprocess.Popen(["tar", "--sort=name", "-cf", "-", "-C", str(root), "."], stdout=subprocess.PIPE)
     assert tar.stdout is not None
-    compressed = subprocess.run(["xz", "-1", "-T2", "--block-size=16MiB"], stdin=tar.stdout, stdout=destination)
+    compressed = subprocess.run(["xz", "-1", "-T0", "--block-size=16MiB"], stdin=tar.stdout, stdout=destination)
     tar.stdout.close()
     if tar.wait() or compressed.returncode:
       raise RuntimeError("Could not create the prebuilt archive")
