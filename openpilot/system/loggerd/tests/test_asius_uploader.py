@@ -212,11 +212,18 @@ def test_completed_upload_retry_does_not_block_the_queue(tmp_path):
     raise requests.HTTPError(response=conflict)
 
   uploader._upload_recording = upload
-  uploader.client = SimpleNamespace(request=lambda method, path: existing)
+  completions = []
+  def request(method, path, body=None):
+    if method == 'POST':
+      completions.append((path, body))
+    return existing
+  uploader.client = SimpleNamespace(request=request)
   existing._content = json.dumps({'files': [{
     'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'sourceSha256': b64url(hashlib.sha256(source.read_bytes()).digest()),
+    'checksumSha256': 'encrypted-checksum',
   }]}).encode()
   assert uploader.do_upload(key, str(source)).status_code == 200
+  assert completions == [('/v1/owner/uploads/complete', {'path': 'routes/00000001--1234567890/0/qlog.zst', 'checksumSha256': 'encrypted-checksum'})]
   existing._content = json.dumps({'files': [{'path': 'routes/00000001--1234567890/0/qlog.zst', 'uploadedAt': 1, 'plaintextLength': 1}]}).encode()
   with pytest.raises(requests.HTTPError):
     uploader.do_upload(key, str(source))
@@ -390,6 +397,38 @@ def test_transient_upload_failure_defers_only_that_file(tmp_path):
   assert uploader.next_file_to_upload(False)[0] == 'qcamera.mp4'
   uploader.retry_after[str(tmp_path / key)] = 0
   assert uploader.next_file_to_upload(False)[0] == 'qlog.zst'
+
+@pytest.mark.parametrize('status', [403, 507])
+def test_cloud_policy_pauses_all_files_and_resumes_without_losing_requests(tmp_path, monkeypatch, status):
+  import requests
+  from openpilot.system.loggerd.data_upload_queue import request_uploads, upload_status
+  from openpilot.system.loggerd import upload_progress
+  monkeypatch.setattr(upload_progress, 'STATUS_PATH', tmp_path / 'progress.json')
+  segment = tmp_path / '00000001--1234567890--0'
+  segment.mkdir()
+  for name in ('qlog.zst', 'qcamera.mp4'):
+    (segment / name).write_bytes(b'recording')
+  key = '00000001--1234567890--0/qlog.zst'
+  request_uploads(tmp_path, [key])
+  uploader = make_policy_uploader(tmp_path)
+
+  def denied(*_):
+    response = requests.Response()
+    response.status_code = status
+    response._content = b'{"error":"Cloud storage policy blocked this upload"}'
+    response.raise_for_status()
+
+  uploader._upload_recording = denied
+  with pytest.raises(requests.HTTPError):
+    uploader.do_upload(key, str(tmp_path / key))
+  assert uploader.next_file_to_upload(False) is None
+  assert upload_status(tmp_path / key)['uploadRequested']
+  assert not upload_status(tmp_path / key)['uploaded']
+  assert upload_progress.read_progress()['error'] == 'Cloud storage policy blocked this upload'
+  assert upload_progress.read_progress()['path'] == 'routes/00000001--1234567890/0/qlog.zst'
+  uploader.policy_retry_after = 0
+  uploader.retry_after[str(tmp_path / key)] = 0
+  assert uploader.next_file_to_upload(False)[1] == key
 
 
 @pytest.mark.parametrize('name,codec', [('qcamera.mp4', 'libx264'), ('qcamera.mp4', 'libx265'), ('fcamera.mp4', 'libx265'),
