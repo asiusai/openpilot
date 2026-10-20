@@ -46,6 +46,8 @@ def validate(root: Path) -> None:
 
 
 def package(source: Path, root: Path, output: Path) -> dict:
+  if root == source or not (root / ".git").is_dir() or not (root / "prebuilt").is_file():
+    raise ValueError("Package a separate prebuilt checkout with its own Git directory")
   validate(root)
   commit = git(source, "rev-parse", "HEAD")
   model_dir = "openpilot/selfdrive/modeld/models"
