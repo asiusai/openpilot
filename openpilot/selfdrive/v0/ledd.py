@@ -19,6 +19,14 @@ CAM_LED_BUSES = (16, 18, 20)
 CAM_LED_STATUS_CAMERAS = (2, 3)
 CAM_LED_RETRY_INTERVAL = 5.
 CAM_LED_SYSFS_ROOT = Path("/sys/class/leds")
+# Read all faults, including those hidden by a higher-priority screen alert.
+SYSTEM_FAULT_EVENTS = {
+  'cameraMalfunction', 'cameraFrameRate', 'modeldLagging', 'bigModelFailed', 'posenetInvalid',
+  'processNotRunning', 'commIssue', 'commIssueAvgFreq', 'selfdrivedLagging', 'controlsMismatch',
+  'sensorDataInvalid', 'locationdTemporaryError', 'locationdPermanentError',
+  'paramsdTemporaryError', 'paramsdPermanentError', 'fanMalfunction', 'overheat', 'lowMemory', 'outOfSpace',
+  'canError', 'canBusMissing', 'relayMalfunction',
+}
 CAM_LED_CHANNELS = (
   ("red", 0), ("green", 0), ("blue", 0),
   ("red", 1), ("green", 1), ("blue", 1),
@@ -334,6 +342,15 @@ def persistent_error(sm) -> bool:
     not selfdrive_state_available(sm)
   ):
     return True
+  if sm.seen['deviceState'] and sm.alive['deviceState'] and sm.valid['deviceState']:
+    if sm['deviceState'].thermalStatus >= log.DeviceState.ThermalStatus.overheated:
+      return True
+    if (
+      sm['deviceState'].started and
+      sm.seen['onroadEvents'] and sm.alive['onroadEvents'] and sm.valid['onroadEvents'] and
+      any(str(event.name) in SYSTEM_FAULT_EVENTS for event in sm['onroadEvents'])
+    ):
+      return True
   if manager_failed(sm) or panda_failed(sm):
     return True
   if time.monotonic() - STARTED_AT < STARTUP_GRACE:
@@ -483,6 +500,7 @@ def main() -> None:
     'deviceState',
     'extrinsicsCalibration',
     'managerState',
+    'onroadEvents',
     'pandaStates',
     'selfdriveState',
     'wideRoadCameraState',
