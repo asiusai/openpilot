@@ -44,6 +44,7 @@ def test_recording_key_is_deterministic_and_identity_bound():
   first = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
   reloaded = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
   second = ed25519.Ed25519PrivateKey.from_private_bytes(bytes(reversed(seed)))
+  assert public_text(get_recording_key(first)) == "BGU1rPsj-vupwO0nBZZ43gqgiGGi1mvrHgN5mWt0-cqYILvbC-Y8e-00eQyl-iAb_FqKzu3mYlXP3M98OtktBp0"
   assert public_text(get_recording_key(first)) == public_text(get_recording_key(reloaded))
   assert public_text(get_recording_key(first)) != public_text(get_recording_key(second))
   assert get_recording_key(first).private_numbers().private_value != int.from_bytes(seed, 'big')
