@@ -347,8 +347,8 @@ def test_direct_channel_writes_cannot_enable_middle_led(monkeypatch, tmp_path, k
       (path / 'brightness').write_text('99')
   board.set_channels([255] * 9)
   actual = ([int((path / 'brightness').read_text()) for path in board.channel_paths] if kernel_leds else
-            [writes[ledd.IS31FL3199_PWM_BASE + i] for i in range(9)])
-  assert actual == [255, 255, 255, 0, 0, 0, 255, 255, 255]
+            [writes[ledd.AW9523_DIM_BASE + i] for i in range(6)])
+  assert actual == [255] * 6
 
 
 def test_offroad_fault_is_red_and_engaged_fault_blinks(monkeypatch):
@@ -396,3 +396,31 @@ def test_pending_setup_is_solid_magenta_with_fault_priority(monkeypatch):
   assert ledd.led_state(sm, setup_complete=True) == ledd.BLUE
   monkeypatch.setattr(ledd, 'persistent_error', lambda sm: True)
   assert ledd.led_state(sm, setup_complete=False) == ledd.RED
+
+
+def test_aw9523_initialization_keeps_ir_off(monkeypatch):
+  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0)
+  writes = []
+  bus = SimpleNamespace(read_byte_data=lambda addr, register: 0x23)
+  def connect():
+    board.bus = bus
+    return bus
+  monkeypatch.setattr(board, 'connect', connect)
+  monkeypatch.setattr(board, 'write', lambda register, value: writes.append((register, value)))
+  board.set(ledd.BLUE)
+  assert writes[:2] == [(4, 255), (5, 255)]
+  assert writes[2:18] == [(register, 0) for register in range(0x20, 0x30)]
+  assert writes[18:21] == [(0x11, 2), (0x12, 0), (0x13, 0)]
+  assert writes[21:] == [(0x20 + i, v) for i, v in enumerate([0, 0, 180, 0, 0, 180])]
+  assert not any(value for register, value in writes if 0x26 <= register <= 0x2f)
+
+
+def test_aw9523_rejects_wrong_chip_before_writes(monkeypatch):
+  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0)
+  board.bus = SimpleNamespace(read_byte_data=lambda addr, register: 0)
+  monkeypatch.setattr(board, 'connect', lambda: board.bus)
+  writes = []
+  monkeypatch.setattr(board, 'write', lambda *args: writes.append(args))
+  with pytest.raises(OSError, match='AW9523'):
+    board.init()
+  assert not writes
