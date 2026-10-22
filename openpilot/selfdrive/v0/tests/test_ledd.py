@@ -294,7 +294,7 @@ def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
   assert ledd.pairing_led_channels(26) is None
 
 
-def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
+def test_camera_brightness_uses_wide_road_exposure_stops():
   sm = FakeSubMaster()
   assert ledd.camera_led_brightness(sm) == 6
 
@@ -307,8 +307,17 @@ def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
   sm['wideRoadCameraState'].exposureValPercent = 0.
   assert ledd.camera_led_brightness(sm) == 127
 
+  # The reported dark scene was 0.96749%, previously mapped to 124/255.
+  for exposure in (.5, .96749, 1., 100.):
+    sm['wideRoadCameraState'].exposureValPercent = exposure
+    assert ledd.camera_led_brightness(sm) == 6
+  sm['wideRoadCameraState'].exposureValPercent = .1
+  assert 6 < ledd.camera_led_brightness(sm) < 127
+  sm['wideRoadCameraState'].exposureValPercent = -.1
+  assert ledd.camera_led_brightness(sm) == 6
+
   values = []
-  for exposure in range(101):
+  for exposure in [i / 1000 for i in range(501)]:
     sm['wideRoadCameraState'].exposureValPercent = exposure
     values.append(ledd.camera_led_brightness(sm))
   assert values == sorted(values, reverse=True)
