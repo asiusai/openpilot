@@ -52,8 +52,6 @@ class ParamsReader(Protocol):
   def get(self, key: str) -> Any: ...
 
 
-RELAY_HOST = Params().get("RelayHost", return_default=True)
-
 RECONNECT_TIMEOUT_S = 70
 WS_FRAME_SIZE = 4096
 LIVE_STATE_INTERVAL_S = 0.2
@@ -180,9 +178,10 @@ for method in (
 relay_room = None
 
 
-def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
+def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None, relay_host: str) -> None:
   global relay_room
-  owner = Params().get("DongleId")
+  params = Params()
+  owner = params.get("DongleId")
   relay_room = RelayRoom(get_device_private_key(), load_authorized_peers,
                          lambda admission: permits_admission(admission, owner), handle_peer_message)
   end_event = threading.Event()
@@ -198,7 +197,8 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
     thread.start()
   try:
     while not end_event.wait(0.1):
-      if exit_event is not None and exit_event.is_set():
+      if ((exit_event is not None and exit_event.is_set()) or not params.get("RelayEnabled", return_default=True)
+          or params.get("RelayHost", return_default=True) != relay_host):
         end_event.set()
   except (KeyboardInterrupt, SystemExit):
     end_event.set()
@@ -1164,6 +1164,18 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
     except Exception:
       cloudlog.exception("relayd.ws_send.exception")
       end_event.set()
+
+
+@dispatcher.add_method
+def setServiceHosts(relay: str, cloud: str) -> dict:
+  from openpilot.system.asius.service_registration import set_service_hosts
+  return set_service_hosts(relay, cloud)
+
+
+@dispatcher.add_method
+def getServiceRegistration(challenge: str, terms: str) -> str:
+  from openpilot.system.asius.service_registration import registration_proof
+  return registration_proof(challenge, terms)
 
 
 @dispatcher.add_method
