@@ -396,13 +396,16 @@ def camera_led_brightness(sm) -> int:
   if not math.isfinite(sm[service].exposureValPercent):
     return BOOT_BRIGHTNESS
 
-  light_sensor = clamp(100. - sm[service].exposureValPercent, 0., 100.)
-  if light_sensor <= 8.:
-    normalized_light = light_sensor / 903.3
-  else:
-    normalized_light = ((light_sensor + 16.) / 116.) ** 3.
-
-  return round(interp(normalized_light, 0., 1., MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS))
+  # OS04C10's linear EV percentage includes its full exposure and gain range.
+  # Indoor/night scenes can be below 1%, so 100 - EV is not ambient light.
+  # Use exposure stops, keeping dim scenes at the minimum. Daylight endpoints
+  # are conservative initial tuning and need outdoor validation.
+  exposure = sm[service].exposureValPercent
+  if exposure < 0.:
+    return BOOT_BRIGHTNESS
+  dim_ev, bright_ev = .5, .02
+  light = math.log2(dim_ev / max(exposure, bright_ev)) / math.log2(dim_ev / bright_ev)
+  return round(interp(light, 0., 1., MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS))
 
 
 def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[int]] | None:
