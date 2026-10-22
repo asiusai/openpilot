@@ -152,8 +152,8 @@ static constexpr int ONE_PIX_CSID_SOURCE_PAD = 4;
 
 static constexpr uint32_t ONE_SENSOR_DELAY_MS = 0xffffffffU;
 // Read once at startup so all sensors and receivers use the same mode.
-// An unset parameter uses RAW10, including standalone camerad runs.
-static const bool use_raw12 = Params().getBool("CameraRaw12Enabled");
+// An unset parameter uses RAW12, including standalone camerad runs.
+static const bool use_raw12 = Params().get("CameraRaw12Enabled") != "0";
 static const uint32_t OS04_20FPS_VTS = use_raw12 ? 2270 : 4725;
 
 static const std::vector<i2c_random_wr_payload> &os04_default_init_regs() {
