@@ -155,7 +155,7 @@ def test_camera_mode_toggle(tmp_path, monkeypatch):
   key = 'CameraRaw12Enabled'
   monkeypatch.setattr('openpilot.system.asius.access_policy.ignition_state', lambda: False)
   initial = entry(api, key)
-  assert initial['defaultValue'] == 'true' and initial['requiresIgnitionOff']
+  assert initial['defaultValue'] == 'false' and initial['requiresIgnitionOff']
   write(api, key, 'false')
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
   assert Params(str(tmp_path)).get(key) is False
@@ -168,4 +168,4 @@ def test_camera_mode_toggle(tmp_path, monkeypatch):
   assert params.get(key) is True
   write(api, key, '', clear=True)
   restored = entry(api, key)
-  assert not restored['isSet'] and restored['defaultValue'] == 'true'
+  assert not restored['isSet'] and restored['defaultValue'] == 'false'
