@@ -82,6 +82,8 @@ size_t write_encode_data(LoggerdState *s, cereal::Event::Reader event, RemoteEnc
       if (encoder_info.record) {
         // write the header
         auto header = edata.getHeader();
+        // Retain the missing prefix when loggerd joins an encoder mid-segment.
+        re.writer->set_metadata("ai.asius.startOffsetMs", std::to_string(idx.getSegmentId() * 1000ULL / encoder_info.fps).c_str());
         re.writer->write((uint8_t *)header.begin(), header.size(), idx.getTimestampEof() / 1000, true, false);
       }
       re.recording = true;
@@ -139,7 +141,7 @@ int handle_encoder_msg(LoggerdState *s, Message *msg, std::string &name, struct 
       if (encoder_info.record) {
         assert(encoder_info.filename != NULL);
         re.writer.reset(new VideoWriter(s->logger.segmentPath().c_str(),
-                                        encoder_info.filename, idx.getType() != cereal::EncodeIndex::Type::FULL_H_E_V_C,
+                                        encoder_info.filename, true,
                                         edata.getWidth(), edata.getHeight(), encoder_info.fps, idx.getType()));
         re.recording = false;
         re.audio_initialized = false;

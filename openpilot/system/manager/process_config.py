@@ -4,13 +4,18 @@ import platform
 
 from opendbc.car.structs import car
 from openpilot.common.params import Params
-from openpilot.common.hardware import PC, COMMA_HARDWARE
+from openpilot.common.hardware import ASIUS_HARDWARE, BLUETOOTH_AVAILABLE, COMMA_HARDWARE, PC
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
 def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started or params.get_bool("IsDriverViewEnabled")
+
+def sound(started: bool, params: Params, CP: car.CarParams) -> bool:
+  from openpilot.system.asius.pairing_confirmation import read_announcement
+  return (driverview(started, params, CP) or params.get_bool("VoiceAlertsEnabled") or
+          bool(params.get("BluetoothPairingUntil")) or read_announcement() is not None)
 
 def notcar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and CP.notCar
@@ -64,6 +69,9 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
+def asius_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return not PC and params.get_bool("CloudUploadEnabled")
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -71,14 +79,18 @@ def and_(*fns):
   return lambda *args: operator.and_(*(fn(*args) for fn in fns))
 
 procs = [
-  DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid"),
+  DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid", enabled=False),
+  DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelayPid"),
+  DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=BLUETOOTH_AVAILABLE),
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),
-  NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], only_onroad),
-  NativeProcess("stream_encoderd", "openpilot/system/loggerd", ["./encoderd", "--stream"], or_(livestream, notcar)),
+  NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], logging, restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
+  NativeProcess("stream_encoderd", "openpilot/system/loggerd", ["./encoderd", "--stream"], or_(livestream, notcar),
+                restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
 
-  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(driverview, livestream), enabled=not WEBCAM),
+  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(driverview, livestream), enabled=not WEBCAM,
+                restart_delay=1.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("webcamerad", "openpilot.system.camerad.webcam.camerad", driverview, enabled=WEBCAM),
   PythonProcess("proclogd", "openpilot.system.proclogd", only_onroad, enabled=platform.system() != "Darwin"),
   PythonProcess("journald", "openpilot.system.journald", only_onroad, platform.system() != "Darwin"),
@@ -86,13 +98,16 @@ procs = [
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
-  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navigation),
+  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
-  PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
 
+  PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview,
+                enabled=(WEBCAM or not PC)),
   PythonProcess("sensord", "openpilot.system.sensord.sensord", only_onroad, enabled=not PC),
-  PythonProcess("ui", "openpilot.selfdrive.ui.ui", always_run),
-  PythonProcess("soundd", "openpilot.selfdrive.ui.soundd", driverview),
+  PythonProcess("ui", "openpilot.selfdrive.ui.ui", always_run, enabled=not ASIUS_HARDWARE),
+  PythonProcess("soundd", "openpilot.selfdrive.ui.soundd", sound),
+  PythonProcess("ledd", "openpilot.selfdrive.v0.ledd", always_run, enabled=ASIUS_HARDWARE),
+  PythonProcess("buttond", "openpilot.selfdrive.v0.buttond", always_run, enabled=ASIUS_HARDWARE),
   PythonProcess("locationd", "openpilot.selfdrive.locationd.locationd", only_onroad),
   NativeProcess("_pandad", "openpilot/selfdrive/pandad", ["./pandad"], always_run, enabled=False),
   PythonProcess("calibrationd", "openpilot.selfdrive.locationd.calibrationd", only_onroad),
@@ -116,11 +131,12 @@ procs = [
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
-  PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run),
-
+  PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
+  PythonProcess("route_summaryd", "openpilot.system.loggerd.route_summary", always_run),
+  PythonProcess("asius_uploader", "openpilot.system.loggerd.asius_uploader", asius_upload),
   # debug procs
   NativeProcess("bridge", "openpilot/cereal/messaging", ["./bridge"], notcar),
-  PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", or_(livestream, notcar)),
+  PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", always_run),
   PythonProcess("joystick", "openpilot.tools.joystick.joystick_control", and_(joystick, iscar)),
 ]
 

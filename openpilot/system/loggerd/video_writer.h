@@ -21,6 +21,7 @@ public:
 
 private:
   void initialize_audio(int sample_rate);
+  void write_pending_audio();
   void encode_and_write_audio_frame(AVFrame* frame);
   void process_remaining_audio();
 
@@ -36,8 +37,15 @@ private:
   AVStream *audio_stream = nullptr;
   AVCodecContext *audio_codec_ctx = nullptr;
   AVFrame *audio_frame = nullptr;
-  uint64_t audio_pts = 0;
+  int64_t audio_pts = 0;
+  int64_t audio_silence_samples = 0;
+  bool audio_pts_initialized = false;
+  bool audio_clock_relative = false;
+  int64_t video_origin_us = 0;
+  int64_t video_end_us = 0;
+  int fps = 0;
   std::deque<float> audio_buffer;
 
   bool remuxing;
+  bool fragmented_mp4 = false;
 };

@@ -9,6 +9,9 @@ function agnos_init {
   sudo rm -f /data/etc/NetworkManager/system-connections/*.nmmeta
   rm -f /data/scons_cache/config.lock
 
+  # AGNOS creates /data/persist as root. Keep the Asius identity writable.
+  sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 /data/persist/comma
+
   # set success flag for current boot slot
   sudo abctl --set_success
 
@@ -48,7 +51,7 @@ function launch {
     if [ $? -eq 0 ]; then
       echo "${DIR} has been modified, skipping overlay update installation"
     else
-      if [ -f "${STAGING_ROOT}/finalized/.overlay_consistent" ]; then
+      if [ -f "${STAGING_ROOT}/finalized/.overlay_consistent" ] && [ -f "${STAGING_ROOT}/finalized/.install_requested" ]; then
         if [ ! -d /data/safe_staging/old_openpilot ]; then
           echo "Valid overlay update found, installing"
           LAUNCHER_LOCATION="${BASH_SOURCE[0]}"
@@ -56,6 +59,7 @@ function launch {
           mv "$DIR" /data/safe_staging/old_openpilot
           mv "${STAGING_ROOT}/finalized" "$DIR"
           cd "$DIR"
+          rm -f .install_requested .vamos_update_pending
           # releases before the openpilot/ move can't swap AGNOS on newer AGNOS, use ours
           [ ! -L system/hardware/tici/agnos.json ] && /data/safe_staging/old_openpilot/openpilot/common/hardware/comma/agnos.py --verify system/hardware/tici/agnos.json && sudo reboot
 
