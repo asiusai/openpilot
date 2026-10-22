@@ -296,13 +296,13 @@ def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
 
 def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
   sm = FakeSubMaster()
-  assert ledd.camera_led_brightness(sm) == 13
+  assert ledd.camera_led_brightness(sm) == 6
 
   sm.set('narrowRoadCameraState', SimpleNamespace(exposureValPercent=100.))
-  assert ledd.camera_led_brightness(sm) == 13
+  assert ledd.camera_led_brightness(sm) == 6
 
   sm.set('wideRoadCameraState', SimpleNamespace(exposureValPercent=100.))
-  assert ledd.camera_led_brightness(sm) == 13
+  assert ledd.camera_led_brightness(sm) == 6
 
   sm['wideRoadCameraState'].exposureValPercent = 0.
   assert ledd.camera_led_brightness(sm) == 127
@@ -312,11 +312,11 @@ def test_camera_brightness_uses_openpilot_wide_road_exposure_curve():
     sm['wideRoadCameraState'].exposureValPercent = exposure
     values.append(ledd.camera_led_brightness(sm))
   assert values == sorted(values, reverse=True)
-  assert all(5 <= value / 255 * 100 <= 50 for value in values)
+  assert all(6 <= value <= 127 for value in values)
   sm['wideRoadCameraState'].exposureValPercent = float('nan')
-  assert ledd.camera_led_brightness(sm) == 13
+  assert ledd.camera_led_brightness(sm) == 6
   sm.valid['wideRoadCameraState'] = False
-  assert ledd.camera_led_brightness(sm) == 13
+  assert ledd.camera_led_brightness(sm) == 6
 
 
 def test_runtime_brightness_reaches_requested_peak():
