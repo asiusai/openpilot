@@ -143,12 +143,19 @@ def main(exit_event: threading.Event | None = None):
   conn_start = None
   conn_retries = 0
   while exit_event is None or not exit_event.is_set():
+    relay_host = params.get("RelayHost", return_default=True)
+    if not params.get("RelayEnabled", return_default=True):
+      if exit_event is not None:
+        exit_event.wait(1)
+      else:
+        time.sleep(1)
+      continue
     ws = None
     try:
       if conn_start is None:
         conn_start = time.monotonic()
 
-      ws_uri = methods.RELAY_HOST + "/room/v1/" + dongle_id + "/" + dongle_id
+      ws_uri = relay_host + "/room/v1/" + dongle_id + "/" + dongle_id
       cloudlog.event("relay.main.connecting_ws", ws_uri=ws_uri, retries=conn_retries)
       tls = ssl.create_default_context()
       ws = create_connection(ws_uri,
@@ -163,13 +170,13 @@ def main(exit_event: threading.Event | None = None):
       ws.send(json.dumps({"type": "authenticate", "signature": signature}))
       if json.loads(ws.recv()).get("type") != "ready":
         raise ValueError("relay authentication failed")
-      cloudlog.event("relay.main.connected_ws", ws_uri=methods.RELAY_HOST + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,
+      cloudlog.event("relay.main.connected_ws", ws_uri=relay_host + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,
                      duration=time.monotonic() - conn_start)
       conn_start = None
 
       conn_retries = 0
 
-      methods.handle_long_poll(ws, exit_event)
+      methods.handle_long_poll(ws, exit_event, relay_host)
     except (KeyboardInterrupt, SystemExit):
       break
     except (ConnectionError, TimeoutError, WebSocketException):
