@@ -417,6 +417,9 @@ void pandad_run(Panda *panda) {
     }
   }
 
+  #ifdef __ASIUS_HARDWARE__
+  Hardware::set_ir_power(0);
+  #endif
   send_thread.join();
 }
 
