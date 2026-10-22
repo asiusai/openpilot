@@ -5,8 +5,8 @@ ORANGE_RGB = (255, 32, 0)
 LED_BRIGHTNESS = (1., 0., 1., 1., 0., 1.)
 STARTUP_PERIOD = 3.
 STARTUP_RISE = 1.2
-BOOT_BRIGHTNESS = 13  # Approximately 5% before camera exposure is available.
-MIN_AUTO_BRIGHTNESS = 13  # 5%, rounded up to the next 8-bit PWM level.
+BOOT_BRIGHTNESS = 6  # Default before camera exposure is available.
+MIN_AUTO_BRIGHTNESS = 6  # Approximately 2.4%.
 MAX_AUTO_BRIGHTNESS = 127  # 50%, rounded down to stay within the cap.
 
 
@@ -24,7 +24,7 @@ def startup_levels(elapsed: float) -> list[float]:
     level = (1. - math.cos(math.pi * phase / STARTUP_RISE)) / 2.
   else:
     level = (1. + math.cos(math.pi * (phase - STARTUP_RISE) / (STARTUP_PERIOD - STARTUP_RISE))) / 2.
-  return [(1. + 12. * level) / 13.] * 6
+  return [(1. + 5. * level) / 6.] * 6
 
 
 def startup_channels(elapsed: float, brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[int]]:

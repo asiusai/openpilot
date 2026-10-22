@@ -26,7 +26,7 @@ def test_calibration_partial_progress_and_zero_brightness():
 
 
 def test_startup_breathes_pure_blue_together_with_centers_off():
-  assert startup_levels(0.) == [1. / 13.] * 6
+  assert startup_levels(0.) == [1. / 6.] * 6
   assert startup_levels(1.2) == [1.] * 6
   rising = [startup_levels(frame / 60.)[0] for frame in range(73)]
   falling = [startup_levels(frame / 60.)[0] for frame in range(72, 181)]
@@ -41,11 +41,11 @@ def test_startup_breathes_pure_blue_together_with_centers_off():
     assert channels[1] == [0] * 9
     assert channels[2] == channels[3]
     assert channels[2][:3] == channels[2][6:]
-    assert 1 <= channels[2][2] <= 13
+    assert 1 <= channels[2][2] <= 6
     assert channels[2][3:6] == [0, 0, 0]
     assert channels[2][0:2] == [0, 0]
   assert startup_channels(0.)[2][2] == 1
-  assert startup_channels(1.2)[2][2] == 13
+  assert startup_channels(1.2)[2][2] == 6
   assert startup_channels(1.2, 0) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
 
 
