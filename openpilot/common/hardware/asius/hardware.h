@@ -20,7 +20,9 @@ public:
   }
 
   static void set_ir_power(int percent) {
-    std::ofstream("/sys/class/leds/asius:ir/brightness") << std::clamp(percent, 0, 100) << "\n";
+    for (int camera : {2, 3}) {
+      std::ofstream("/sys/class/leds/asius:cam" + std::to_string(camera) + ":ir/brightness") << std::clamp(percent, 0, 100) << "\n";
+    }
   }
 
   static std::map<std::string, std::string> get_init_logs(bool = false) {
