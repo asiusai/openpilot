@@ -14,7 +14,7 @@ from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGH
 STARTUP_GRACE = 30.
 RUNTIME_HZ = 60.
 STARTED_AT = time.monotonic()
-CAM_LED_ADDR = 0x64
+CAM_LED_ADDR = 0x5b
 CAM_LED_BUSES = (16, 18, 20)
 CAM_LED_STATUS_CAMERAS = (2, 3)
 CAM_LED_RETRY_INTERVAL = 5.
@@ -33,17 +33,10 @@ CAM_LED_CHANNELS = (
   ("red", 2), ("green", 2), ("blue", 2),
 )
 
-IS31FL3199_SHUTDOWN = 0x00
-IS31FL3199_CTRL1 = 0x01
-IS31FL3199_CTRL2 = 0x02
-IS31FL3199_CONFIG2 = 0x04
-IS31FL3199_PWM_BASE = 0x07
-IS31FL3199_UPDATE = 0x10
-IS31FL3199_RESET = 0xff
-
-IS31FL3199_ALL_CHANNELS_CTRL1 = 0x77
-IS31FL3199_ALL_CHANNELS_CTRL2 = 0x07
-IS31FL3199_CURRENT_40MA = 0x40
+AW9523_DIM_BASE = 0x20
+AW9523_GLOBAL_CONTROL = 0x11
+AW9523_HALF_CURRENT = 0x02  # 18.5 mA nominal full scale per output.
+AW9523_RGB_INDICES = (0, 1, 2, 6, 7, 8)
 
 Ratekeeper: Any = None
 log: Any = None
@@ -127,7 +120,7 @@ class CameraLedBoard:
   def channel_paths(self) -> list[Path]:
     return [
       CAM_LED_SYSFS_ROOT / f"asius:cam{self.camera_num}:{color}:{package}"
-      for color, package in CAM_LED_CHANNELS
+      for color, package in (CAM_LED_CHANNELS[i] for i in AW9523_RGB_INDICES)
     ]
 
   def kernel_leds_available(self) -> bool:
@@ -163,9 +156,16 @@ class CameraLedBoard:
         if trigger.exists():
           trigger.write_text("none")
     else:
-      self.write(IS31FL3199_RESET, 0x00)
-      time.sleep(0.001)
-      self.write(IS31FL3199_CONFIG2, IS31FL3199_CURRENT_40MA)
+      if self.bus.read_byte_data(CAM_LED_ADDR, 0x10) != 0x23:
+        raise OSError("AW9523 camera LED controller not detected")
+      # Joined IR outputs must never be driven low in GPIO mode.
+      for register in (0x04, 0x05):
+        self.write(register, 0xff)
+      for register in range(AW9523_DIM_BASE, AW9523_DIM_BASE + 16):
+        self.write(register, 0)
+      self.write(AW9523_GLOBAL_CONTROL, AW9523_HALF_CURRENT)
+      for register in (0x12, 0x13):
+        self.write(register, 0)
     self.initialized = True
 
   def set_channels(self, channels: list[int]) -> None:
@@ -178,22 +178,14 @@ class CameraLedBoard:
     if not self.initialized:
       self.init()
 
+    rgb = [channels[i] for i in AW9523_RGB_INDICES]
     if self.kernel_leds:
-      for path, value in zip(self.channel_paths, channels, strict=True):
+      for path, value in zip(self.channel_paths, rgb, strict=True):
         (path / "brightness").write_text(str(value))
       return
 
-    for channel, value in enumerate(channels):
-      self.write(IS31FL3199_PWM_BASE + channel, value)
-
-    if max(channels) > 0:
-      self.write(IS31FL3199_CTRL1, IS31FL3199_ALL_CHANNELS_CTRL1)
-      self.write(IS31FL3199_CTRL2, IS31FL3199_ALL_CHANNELS_CTRL2)
-      self.write(IS31FL3199_UPDATE, 0x00)
-      self.write(IS31FL3199_SHUTDOWN, 0x01)
-    else:
-      self.write(IS31FL3199_UPDATE, 0x00)
-      self.write(IS31FL3199_SHUTDOWN, 0x00)
+    for channel, value in enumerate(rgb):
+      self.write(AW9523_DIM_BASE + channel, value)
 
   def set(self, state: LedState) -> None:
     # Only the outer two LEDs in each window are used.
