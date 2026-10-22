@@ -394,6 +394,9 @@ void pandad_run(Panda *panda) {
     panda->set_safety_model(cereal::CarParams::SafetyModel::NO_OUTPUT);
   }
 
+  #ifdef __ASIUS_HARDWARE__
+  Hardware::set_ir_power(0);
+  #endif
   send_thread.join();
 }
 
