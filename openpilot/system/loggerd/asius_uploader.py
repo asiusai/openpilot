@@ -325,6 +325,12 @@ def main(exit_event: threading.Event | None = None) -> None:
   locks_cleared = False
   backoff = 0.1
   while not exit_event.is_set():
+    host = params.get("CloudHost", return_default=True)
+    if not params.get("CloudUploadEnabled", return_default=True):
+      exit_event.wait(1)
+      continue
+    if host.rstrip("/") != uploader.client.base_url:
+      uploader = AsiusUploader(dongle_id, Paths.log_root(), params=params)
     sm.update(0)
     if sm["deviceState"].started:
       locks_cleared = False

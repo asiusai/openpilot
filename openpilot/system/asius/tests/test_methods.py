@@ -63,7 +63,7 @@ def test_relay_does_not_start_legacy_upload_workers(monkeypatch):
   monkeypatch.setattr(methods.threading, 'Thread', thread)
   stop = threading.Event()
   stop.set()
-  methods.handle_long_poll(Mock(), stop)
+  methods.handle_long_poll(Mock(), stop, "wss://relay.example")
   assert threads == [methods.upstream_athena.ws_manage, methods.ws_recv, methods.ws_send, methods.live_state_handler]
 
 
@@ -108,3 +108,19 @@ def test_selected_params_reject_invalid_requests(names):
 def test_parameter_read_wrappers_are_not_callable(name):
   response = json.loads(methods.handle({'jsonrpc': '2.0', 'method': name, 'id': 1}, methods.dispatcher_for_peer('test')))
   assert response['error']['code'] == -32601
+
+
+@pytest.mark.parametrize('enabled,host', [(False, 'wss://old.example'), (True, 'wss://new.example')])
+def test_relay_closes_when_services_change_after_connect(tmp_path, monkeypatch, enabled, host):
+  from cryptography.hazmat.primitives.asymmetric import ed25519
+  params = Params(str(tmp_path))
+  params.put_bool('RelayEnabled', enabled, block=True)
+  params.put('RelayHost', host, block=True)
+  monkeypatch.setattr(methods, 'Params', lambda: params)
+  monkeypatch.setattr(methods, 'get_device_private_key', ed25519.Ed25519PrivateKey.generate)
+  end = Mock()
+  end.wait.side_effect = [False, True]
+  monkeypatch.setattr(methods.threading, 'Event', lambda: end)
+  monkeypatch.setattr(methods.threading, 'Thread', lambda **kwargs: Mock())
+  methods.handle_long_poll(Mock(), None, 'wss://old.example')
+  end.set.assert_called_once()
