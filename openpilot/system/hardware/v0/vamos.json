@@ -10,7 +10,7 @@
       "name": "esp",
       "sha256": "10d5380a00430e81b93fd5fdcb862a984bd56f3cd5bfccfb8913e3baa57030c8",
       "size": 268435456,
-      "url": "https://vamos.asius.ai/vamos/objects/esp-10d5380a00430e81b93fd5fdcb862a984bd56f3cd5bfccfb8913e3baa57030c8.img.xz"
+      "url": "https://dist.asius.ai/vamos/objects/esp-10d5380a00430e81b93fd5fdcb862a984bd56f3cd5bfccfb8913e3baa57030c8.img.xz"
     },
     {
       "compressed_sha256": "8076044dbd7cd6f8455dd178f7778b92a2a2262a6bf6e38ad864ac86a2121913",
@@ -20,7 +20,7 @@
       "name": "system",
       "sha256": "8076044dbd7cd6f8455dd178f7778b92a2a2262a6bf6e38ad864ac86a2121913",
       "size": 654200832,
-      "url": "https://vamos.asius.ai/vamos/objects/system-8076044dbd7cd6f8455dd178f7778b92a2a2262a6bf6e38ad864ac86a2121913.img"
+      "url": "https://dist.asius.ai/vamos/objects/system-8076044dbd7cd6f8455dd178f7778b92a2a2262a6bf6e38ad864ac86a2121913.img"
     }
   ],
   "product": "asius-v0",
