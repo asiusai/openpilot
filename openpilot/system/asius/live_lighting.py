@@ -14,7 +14,7 @@ STATE = Path('/dev/shm/asius-live-lighting.json')
 LEDS = Path('/sys/class/leds')
 LEASE_SECONDS = 5.
 MAX_LED = 127
-MAX_IR_MA = 30
+MAX_IR_MA = 150
 
 
 def read_state() -> dict:

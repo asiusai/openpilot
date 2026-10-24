@@ -5,7 +5,7 @@ import pytest
 from openpilot.common.hardware.asius.hardware import HardwareAsius
 
 
-@pytest.mark.parametrize(('requested', 'expected'), [(-1, '0'), (0, '0'), (50, '10'), (100, '20'), (200, '20')])
+@pytest.mark.parametrize(('requested', 'expected'), [(-1, '0'), (0, '0'), (50, '33'), (100, '66'), (200, '66')])
 def test_ir_controls_both_road_boards(requested, expected):
   files = mock_open()
   with patch('builtins.open', files):
