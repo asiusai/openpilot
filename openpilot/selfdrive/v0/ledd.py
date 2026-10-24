@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from openpilot.system.asius.pairing_confirmation import read_confirmation
+from openpilot.system.asius.live_lighting import read_state as live_lighting_state
 
 from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB,
                                                 STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
@@ -464,6 +465,28 @@ def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool
   return None
 
 
+def live_led_channels(sm, request: dict) -> dict[int, list[int]] | None:
+  if not request or not sm.seen['pandaStates'] or not sm.alive['pandaStates'] or not sm.valid['pandaStates']:
+    return None
+  pandas = [p for p in sm['pandaStates'] if p.pandaType != log.PandaState.PandaType.unknown]
+  if not pandas or any(p.ignitionLine or p.ignitionCan for p in pandas):
+    return None
+  if persistent_error(sm) or calibration_state(sm) == RED:
+    return None
+  led = request.get('led')
+  if not isinstance(led, dict):
+    return None
+  try:
+    brightness = led['brightness']
+    color = led['color']
+    if type(brightness) is not int or not 0 <= brightness <= MAX_AUTO_BRIGHTNESS or len(color) != 7 or color[0] != '#':
+      return None
+    rgb = [round(int(color[i:i+2], 16) * brightness / 255) for i in (1, 3, 5)]
+    return camera_channels([rgb] * 6)
+  except (KeyError, TypeError, ValueError):
+    return None
+
+
 def main() -> None:
   led = CameraLeds()
 
@@ -501,15 +524,25 @@ def main() -> None:
     'wideRoadCameraState',
   ], ignore_avg_freq=['managerState'])
   rk = Ratekeeper(RUNTIME_HZ)
+  live_request = {}
+  next_live_read = 0.
 
   while not done:
     sm.update(0)
+    if time.monotonic() >= next_live_read:
+      live_request = live_lighting_state()
+      next_live_read = time.monotonic() + .1
     brightness = BOOT_BRIGHTNESS if time.monotonic() - STARTED_AT < STARTUP_PERIOD else camera_led_brightness(sm)
     pairing_channels = pairing_led_channels(brightness)
     if pairing_channels is not None:
       led.set_channels(pairing_channels)
     else:
       now = time.monotonic()
+      manual_channels = live_led_channels(sm, live_request)
+      if manual_channels is not None:
+        led.set_channels(manual_channels)
+        rk.keep_time()
+        continue
       setup_complete = setup_status(params)["complete"]
       animated_channels = automatic_led_channels(sm, brightness, now, setup_complete)
       if animated_channels is not None:

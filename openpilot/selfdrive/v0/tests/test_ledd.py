@@ -53,6 +53,25 @@ def setup_module():
   ledd.log = log
 
 
+def test_live_light_preview_only_changes_road_rgb_and_preserves_faults():
+  sm = healthy_sm(started=False)
+  sm['pandaStates'][0].ignitionLine = False
+  sm['pandaStates'][0].ignitionCan = False
+  request = {'led': {'color': '#00ff00', 'brightness': 6}}
+  channels = ledd.live_led_channels(sm, request)
+  assert channels == {1: [0] * 9, 2: [0, 6, 0, 0, 0, 0, 0, 6, 0], 3: [0, 6, 0, 0, 0, 0, 0, 6, 0]}
+  request['led']['brightness'] = 0
+  assert all(not any(values) for values in ledd.live_led_channels(sm, request).values())
+  sm['pandaStates'][0].ignitionCan = True
+  assert ledd.live_led_channels(sm, request) is None
+  sm['pandaStates'][0].ignitionCan = False
+  sm.valid['pandaStates'] = False
+  assert ledd.live_led_channels(sm, request) is None
+  sm.valid['pandaStates'] = True
+  sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.overheated
+  assert ledd.live_led_channels(sm, request) is None
+
+
 def test_blue_when_ready():
   assert ledd.led_state(healthy_sm()) == ledd.BLUE
 
