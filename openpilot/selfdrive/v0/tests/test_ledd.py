@@ -4,6 +4,7 @@ from collections import defaultdict
 from types import SimpleNamespace
 
 from openpilot.cereal import log
+from openpilot.selfdrive.selfdrived.events import EVENTS, ET
 from openpilot.selfdrive.v0 import ledd
 
 
@@ -189,19 +190,22 @@ def test_warning_sound_blinks_red_only_while_engaged():
 
 
 @pytest.mark.parametrize('event', ['driverUnresponsive', 'driverDistracted'])
-@pytest.mark.parametrize('stage,sound', [(1, 'none'), (2, 'promptDistracted'), (3, 'warningImmediate')])
-def test_driver_monitoring_blinks_magenta_from_first_warning_while_engaged(event, stage, sound):
+@pytest.mark.parametrize('stage', [1, 2, 3])
+def test_driver_monitoring_blinks_orange_then_red_with_upstream_alerts(event, stage):
   sm = healthy_sm()
+  alert = EVENTS[getattr(log.OnroadEvent.EventName, f'{event}{stage}')][ET.PERMANENT]
   sm['selfdriveState'].active = True
   sm['selfdriveState'].state = log.SelfdriveState.OpenpilotState.enabled
   sm['selfdriveState'].alertType = f'{event}{stage}/permanent'
-  sm['selfdriveState'].alertSound = sound
-  assert ledd.led_state(sm, now=0.) == ledd.DM_WARNING
+  sm['selfdriveState'].alertSound = alert.audible_alert
+  sm['selfdriveState'].alertStatus = alert.alert_status
+  assert ledd.led_state(sm, now=0.) == (ledd.RED if stage == 3 else ledd.DM_WARNING)
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
+  green = 0 if stage == 3 else 3
   assert ledd.automatic_led_channels(sm, brightness=26, now=0.) == {
     1: [0] * 9,
-    2: [26, 0, 26, 0, 0, 0, 26, 0, 26],
-    3: [26, 0, 26, 0, 0, 0, 26, 0, 26],
+    2: [26, green, 0, 0, 0, 0, 26, green, 0],
+    3: [26, green, 0, 0, 0, 0, 26, green, 0],
   }
   sm['selfdriveState'].alertType = ''
   sm['selfdriveState'].alertSound = 'none'

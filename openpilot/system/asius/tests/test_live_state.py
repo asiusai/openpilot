@@ -45,7 +45,8 @@ def device(monkeypatch):
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
     "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical",
                        "alertSize": "full", "alertType": "cameraMalfunction/softDisable"},
-    "driverMonitoringState": {"activePolicy": "vision", "isRHD": False, "lockoutCount": 0,
+    "driverMonitoringState": {"activePolicy": "vision", "isRHD": False, "alertLevel": "three",
+                              "lockout": True, "lockoutMinutesRemaining": 30, "lockoutCount": 4,
                               "visionPolicyState": {"faceDetected": True, "awarenessPercent": 100, "isDistracted": False,
                                                     "pose": {"pitch": 0.2, "yaw": 0.1, "uncertainty": 0.01}}},
     "managerState": {"processes": [
@@ -124,9 +125,21 @@ def test_driving_prompts_require_live_valid_services(device, compact, service):
 def test_monitoring_snapshot_keeps_home_fields_without_model_details(device, compact):
   sm, params, _ = device
   assert methods._live_state_snapshot(sm, params, compact=compact)['services']['driverMonitoringState'] == {
-    'activePolicy': 'vision', 'isRHD': False,
+    'activePolicy': 'vision', 'isRHD': False, 'alertLevel': 'three', 'lockout': True, 'lockoutMinutesRemaining': 30,
     'visionPolicyState': {'faceDetected': True, 'awarenessPercent': 100, 'isDistracted': False, 'pose': {'pitch': 0.2, 'yaw': 0.1}},
   }
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_monitoring_lockout_clear_is_sent_explicitly(device, compact):
+  sm, params, _ = device
+  original = sm.__getitem__.side_effect
+  sm.__getitem__.side_effect = lambda name: SimpleNamespace(to_dict=lambda: {
+    'activePolicy': 'vision', 'alertLevel': 'none', 'lockout': False, 'lockoutMinutesRemaining': 0,
+  }) if name == 'driverMonitoringState' else original(name)
+  state = methods._live_state_snapshot(sm, params, compact=compact)['services']['driverMonitoringState']
+  assert state['lockout'] is False
+  assert state['lockoutMinutesRemaining'] == 0
 
 
 def test_bluetooth_queues_uploads_but_rejects_media_signaling(monkeypatch, tmp_path):

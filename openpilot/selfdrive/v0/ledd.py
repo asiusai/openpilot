@@ -69,7 +69,7 @@ SETUP_PENDING = LedState("setup_pending", 180, 0, 180)
 BLUE = LedState("blue", 0, 0, 180)
 ORANGE = LedState("orange", *ORANGE_RGB)
 RED = LedState("red", 180, 0, 0)
-DM_WARNING = LedState("dm_warning", 180, 0, 180)
+DM_WARNING = LedState("dm_warning", *ORANGE_RGB)
 OFF = LedState("off", 0, 0, 0)
 
 WARNING_ALERT_SOUNDS = {
@@ -365,7 +365,7 @@ def engaged_warning(sm) -> LedState | None:
   if selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling:
     return RED
   if dm_alert:
-    return DM_WARNING
+    return RED if selfdrive_state.alertStatus == log.SelfdriveState.AlertStatus.critical else DM_WARNING
   if str(selfdrive_state.alertSound) in WARNING_ALERT_SOUNDS:
     return RED
   return None
