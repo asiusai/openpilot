@@ -5,6 +5,8 @@
 #include <string>
 
 #include "common/hardware/base.h"
+#include "common/hardware/asius/lighting.h"
+#include "common/timing.h"
 #include "common/util.h"
 
 class HardwareAsius : public HardwareNone {
@@ -20,9 +22,15 @@ public:
   }
 
   static void set_ir_power(int percent) {
+    // Limit each emitter to <30 mA with the kernel's 150 mA full scale.
+    const int brightness = std::clamp(percent, 0, 100) * 20 / 100;
     for (int camera : {2, 3}) {
-      std::ofstream("/sys/class/leds/asius:cam" + std::to_string(camera) + ":ir/brightness") << std::clamp(percent, 0, 100) << "\n";
+      std::ofstream("/sys/class/leds/asius:cam" + std::to_string(camera) + ":ir/brightness") << brightness << "\n";
     }
+  }
+
+  static int get_ir_power(int automatic, bool onroad) {
+    return live_ir_power(automatic, onroad, util::read_file("/dev/shm/asius-live-lighting.json"), nanos_monotonic() / 1e9);
   }
 
   static std::map<std::string, std::string> get_init_logs(bool = false) {
