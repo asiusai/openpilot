@@ -5,13 +5,13 @@ import time
 
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
-from openpilot.selfdrive.modeld.helpers import chestnut_compiled
+from openpilot.system.hardware.chestnut.app_status import gpu_status
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
 SERVICES = ['deviceState', 'carState', 'selfdriveState', 'driverMonitoringState', 'extrinsicsCalibration',
             'modelV2', 'carOutput', 'narrowRoadCameraState', 'wideRoadCameraState']
 FIELDS = {
-  'deviceState': ['deviceType', 'started', 'chestnutPresent', 'networkType', 'thermalStatus', 'gpuTempC', 'cpuTempC', 'freeSpacePercent'],
+  'deviceState': ['deviceType', 'started', 'chestnutPresent', 'usbState', 'networkType', 'thermalStatus', 'gpuTempC', 'cpuTempC', 'freeSpacePercent'],
   'carState': ['vEgo', 'vEgoCluster', 'vCruiseCluster', 'steeringAngleDeg', 'leftBlinker', 'rightBlinker'],
   'selfdriveState': ['enabled', 'state', 'alertText1', 'alertText2', 'alertSize', 'alertStatus', 'alertType', 'alertHudVisual'],
   'driverMonitoringState': ['activePolicy', 'isRHD', 'alertLevel', 'lockout', 'lockoutMinutesRemaining', 'visionPolicyState'],
@@ -26,10 +26,7 @@ class InCarTelemetry:
   def __init__(self):
     self.params = Params()
     self.sm = messaging.SubMaster(SERVICES)
-    self.compiled = False
-    self.gpu = 'disconnected'
     self.was_started = False
-    self.present_at_start = False
     self.started_at = 0.0
     self.wide = False
     self.alerts = []
@@ -47,6 +44,8 @@ class InCarTelemetry:
       if age > max_age or not self.sm.valid[name]:
         continue
       values = self.sm[name].to_dict()
+      if name == 'deviceState':
+        values['usbState'] = {'connected': self.sm[name].usbState.connected}
       if name == 'modelV2' and not all(key in values for key in FIELDS[name]):
         continue
       if name == 'extrinsicsCalibration' and not all(key in values for key in ('rpyCalib', 'wideFromDeviceEuler', 'calStatus')):
@@ -54,26 +53,10 @@ class InCarTelemetry:
       services[name] = {key: values[key] for key in fields if key in values}
     ds = services.get('deviceState', {})
     started = ds.get('started', False)
-    detected = ds.get('chestnutPresent', False)
-    self.compiled = self.compiled or chestnut_compiled()
     if started and not self.was_started:
       self.started_at = now
-      self.present_at_start = detected
     model_seen = self.sm.seen['modelV2'] and self.sm.logMonoTime['modelV2'] / 1e9 > self.started_at
     model_fresh = model_seen and self.sm.valid['modelV2'] and now - self.sm.logMonoTime['modelV2'] / 1e9 < 1
-    if not started:
-      self.present_at_start = detected
-      self.gpu = 'ready' if detected and self.compiled else 'uncompiled' if detected else 'disconnected'
-    elif not self.present_at_start:
-      self.gpu = 'disconnected'
-    elif not self.compiled:
-      self.gpu = 'uncompiled'
-    elif self.gpu == 'failed' or not detected or (model_seen and (not model_fresh or not self.sm['modelV2'].big)):
-      self.gpu = 'failed'
-    elif self.params.get_bool('ChestnutLoading') or not model_seen:
-      self.gpu = 'loading'
-    else:
-      self.gpu = 'failed' if self.params.get('ChestnutActive') is False else 'active'
     self.was_started = started
     alert = services.get('selfdriveState')
     if started and alert is None:
@@ -110,6 +93,6 @@ class InCarTelemetry:
     elif car.get('vEgo', 0) > 10:
       self.wide = False
     camera = 'wideRoad' if self.wide else 'road'
-    return {'services': services, 'gpu': self.gpu if ds else 'unknown', 'confidence': confidence, 'torque': torque,
+    return {'services': services, 'gpu': gpu_status(self.sm, self.params), 'confidence': confidence, 'torque': torque,
             'alert': alert, 'offroadAlerts': self.alerts if not started else [], 'camera': camera,
             'isMetric': self.params.get_bool('IsMetric'), 'alwaysOnDM': self.params.get_bool('AlwaysOnDM')}

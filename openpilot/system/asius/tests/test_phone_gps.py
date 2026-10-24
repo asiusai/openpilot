@@ -183,6 +183,7 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   sm.alive = dict.fromkeys(methods.LIVE_STATE_SERVICES, False)
   sm.valid = dict.fromkeys(methods.LIVE_STATE_SERVICES, True)
   sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
+  sm.seen = dict.fromkeys(methods.LIVE_STATE_SERVICES, False)
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
   monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')

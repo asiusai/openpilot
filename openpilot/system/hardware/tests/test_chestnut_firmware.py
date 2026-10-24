@@ -13,8 +13,8 @@ class TestChestnutFirmware(unittest.TestCase):
     self.assertEqual(flash.image_product(image), CHESTNUT_USB_PRODUCT)
 
   @parameterized.expand([
-    b"custom ed4e39b7-quiet2",
-    b"custom ed4e39b7-quiet2\0custom ed4e39b7-CLEAN\0",
+    b"custom 8516b768-quiet3",
+    b"custom 8516b768-quiet3\0custom 8516b768-CLEAN\0",
     b"custom not-a-version\0",
   ])
   def test_reject_ambiguous_or_incomplete_product(self, image):
@@ -30,7 +30,7 @@ class TestChestnutFirmware(unittest.TestCase):
   def test_same_commit_different_build_rejected_before_usb_access(self):
     with patch.object(flash, "find_chestnut") as find:
       with self.assertRaisesRegex(RuntimeError, "expected version"):
-        flash.flash_chestnut(expected_version="ed4e39b7-CLEAN")
+        flash.flash_chestnut(expected_version="8516b768-CLEAN")
       find.assert_not_called()
 
   def test_matching_device_does_not_reflash(self):
