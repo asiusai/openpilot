@@ -16,4 +16,5 @@ common_python = [params_python]
 Export('common_python')
 
 if GetOption('extras'):
+  env.Program('tests/test_live_lighting', 'tests/test_live_lighting.cc', LIBS=['json11'])
   env.Program('tests/test_swaglog', 'tests/test_swaglog.cc', LIBS=[_common, 'json11', 'pthread'])
