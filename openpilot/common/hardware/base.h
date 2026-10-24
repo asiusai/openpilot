@@ -20,6 +20,7 @@ public:
   }
 
   static void set_ir_power(int percentage) {}
+  static int get_ir_power(int automatic, bool onroad) { return automatic; }
 
   static bool PC() { return false; }
 };

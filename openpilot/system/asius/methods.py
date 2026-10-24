@@ -1069,7 +1069,8 @@ clock_challenges = ClockChallenges()
 
 def dispatcher_for_peer(sender: str):
   from openpilot.system.asius.local_video import methods as local_video_methods
-  return dispatcher | local_video_methods(sender) | NavigationRequests().methods(sender) | {
+  from openpilot.system.asius.live_lighting import methods as lighting_methods
+  return dispatcher | local_video_methods(sender) | lighting_methods(sender) | NavigationRequests().methods(sender) | {
     "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),
