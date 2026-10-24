@@ -14,7 +14,7 @@ FIELDS = {
   'deviceState': ['deviceType', 'started', 'chestnutPresent', 'networkType', 'thermalStatus', 'gpuTempC', 'cpuTempC', 'freeSpacePercent'],
   'carState': ['vEgo', 'vEgoCluster', 'vCruiseCluster', 'steeringAngleDeg', 'leftBlinker', 'rightBlinker'],
   'selfdriveState': ['enabled', 'state', 'alertText1', 'alertText2', 'alertSize', 'alertStatus', 'alertType', 'alertHudVisual'],
-  'driverMonitoringState': ['activePolicy', 'isRHD', 'alertLevel', 'visionPolicyState'],
+  'driverMonitoringState': ['activePolicy', 'isRHD', 'alertLevel', 'lockout', 'lockoutMinutesRemaining', 'visionPolicyState'],
   'extrinsicsCalibration': ['rpyCalib', 'wideFromDeviceEuler', 'calStatus', 'height'],
   'modelV2': ['position', 'laneLines', 'laneLineProbs', 'roadEdges', 'roadEdgeStds'],
   'narrowRoadCameraState': ['sensor'],
