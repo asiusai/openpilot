@@ -30,6 +30,7 @@ from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata, terms_version, training_version
+from openpilot.system.hardware.chestnut.app_status import gpu_status
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, handle
 from openpilot.system.asius.terminal import TerminalManager
@@ -90,6 +91,7 @@ LIVE_STATE_SERVICES = [
   "onroadEvents",
   "selfdriveState",
   "driverMonitoringState",
+  "modelV2",
 ]
 parameter_editor = ParameterEditor(SAVE_PARAMS_BLOCKED_KEYS)
 LIVE_STATE_PARAM_KEYS = [
@@ -144,7 +146,7 @@ OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/self
 BLUETOOTH_STATE_FIELDS = {
   "deviceState": ("started", "deviceType", "thermalStatus", "fanSpeedRpm", "networkType", "networkStrength", "cpuTempC", "gpuTempC", "memoryTempC",
                   "freeSpacePercent",
-                  "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "uptime"),
+                  "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "usbState", "uptime"),
   "peripheralState": ("pandaType", "voltage", "current"),
   "extrinsicsCalibration": ("calStatus", "calPerc"),
   "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
@@ -907,15 +909,20 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
   services: dict[str, Any] = {}
   for service in LIVE_STATE_SERVICES:
     try:
+      if service == "modelV2":
+        continue  # Used for GPU readiness; never send model geometry over Bluetooth.
       if service in ("gpsLocation", "gpsLocationExternal") and not (sm.alive[service] and sm.valid[service]):
         services[service] = {"hasFix": False}
         continue
-      if service in ("carState", "navInstruction", "selfdriveState", "onroadEvents", "driverMonitoringState") and not (sm.alive[service] and sm.valid[service]):
+      if (service in ("deviceState", "carState", "navInstruction", "selfdriveState", "onroadEvents", "driverMonitoringState")
+          and not (sm.alive[service] and sm.valid[service])):
         continue
       if sm.recv_frame[service] > 0:
         data = sm[service]
         services[service] = ([event.to_dict() for event in data]
                              if service == "onroadEvents" else data.to_dict())
+        if service == "deviceState":
+          services[service]["usbState"] = {"connected": data.usbState.connected}
         if service in ("gpsLocation", "gpsLocationExternal"):
           services[service]["sampleMonoTime"] = int(sm.logMonoTime[service]) / 1e9
         if service == "carState":
@@ -987,6 +994,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     "onboarding": setup_status(params),
     "software": _software_update_state(params),
     "services": services,
+    "gpu": gpu_status(sm, params),
     "offroadAlerts": offroad_alerts,
     "authorizedPeers": list(load_authorized_peers().keys()),
   }
@@ -1038,7 +1046,7 @@ class LiveStateSampler:
     services = _live_services(self.sm)
     if navigation.get("status") != "ready" or self.sm.logMonoTime["navInstruction"] / 1e9 < navigation.get("publishedAt", 0):
       services.pop("navInstruction", None)
-    return {**self.snapshot, "services": services, "sampledAt": now,
+    return {**self.snapshot, "services": services, "sampledAt": now, "gpu": gpu_status(self.sm, self.params),
             "params": {**self.snapshot["params"], "NavDestination": navigation.get("destination")},
             "navigation": navigation, "navigationRequests": NavigationRequests(self.params).pending(), "ignition": ignition_state()}
 

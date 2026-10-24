@@ -1,6 +1,8 @@
+diff --git a/handmade/src/main.c b/handmade/src/main.c
+index 6cd218f..83424b9 100644
 --- a/handmade/src/main.c
 +++ b/handmade/src/main.c
-@@ -39,6 +39,29 @@
+@@ -39,6 +39,29 @@ static void sleep(uint16_t milliseconds) {
  }
  
  static uint8_t is_usb2;
@@ -30,7 +32,7 @@
  
  /* Streaming PCIe state — configured via 0xF0 control message */
  static uint32_t dma_dwords;    /* total dwords remaining for streaming transfer */
-@@ -156,6 +179,12 @@
+@@ -157,6 +180,12 @@ static void handle_usb_control(void) {
      wValL = REG_USB_SETUP_WVAL_L; wValH = REG_USB_SETUP_WVAL_H;
      wLen = ((uint16_t)REG_USB_SETUP_WLEN_H << 8) | REG_USB_SETUP_WLEN_L;
  
@@ -43,7 +45,7 @@
      if (!(bmReq & USB_SETUP_TYPE_VENDOR)) {
        uart_puts("[C ");
        uart_puthex(bmReq);
-@@ -213,6 +242,10 @@
+@@ -214,6 +243,10 @@ static void handle_usb_control(void) {
        dma_dwords = 0;
        usb_send_zlp();
        uart_puts("[*** SET CONFIG ***]\n");
@@ -54,7 +56,7 @@
      } else if (bmReq == (USB_SETUP_DIR_HOST_TO_DEV | USB_SETUP_RECIP_INTERFACE) && bReq == USB_REQ_SET_INTERFACE) {
        REG_USB_EP_CFG2 = USB_EP_CFG2_CLEAR_IN;
        REG_USB_EP_CFG2 = USB_EP_CFG2_CLEAR_OUT;
-@@ -247,6 +280,12 @@
+@@ -248,6 +281,12 @@ static void handle_usb_control(void) {
        XDATA_REG8(addr) = val;
        if (bank) DPX = 0x00;
        usb_send_zlp();
@@ -67,7 +69,7 @@
      } else if (bmReq == (USB_SETUP_DIR_HOST_TO_DEV | USB_SETUP_TYPE_VENDOR) && bReq == 0xF2) {
        /* 0xF2: SRAM DMA — init DMA engine and arm for bulk transfer.
        *   wValue bit 15 = direction: 0=BULK OUT (host→SRAM), 1=BULK IN (SRAM→host)
-@@ -444,6 +483,11 @@
+@@ -445,6 +484,11 @@ void int0_isr(void) __interrupt(0) {
        REG_USB_EP_READY = ep;
      } else if (periph_status & USB_PERIPH_LINK_EVENT) {
        uint8_t ep = REG_BUF_CFG_9300;
@@ -79,7 +81,7 @@
        if (ep & BUF_CFG_9300_SS_FAIL) {
          uart_puts("[USB2 fallback]\n");
          // fallback to USB2
-@@ -452,6 +496,8 @@
+@@ -453,6 +497,8 @@ void int0_isr(void) __interrupt(0) {
          REG_CPU_MODE = CPU_MODE_USB2;
          // enable USB high speed mode
          REG_USB_PHY_CTRL_91C0 = 0x10;
@@ -88,7 +90,7 @@
        }
        REG_BUF_CFG_9300 = ep;
        uart_puts("[LINK EVENT ");
-@@ -493,6 +539,11 @@
+@@ -494,6 +540,11 @@ void main(void) {
    REG_UART_LCR &= ~LCR_PARITY_MASK;
  
    uart_puts("\n[BOOT]\n");
@@ -100,7 +102,7 @@
    gpio_set(GPIO_BOB_FLT_N, GPIO_INPUT);
    led_set_rgb(false, false, true);
  
-@@ -507,8 +558,8 @@
+@@ -508,8 +559,8 @@ void main(void) {
    pcie_apply_x2_rxphy_tuning();
    pcie_power_off();
  
@@ -111,14 +113,11 @@
  
    // Bring USB up. force_usb2=0: try SS first, fall back via LINK_EVENT.
    usb_init_controller(0);
-@@ -520,7 +571,19 @@
+@@ -521,7 +572,19 @@ void main(void) {
    ina231_init();
  
    while (1) {
 -    // DO NOT PUT ANYTHING HERE, EVERYTHING SHOULD BE HANDLED IN INTERRUPTS
--  }
--}
--
 +    if (ss_retry_pending && (XDATA_REG8V(0xCC23) & TIMER_CSR_EXPIRED)) {
 +      IE &= (uint8_t)~IE_EA;
 +      ss_retry_pending = 0;
@@ -133,8 +132,11 @@
 +      }
 +      IE |= IE_EA;
 +    }
-+  }
-+}
+   }
+ }
+-
+diff --git a/handmade/src/usb.h b/handmade/src/usb.h
+index 5129a10..7b0f645 100644
 --- a/handmade/src/usb.h
 +++ b/handmade/src/usb.h
 @@ -12,7 +12,7 @@
@@ -142,7 +144,7 @@
  /* String descriptors */
  #define USB_STR_MFG             "tiny"
 -#define USB_STR_PRODUCT         "custom " GIT_VERSION
-+#define USB_STR_PRODUCT         "custom ed4e39b7-quiet2"
++#define USB_STR_PRODUCT         "custom 8516b768-quiet3"
  
  #define USB_STR_IDX_LANG        0
  #define USB_STR_IDX_MFG         1
