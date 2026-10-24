@@ -22,8 +22,8 @@ public:
   }
 
   static void set_ir_power(int percent) {
-    // Limit each emitter to <30 mA with the kernel's 150 mA full scale.
-    const int brightness = std::clamp(percent, 0, 100) * 20 / 100;
+    // get_ir_power applies the automatic or manual limit before the safety checks.
+    const int brightness = std::clamp(percent, 0, 100);
     for (int camera : {2, 3}) {
       std::ofstream("/sys/class/leds/asius:cam" + std::to_string(camera) + ":ir/brightness") << brightness << "\n";
     }

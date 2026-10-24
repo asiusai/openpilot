@@ -28,9 +28,9 @@ def call(peer='a', **params):
 def test_capabilities_and_independent_manual_controls(bench):
   state = lights.get_state()
   assert state['canEdit']
-  assert state['capabilities'] == {'leds': True, 'ir': True, 'maxLedBrightness': 127, 'maxIrMa': 30}
-  assert call(led={'color': '#1234ab', 'brightness': 6}, irMa=10)['result']['expiresIn'] == 5
-  assert lights.read_state()['irMa'] == 10
+  assert state['capabilities'] == {'leds': True, 'ir': True, 'maxLedBrightness': 127, 'maxIrMa': 150}
+  assert call(led={'color': '#1234ab', 'brightness': 6}, irMa=150)['result']['expiresIn'] == 5
+  assert lights.read_state()['irMa'] == 150
   assert call(led=None, irMa=0)['result']['expiresIn'] == 5
   assert lights.read_state()['led'] is None
   assert lights.read_state()['irMa'] == 0
@@ -70,7 +70,7 @@ def test_expired_or_invalid_lease_does_not_survive_disconnection_or_clock_change
 
 
 @pytest.mark.parametrize('params', [
-  {'irMa': 31}, {'irMa': -1}, {'irMa': True}, {'irMa': 1.5}, {'irMa': float('nan')},
+  {'irMa': 151}, {'irMa': -1}, {'irMa': True}, {'irMa': 1.5}, {'irMa': float('nan')},
   {'led': {'color': '#ff0000', 'brightness': 128}}, {'led': {'color': '#ff0000', 'brightness': True}},
   {'led': {'color': 'red', 'brightness': 6}}, {'led': {'color': '#ff0000', 'brightness': 6, 'camera': 1}},
   {'lease': '../invalid'},

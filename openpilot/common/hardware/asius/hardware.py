@@ -26,8 +26,8 @@ class HardwareAsius(HardwareComma):
       return serial_file.read().strip()
 
   def set_ir_power(self, percent: int):
-    # Limit each emitter to <30 mA with the kernel's 150 mA full scale.
-    level = max(0, min(100, percent)) * 20 // 100
+    # Automatic exposure uses at most 100 mA of the kernel's 150 mA full scale.
+    level = max(0, min(100, percent)) * 100 // 150
     for camera in (2, 3):
       with open(f"/sys/class/leds/asius:cam{camera}:ir/brightness", "w") as brightness:
         brightness.write(str(level))
