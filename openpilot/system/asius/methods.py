@@ -925,7 +925,7 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
           # Keep Home telemetry small on both transports; no separate polling RPC.
           state = services[service]
           vision = state.get("visionPolicyState", {})
-          services[service] = {key: state[key] for key in ("activePolicy", "isRHD") if key in state}
+          services[service] = {key: state[key] for key in ("activePolicy", "isRHD", "alertLevel", "lockout", "lockoutMinutesRemaining") if key in state}
           if "visionPolicyState" in state:
             services[service]["visionPolicyState"] = {
               key: vision[key] for key in ("faceDetected", "isDistracted", "awarenessPercent") if key in vision

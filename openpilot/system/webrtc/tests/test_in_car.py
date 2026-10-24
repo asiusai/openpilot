@@ -60,6 +60,18 @@ def test_path_and_lanes_come_from_model_v2_and_expire_when_stale():
   assert 'modelV2' not in session.snapshot()['services']
 
 
+def test_monitoring_lockout_minutes_follow_device_and_clear():
+  session = make_session()
+  for minutes in (30, 15, 5, 1, 0):
+    publish(session, 'driverMonitoringState', {'activePolicy': 'vision', 'alertLevel': 'none',
+                                             'lockout': minutes > 0, 'lockoutMinutesRemaining': minutes})
+    state = session.snapshot()['services']['driverMonitoringState']
+    assert state['lockout'] == (minutes > 0)
+    assert state['lockoutMinutesRemaining'] == minutes
+  publish(session, 'driverMonitoringState', {'lockout': True, 'lockoutMinutesRemaining': 30}, age=1)
+  assert 'driverMonitoringState' not in session.snapshot()['services']
+
+
 def test_gpu_states_and_alerts_use_real_device_values():
   session = make_session()
   session.params = Mock()
