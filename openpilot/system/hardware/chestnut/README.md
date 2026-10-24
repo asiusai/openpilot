@@ -1,10 +1,16 @@
 # Chestnut firmware
 
-The bundled image is `custom ed4e39b7-quiet2`, built from
+The bundled image is `custom 8516b768-quiet3`, built from
 [tinygrad/asm2464pd-firmware](https://github.com/tinygrad/asm2464pd-firmware)
-commit `ed4e39b7e0794e19ba193477067c48757a5cf9ef` plus [firmware.patch](firmware.patch).
+commit `8516b7687318c087cb1c0493b2af4923691a4511` plus [firmware.patch](firmware.patch).
 Its SHA256 is
-`c9bbe7a6885df0e236242c29aec1155199d973e8059a9a827480928a5c5e25e1`.
+`186d391a9d2a480ca49add4480a1f526036095fa59cece766751dcebfc40fb94`.
+
+This revision includes the upstream [failed PCIe read fix](https://github.com/tinygrad/asm2464pd-firmware/pull/87).
+Failed reads return a zero-length USB response, so the host rejects missing data.
+The Asius USB recovery changes remain unchanged. Physical testing of `quiet3` is pending.
+Two clean builds produced the same SHA256. The compiled firmware passed 80 emulator cases covering USB2, USB3 and failed PCIe reads.
+These checks verify response length and transfer cancellation. They do not establish hardware recovery reliability.
 
 Apply the patch to that revision, then build with SDCC and binutils:
 
@@ -41,4 +47,4 @@ after two attempts and the connection stayed usable for the rest of a
 These tests used one Type-C orientation with the debug cable attached.
 No debug reset or main-cable recovery command was used during the five
 restart tests. Debug removal, other orientations, other GPUs and a full
-Openpilot run remain unverified for this build.
+Openpilot run remain unverified in these `quiet2` tests.

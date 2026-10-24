@@ -76,20 +76,26 @@ def test_gpu_states_and_alerts_use_real_device_values():
   session = make_session()
   session.params = Mock()
   session.params.get_bool.return_value = False
-  session.params.get.side_effect = lambda key: {'text': 'GPU temperature %1', 'extra': '85 C'} if key == 'Offroad_ChestnutOverheated' else None
-  with patch('openpilot.system.webrtc.in_car.chestnut_compiled', return_value=True):
+  values = {}
+  session.params.get.side_effect = values.get
+  with patch('openpilot.system.hardware.chestnut.app_status.chestnut_compiled', return_value=True):
     publish(session, 'deviceState', {'started': False, 'chestnutPresent': True})
     snapshot = session.snapshot()
     assert snapshot['gpu'] == 'ready'
-    assert snapshot['offroadAlerts'][0]['text'] == 'GPU temperature 85 C'
     publish(session, 'deviceState', {'started': True, 'chestnutPresent': True})
     assert session.snapshot()['gpu'] == 'loading'
     publish(session, 'modelV2', {'big': True})
+    values['ChestnutActive'] = True
     assert session.snapshot()['gpu'] == 'active'
     publish(session, 'modelV2', {'big': False})
     assert session.snapshot()['gpu'] == 'failed'
     publish(session, 'deviceState', {'started': False, 'chestnutPresent': True})
     assert session.snapshot()['gpu'] == 'ready'
+    values['Offroad_ChestnutOverheated'] = {'text': 'GPU temperature %1', 'extra': '85 C'}
+    session.alerts_updated = 0
+    snapshot = session.snapshot()
+    assert snapshot['gpu'] == 'failed'
+    assert snapshot['offroadAlerts'][0]['text'] == 'GPU temperature 85 C'
 
 
 def test_selfdrive_timeout_uses_stock_alert_without_replaying_enabled_state():
