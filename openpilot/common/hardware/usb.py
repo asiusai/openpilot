@@ -1,7 +1,9 @@
 import os
 from pathlib import Path
 
-CHESTNUT_FW_VERSION = "ed4e39b7-quiet2"
+from openpilot.common.hardware import ASIUS_HARDWARE
+
+CHESTNUT_FW_VERSION = "8516b768-quiet3"
 CHESTNUT_USB_IDS = ((0xADD1, 0x0001), (0x3801, 0x0001))
 CHESTNUT_ROM_USB_IDS = ((0x174C, 0x2464), (0x174C, 0x2463))
 CHESTNUT_USB_PRODUCT = f"custom {CHESTNUT_FW_VERSION}"
@@ -60,9 +62,23 @@ def usb_devices() -> list[Path]:
 
 def controller(device: Path) -> Path | None:
   try:
-    return next((parent for parent in device.resolve().parents if parent.name.endswith(".ssusb")), None)
+    return next((parent for parent in device.resolve().parents if parent.name.endswith((".ssusb", ".usb"))), None)
   except OSError:
     return None
+
+
+def external_device(device: Path, ctrl: Path | None) -> bool:
+  if device.name.startswith('usb') or ctrl is None:
+    return False  # Root hubs are present even when no cable is connected.
+  if ctrl.name in (PRIMARY_USB_CONTROLLER, 'a600000.usb'):
+    return True
+  if ASIUS_HARDWARE:
+    # Dragon's second port shares the onboard hub. Port 4 is the fixed radio.
+    hub = USB_DEVICES_PATH / device.name.split('.')[0]
+    onboard_hub = (read_int(hub / 'idVendor', 16), read_int(hub / 'idProduct', 16)) == (0x1A40, 0x0101)
+    radio = f'{hub.name}.4'
+    return onboard_hub and device != hub and device.name != radio and not device.name.startswith(f'{radio}.')
+  return False
 
 
 def get_usb_state() -> list[dict]:
@@ -80,6 +96,7 @@ def get_usb_state() -> list[dict]:
       "speedMbps": read_int(device / "speed"),
       "manufacturer": read(device / "manufacturer") or "",
       "product": read(device / "product") or "",
+      "external": external_device(device, ctrl),
       "linkErrorCount": read_int(ctrl / "portli", 0) & 0xFFFF if ctrl is not None else 0,
       "usb3Lane": {1: "a", 2: "b"}.get(typec_orientation, "unknown") if ctrl is not None and ctrl.name == PRIMARY_USB_CONTROLLER else "unknown",
     })
@@ -105,4 +122,4 @@ def set_usb_state(device_state, devices: list[dict]) -> None:
       chestnut_present = True
 
   device_state.chestnutPresent = chestnut_present
-  device_state.usbState.connected = cable_connected()
+  device_state.usbState.connected = cable_connected() or any(d.get('external', False) for d in devices)

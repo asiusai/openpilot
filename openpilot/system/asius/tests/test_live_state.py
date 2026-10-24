@@ -1,5 +1,6 @@
 import copy
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock
 
@@ -39,7 +40,8 @@ def device(monkeypatch):
   params = Mock()
   params.get.side_effect = lambda key, **_: values.get(key)
   services = {
-    "deviceState": {"started": True, "cpuTempC": [85], "networkType": "none", "chestnutPresent": False},
+    "deviceState": {"started": True, "cpuTempC": [85], "networkType": "none", "chestnutPresent": False,
+                    "usbState": {"connected": True, "devices": [{"product": "test"}] * 100}},
     "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "vCruiseCluster": 90.0, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
     "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android", "unixTimestampMillis": 1800000000000},
     "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
@@ -55,8 +57,15 @@ def device(monkeypatch):
     ]},
   }
   sm = MagicMock(alive=dict.fromkeys(methods.LIVE_STATE_SERVICES, True), valid=dict.fromkeys(methods.LIVE_STATE_SERVICES, True),
+                 seen={service: service in services for service in methods.LIVE_STATE_SERVICES},
+                 logMonoTime=dict.fromkeys(methods.LIVE_STATE_SERVICES, time.monotonic_ns()),
                  recv_frame={service: int(service in services) for service in methods.LIVE_STATE_SERVICES})
-  sm.__getitem__.side_effect = lambda service: SimpleNamespace(to_dict=lambda: copy.deepcopy(services[service]))
+  def message(service):
+    fields = copy.deepcopy(services[service])
+    if service == 'deviceState':
+      fields['usbState'] = SimpleNamespace(**fields['usbState'])
+    return SimpleNamespace(**fields, to_dict=lambda: copy.deepcopy(services[service]))
+  sm.__getitem__.side_effect = message
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'ignition_state', lambda: True)
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
@@ -71,6 +80,8 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   snapshot = methods._live_state_snapshot(sm, params, compact=True)
   assert len(json.dumps(snapshot).encode()) < 5000
   assert snapshot['ignition'] is True
+  assert snapshot['gpu'] == 'disconnected'
+  assert snapshot['services']['deviceState']['usbState'] == {'connected': True}
   assert snapshot['params']['AppTerminalEnabled'] is True
   assert snapshot['params']['IsMetric'] is True
   assert snapshot['params']['VoiceAlertsEnabled'] is True
@@ -85,6 +96,19 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   assert 'UpdaterAvailableBranches' not in snapshot['params']
   # On-demand Software details still include the complete release notes.
   assert len(methods._software_update_state(params)['UpdaterCurrentReleaseNotes']) > 100000
+
+
+@pytest.mark.parametrize('compact', [False, True])
+def test_usb_and_gpu_state_expire_without_streaming_model_geometry(device, compact):
+  sm, params, _ = device
+  sm.recv_frame['modelV2'] = 1
+  snapshot = methods._live_state_snapshot(sm, params, compact=compact)
+  assert 'modelV2' not in snapshot['services']
+  assert snapshot['services']['deviceState']['usbState'] == {'connected': True}
+  sm.valid['deviceState'] = False
+  snapshot = methods._live_state_snapshot(sm, params, compact=compact)
+  assert 'deviceState' not in snapshot['services']
+  assert snapshot['gpu'] == 'unknown'
 
 
 @pytest.mark.parametrize('compact', [False, True])
@@ -173,6 +197,7 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   sm.alive = dict.fromkeys(methods.LIVE_STATE_SERVICES, False)
   sm.valid = dict.fromkeys(methods.LIVE_STATE_SERVICES, True)
   sm.recv_frame = dict.fromkeys(methods.LIVE_STATE_SERVICES, 0)
+  sm.seen = dict.fromkeys(methods.LIVE_STATE_SERVICES, False)
   build = SimpleNamespace(channel='master', openpilot=SimpleNamespace(version='test', git_normalized_origin='', git_commit=''))
   monkeypatch.setattr(methods, 'ignition_state', lambda: True)
   monkeypatch.setattr(methods, 'get_build_metadata', lambda: build)
