@@ -346,6 +346,8 @@ class StreamSession:
     try:
       if self.raw and isinstance(message, bytes):
         service = messaging.log_from_bytes(message).which()
+        if service == "testJoystick" and ignition_state() is not False:
+          return
         if service in self.incoming_bridge_services:
           self.shared_pub_master.send(service, message)
         return

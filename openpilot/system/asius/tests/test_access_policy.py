@@ -188,11 +188,15 @@ def test_ignition_uses_fresh_panda_signals_not_engagement(monkeypatch):
 
 
 @pytest.mark.parametrize('ignition', [False, True, None])
-def test_webrtc_joystick_checks_ignition_for_each_message(monkeypatch, ignition):
+@pytest.mark.parametrize('raw', [False, True])
+def test_webrtc_joystick_checks_ignition_for_each_message(monkeypatch, ignition, raw):
   from openpilot.system.webrtc import webrtcd
   monkeypatch.setattr(webrtcd, 'ignition_state', lambda: ignition)
-  session = SimpleNamespace(logger=Mock(), incoming_bridge_services=['testJoystick'], incoming_bridge=Mock())
+  session = SimpleNamespace(logger=Mock(), raw=raw, incoming_bridge_services=['testJoystick'], incoming_bridge=Mock(), shared_pub_master=Mock())
   message = json.dumps({'type': 'testJoystick', 'data': {'axes': [0, 0]}}).encode()
+  if raw:
+    message = webrtcd.messaging.new_message('testJoystick').to_bytes()
   webrtcd.StreamSession.message_handler(session, message)
-  assert session.incoming_bridge.send.called is (ignition is False)
+  target = session.shared_pub_master if raw else session.incoming_bridge
+  assert target.send.called is (ignition is False)
   session.logger.exception.assert_not_called()
