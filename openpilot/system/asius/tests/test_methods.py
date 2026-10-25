@@ -52,8 +52,8 @@ def test_legacy_upload_methods_are_not_callable(name):
 
 
 def test_relay_does_not_start_legacy_upload_workers(monkeypatch):
-  from cryptography.hazmat.primitives.asymmetric import ed25519
-  monkeypatch.setattr(methods, "get_device_private_key", ed25519.Ed25519PrivateKey.generate)
+  from openpilot.system.asius.pqc import RootIdentity
+  monkeypatch.setattr(methods, "get_device_private_key", RootIdentity.generate)
   threads = []
 
   def thread(*, target, **kwargs):
@@ -112,12 +112,12 @@ def test_parameter_read_wrappers_are_not_callable(name):
 
 @pytest.mark.parametrize('enabled,host', [(False, 'wss://old.example'), (True, 'wss://new.example')])
 def test_relay_closes_when_services_change_after_connect(tmp_path, monkeypatch, enabled, host):
-  from cryptography.hazmat.primitives.asymmetric import ed25519
+  from openpilot.system.asius.pqc import RootIdentity
   params = Params(str(tmp_path))
   params.put_bool('RelayEnabled', enabled, block=True)
   params.put('RelayHost', host, block=True)
   monkeypatch.setattr(methods, 'Params', lambda: params)
-  monkeypatch.setattr(methods, 'get_device_private_key', ed25519.Ed25519PrivateKey.generate)
+  monkeypatch.setattr(methods, 'get_device_private_key', RootIdentity.generate)
   end = Mock()
   end.wait.side_effect = [False, True]
   monkeypatch.setattr(methods.threading, 'Event', lambda: end)

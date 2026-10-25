@@ -7,7 +7,7 @@ import subprocess
 import pytest
 
 from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4, read_boxes
-from openpilot.system.loggerd.tests.media_fixture import make_video
+from openpilot.system.loggerd.tests.media_fixture import make_video, decrypt_recording
 
 
 FFMPEG = shutil.which("ffmpeg")
@@ -17,7 +17,7 @@ FFPROBE = shutil.which("ffprobe")
 def frame_hash(path, key: bytes | None = None) -> list[str]:
   command = [FFMPEG, "-hide_banner", "-loglevel", "error"]
   if key is not None:
-    command += ["-decryption_key", key.hex()]
+    path = decrypt_recording(path, key)
   command += ["-i", str(path), "-map", "0:v:0", "-f", "framehash", "-hash", "sha256", "-"]
   output = subprocess.check_output(command, text=True)
   return [line.rsplit(",", 1)[-1].strip() for line in output.splitlines() if line and not line.startswith("#")]
@@ -39,11 +39,11 @@ def test_cenc_fmp4_round_trip(tmp_path) -> None:
     input=frame * 40,
     check=True,
   )
-  key = bytes.fromhex("00112233445566778899aabbccddeeff")
+  key = bytes(range(32))
   kid = bytes.fromhex("ffeeddccbbaa99887766554433221100")
   manifest = package_cenc_mp4(clear, encrypted, key, kid)
 
-  assert manifest["alg"] == "CENC-AES-CTR"
+  assert manifest["alg"] == "CENC-A256CTR"
   assert manifest["codec"].startswith("avc1.")
   assert manifest["kid"] == base64.urlsafe_b64encode(kid).decode().rstrip("=")
   assert manifest["encryptedLength"] == encrypted.stat().st_size
@@ -62,7 +62,7 @@ def test_cenc_fmp4_round_trip(tmp_path) -> None:
   assert cursor == len(payload)
 
   probe = subprocess.check_output(
-    [FFPROBE, "-v", "error", "-decryption_key", key.hex(), "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "json", str(encrypted)],
+    [FFPROBE, "-v", "error", "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "json", str(decrypt_recording(encrypted, key))],
     text=True,
   )
   assert json.loads(probe)["streams"][0]["nb_read_packets"] == "40"
@@ -89,8 +89,8 @@ def test_cenc_upload_recovers_complete_frames_from_interrupted_recording(tmp_pat
   truncated = original[:mdat.end - 1]
   source.write_bytes(truncated)
   encrypted = tmp_path / 'encrypted.mp4'
-  key = bytes(range(16))
-  manifest = package_cenc_mp4(source, encrypted, key, bytes(reversed(key)))
+  key = bytes(range(32))
+  manifest = package_cenc_mp4(source, encrypted, key, bytes(reversed(key[:16])))
   assert manifest['plaintextLength'] == len(truncated)
   assert manifest['discardedBytes'] == len(truncated) - moof.start
   assert len(frame_hash(encrypted, key)) == 40
@@ -99,14 +99,14 @@ def test_cenc_upload_recovers_complete_frames_from_interrupted_recording(tmp_pat
 
 
 def test_embedded_index_keeps_video_seekable_and_hashes_each_range(tmp_path):
-  from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+  from openpilot.system.asius.pqc import RootIdentity
   from openpilot.system.loggerd.data_api import public_identity, canonical_json
   from openpilot.system.loggerd.data_media import embed_index, INDEX_BYTES
   clear, encrypted = tmp_path/'clear.mp4', tmp_path/'encrypted.mp4'
   make_video(clear, 3)
-  key = bytes(range(16))
-  manifest = package_cenc_mp4(clear, encrypted, key, bytes(reversed(key)))
-  private = Ed25519PrivateKey.generate()
+  key = bytes(range(32))
+  manifest = package_cenc_mp4(clear, encrypted, key, bytes(reversed(key[:16])))
+  private = RootIdentity.generate()
   signed = embed_index(str(encrypted), manifest, public_identity(private), 'routes/00000001--1234567890/0/qcamera.mp4','key',private)
   data = encrypted.read_bytes()
   assert len(data) == signed['encryptedLength']

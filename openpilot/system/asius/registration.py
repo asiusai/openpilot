@@ -14,7 +14,7 @@ def register(show_spinner=False) -> str | None:
     dongle_id = get_device_identity()
   except Exception:
     dongle_id = UNREGISTERED_DONGLE_ID
-    cloudlog.exception("failed to load Ed25519 identity")
+    cloudlog.exception("failed to load ML-DSA-65 identity")
 
   if dongle_id:
     params.put("DongleId", dongle_id, block=True)

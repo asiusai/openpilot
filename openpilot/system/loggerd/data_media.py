@@ -433,8 +433,8 @@ def derive_cenc_key(folder_key: bytes, owner: str, key_id: str, path: str) -> tu
     raise ValueError("folder key must be 256 bits")
   key = HKDF(
     algorithm=hashes.SHA256(),
-    length=16,
-    salt=f"asius-data-cenc-v1:{owner}:{key_id}".encode(),
+    length=32,
+    salt=f"asius-data-cenc-v2:{owner}:{key_id}".encode(),
     info=path.encode(),
   ).derive(folder_key)
   kid = hashlib.sha256(f"asius-data-cenc-kid-v1:{owner}:{key_id}:{path}".encode()).digest()[:16]
@@ -471,8 +471,8 @@ def recording_start_offset(data, moov):
 
 
 def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, kid: bytes) -> dict[str, Any]:
-  if len(key) != 16 or len(kid) != 16:
-    raise ValueError("CENC key and KID must be 128 bits")
+  if len(key) != 32 or len(kid) != 16:
+    raise ValueError("CENC key must be 256 bits and KID must be 128 bits")
   source_path = Path(source)
   clear = bytearray(source_path.read_bytes())
   top_level = recording_boxes(clear)
@@ -525,8 +525,8 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     fragment["timeMs"] = round(start_time * 1000)
     fragment["durationMs"] = max(1, round(duration * 1000))
   return {
-    "v": 1,
-    "alg": "CENC-AES-CTR",
+    "v": 2,
+    "alg": "CENC-A256CTR",
     "kid": b64url(kid),
     "codec": primary.codec,
     "startOffsetMs": recording_start_offset(clear, moov),
@@ -548,7 +548,7 @@ INDEX_UUID = b"ASIUS-INDEX-V001"
 def embed_index(filename: str, media: dict[str, Any], owner: str, path: str, key_id: str, private_key) -> dict[str, Any]:
   import json
   payload = Path(filename).read_bytes()
-  indexed = media | {"owner": owner, "path": path, "keyId": key_id,
+  indexed = media | {"owner": owner, "path": path, "keyId": key_id, "signingKey": b64url(private_key.public_key().public_bytes_raw()),
                      "encryptedLength": len(payload) + INDEX_BYTES,
                      "fragments": [fragment | {"offset": fragment["offset"] + INDEX_BYTES} for fragment in media["fragments"]]}
   canonical = json.dumps(indexed, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
