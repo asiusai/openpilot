@@ -3,7 +3,7 @@ import json
 import unittest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from cryptography.hazmat.primitives.asymmetric import ed25519, ec
+from openpilot.system.asius.pqc import RootIdentity
 from openpilot.system.asius.session import SecureSession, wrap_peer, unwrap_peer
 from openpilot.system.asius.recording_keys import public_text
 
@@ -120,8 +120,8 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
 
 class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
-    self.device_key = ed25519.Ed25519PrivateKey.generate()
-    self.client = SecureSession(ed25519.Ed25519PrivateKey.generate(), 'bluetooth')
+    self.device_key = RootIdentity.generate()
+    self.client = SecureSession(RootIdentity.generate(), 'bluetooth')
     self.engine = BlePeerEngine.__new__(BlePeerEngine)
     self.engine.rpc_active = 0
     self.engine.dongle_id = SecureSession(self.device_key, 'bluetooth').public_key
@@ -130,7 +130,7 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
     self.engine.peer_devices = {}
     self.engine.tx = MagicMock(send_text=AsyncMock(return_value=True))
     self.engine.approvals = MagicMock()
-    self.storage_key = public_text(ec.generate_private_key(ec.SECP256R1()))
+    self.storage_key = public_text(RootIdentity.generate().recording_key())
 
   async def establish(self):
     with patch('openpilot.system.asius.bluetoothd.get_device_private_key', return_value=self.device_key):
@@ -190,7 +190,7 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
 
   async def test_second_client_and_disconnect_preserve_first_session(self):
     await self.establish()
-    second = SecureSession(ed25519.Ed25519PrivateKey.generate(), 'bluetooth')
+    second = SecureSession(RootIdentity.generate(), 'bluetooth')
     self.engine.assembler = MagicMock(partial={})
     with patch('openpilot.system.asius.bluetoothd.get_device_private_key', return_value=self.device_key):
       await self.engine.handle_encrypted(wrap_peer(second.begin(self.engine.dongle_id)).encode(), '/second')
