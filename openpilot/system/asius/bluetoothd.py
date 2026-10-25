@@ -25,6 +25,7 @@ from openpilot.system.asius import methods
 from openpilot.system.asius.phone_gps import PHONE_GPS_METHODS, PhoneGps
 from openpilot.system.asius.identity import is_dongle_id, get_device_private_key
 from openpilot.system.asius.session import SecureSession, wrap_peer, unwrap_peer
+from openpilot.system.asius.bluetooth_wire import encode_message, decode_message
 from openpilot.system.asius.pairing_confirmation import Confirmation, announce
 from openpilot.system.asius.terminal import TerminalManager
 from openpilot.system.asius.access_policy import ignition_state, require_ignition_off
@@ -311,7 +312,7 @@ class TxCharacteristic(GattCharacteristic):
 
     frame_bytes = INITIAL_FRAME_BYTES if initial else MAX_FRAME_BYTES
     async with self.send_lock:
-      for frame in encode_frames(text.encode(), frame_bytes=frame_bytes):
+      for frame in encode_frames(encode_message(text), frame_bytes=frame_bytes):
         if not self.notifying:
           return False
         self.value = frame
@@ -614,6 +615,7 @@ class BlePeerEngine:
       payload = b""
       try:
         device, payload = await asyncio.wait_for(self.incoming.get(), timeout=0.5)
+        payload = decode_message(payload).encode()
         message = json.loads(payload)
         if isinstance(message, dict) and message.get("type") == "hello":
           await self.handle_hello()

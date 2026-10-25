@@ -5,6 +5,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from openpilot.system.asius.pqc import RootIdentity
 from openpilot.system.asius.session import SecureSession, wrap_peer, unwrap_peer
+from openpilot.system.asius.bluetooth_wire import encode_message
 from openpilot.system.asius.recording_keys import public_text
 
 from dbus_fast import Message, Variant
@@ -38,9 +39,12 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
     engine.incoming = asyncio.Queue()
     engine.send_authenticated_error = AsyncMock()
     slow_started, release, gps = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    client, device_session = SecureSession(RootIdentity.generate(), 'bluetooth'), SecureSession(RootIdentity.generate(), 'bluetooth')
+    client.receive(device_session.receive(client.begin(device_session.public_key))['reply'])
     async def handle(payload, device):
       assert device == "/phone"
-      if json.loads(payload)["method"] == "searchNavigation":
+      message = device_session.receive(unwrap_peer(payload.decode(), device_session.public_key))['text']
+      if json.loads(message)["method"] == "searchNavigation":
         slow_started.set()
         await release.wait()
       else:
@@ -49,9 +53,9 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
     stop = asyncio.Event()
     task = asyncio.create_task(engine.process_messages(stop))
     try:
-      await engine.incoming.put(('/phone', b'{"method":"searchNavigation"}'))
+      await engine.incoming.put(('/phone', encode_message(wrap_peer(client.encrypt(device_session.public_key, '{"method":"searchNavigation"}')))))
       await asyncio.wait_for(slow_started.wait(), 1)
-      await engine.incoming.put(('/phone', b'{"method":"updatePhoneGps"}'))
+      await engine.incoming.put(('/phone', encode_message(wrap_peer(client.encrypt(device_session.public_key, '{"method":"updatePhoneGps"}')))))
       await asyncio.wait_for(gps.wait(), 0.2)
     finally:
       release.set()
