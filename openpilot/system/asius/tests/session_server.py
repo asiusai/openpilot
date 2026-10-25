@@ -4,7 +4,7 @@ import json
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from openpilot.system.asius.pqc import RootIdentity
 from openpilot.system.asius.session import SecureSession
 
 
@@ -24,7 +24,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(self.sessions) >= 64:
           raise ValueError('Harness session limit')
         key = secrets.token_hex(16)
-        session = SecureSession(ed25519.Ed25519PrivateKey.generate(), body['transport'])
+        session = SecureSession(RootIdentity.generate(), body['transport'])
         self.sessions[key] = session
         result = {'id': key, 'publicKey': session.public_key}
       elif self.path.startswith('/wire/'):

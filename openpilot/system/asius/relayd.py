@@ -7,8 +7,7 @@ import ssl
 import threading
 import time
 
-import jwt
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from openpilot.system.asius.pqc import verify_signature
 from websocket import WebSocketException, create_connection
 
 from openpilot.common.params import Params
@@ -18,7 +17,7 @@ from openpilot.system.asius.access_policy import require_ignition_off
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.athenad import backoff
-from openpilot.system.asius.identity import get_device_private_key, identity_to_bytes, is_dongle_id
+from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
 
 
 APP_AUTHORIZED_KEYS_PARAM = "AppAuthorizedKeys"
@@ -104,7 +103,11 @@ def stable_json(value) -> str:
 
 def sign_jwt(payload: dict, expiry_seconds: int) -> str:
   now = int(wall_time())
-  return jwt.encode({**payload, "iat": now, "nbf": now, "exp": now + expiry_seconds}, get_device_private_key(), algorithm="EdDSA")
+  key = get_device_private_key()
+  header = {"alg": "ML-DSA-65", "typ": "JWT", "key": base64url_encode(key.public_key().public_bytes_raw())}
+  body = {**payload, "iat": now, "nbf": now, "exp": now + expiry_seconds}
+  signed = f"{base64url_encode(stable_json(header).encode())}.{base64url_encode(stable_json(body).encode())}"
+  return f"{signed}.{base64url_encode(key.sign(signed.encode()))}"
 
 
 def pairing_token(recipient: str, expiry_seconds: int = PAIR_TOKEN_SECONDS) -> str:
@@ -119,8 +122,14 @@ def verify_pair_token(token: str | None, recipient: str) -> bool:
   try:
     if not isinstance(token, str):
       return False
-    public_key = ed25519.Ed25519PublicKey.from_public_bytes(identity_to_bytes(recipient))
-    verified = jwt.decode(token, public_key, algorithms=["EdDSA"], options={"verify_exp": False, "verify_nbf": False, "verify_iat": False})
+    if len(token) > 16384:
+      return False
+    header, payload, signature = token.split('.')
+    algorithm = json.loads(base64url_decode(header))
+    if algorithm.get('alg') != 'ML-DSA-65':
+      return False
+    verify_signature(recipient, base64url_decode(algorithm['key']), base64url_decode(signature), f"{header}.{payload}".encode())
+    verified = json.loads(base64url_decode(payload))
     return (verified.get("type") == "pair" and verified.get("to") == recipient and
             pairing_invitation.consume(verified.get("jti"), recipient))
   except Exception:
@@ -165,9 +174,9 @@ def main(exit_event: threading.Event | None = None):
       challenge = json.loads(ws.recv())
       if challenge.get("type") != "challenge" or not isinstance(challenge.get("challenge"), str):
         raise ValueError("relay did not send an authentication challenge")
-      proof = f"asius-room-auth-v1\n{dongle_id}\n{dongle_id}\n{challenge['challenge']}\n".encode()
+      proof = f"asius-room-auth-pq-v1\n{dongle_id}\n{dongle_id}\n{challenge['challenge']}\n".encode()
       signature = base64url_encode(get_device_private_key().sign(proof))
-      ws.send(json.dumps({"type": "authenticate", "signature": signature}))
+      ws.send(json.dumps({"type": "authenticate", "signature": signature, "key": base64url_encode(get_device_private_key().public_key().public_bytes_raw())}))
       if json.loads(ws.recv()).get("type") != "ready":
         raise ValueError("relay authentication failed")
       cloudlog.event("relay.main.connected_ws", ws_uri=relay_host + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,

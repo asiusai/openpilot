@@ -146,11 +146,11 @@ def test_mapbox_cache_and_redacted_errors():
 
 
 def test_device_navigation_proof_uses_base58_identity(monkeypatch):
-  from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+  from openpilot.system.asius.pqc import RootIdentity
   from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
   from openpilot.system.asius import mapbox
   from openpilot.system.asius.identity import bytes_to_identity
-  key = Ed25519PrivateKey.generate().public_key()
+  key = RootIdentity.generate().public_key()
   monkeypatch.setattr(mapbox, 'get_device_public_key', lambda: key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode())
   monkeypatch.setattr(mapbox, 'sign_jwt', lambda claims, expiry_seconds: (claims, expiry_seconds))
   claims, expiry = mapbox.NavigationApi().get_token()

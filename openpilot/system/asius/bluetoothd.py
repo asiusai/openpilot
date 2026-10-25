@@ -257,7 +257,7 @@ class StatusCharacteristic(GattCharacteristic):
 
 class RxCharacteristic(GattCharacteristic):
   def __init__(self, on_frame: Callable[[str, bytes], None]):
-    super().__init__(BLE_RX_UUID, ["read", "write", "secure-read", "secure-write"])
+    super().__init__(BLE_RX_UUID, ["read", "write", "write-without-response", "secure-read", "secure-write"])
     self.on_frame = on_frame
 
   @dbus_method()

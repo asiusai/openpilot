@@ -3,9 +3,11 @@ from unittest.mock import patch
 from openpilot.common.params import Params
 from openpilot.common.version import terms_version, training_version
 
-import jwt
+import json
+from openpilot.system.asius.relayd import base64url_decode
+from openpilot.system.asius.pqc import verify_signature
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from openpilot.system.asius.pqc import RootIdentity
 
 from openpilot.system.asius.service_registration import registration_proof, set_service_hosts, TERMS_VERSION
 
@@ -13,13 +15,16 @@ from openpilot.system.asius.service_registration import registration_proof, set_
 def test_registration_proof_binds_device_challenge_and_terms(tmp_path):
   params = Params(str(tmp_path))
   params.put("HasAcceptedTerms", terms_version, block=True)
-  key = Ed25519PrivateKey.generate()
+  key = RootIdentity.generate()
   with patch('openpilot.system.asius.identity.get_device_identity', return_value='device-key'), \
        patch('openpilot.system.asius.relayd.get_device_private_key', return_value=key), \
        patch('openpilot.system.asius.relayd.wall_time', return_value=1_800_000_000):
     token = registration_proof('ab' * 32, TERMS_VERSION, params)
-  proof = jwt.decode(token, key.public_key(), algorithms=['EdDSA'], audience='asius-services',
-                     options={'verify_exp': False, 'verify_iat': False, 'verify_nbf': False})
+  header, payload, signature = token.split('.')
+  public = json.loads(base64url_decode(header))
+  assert public['alg'] == 'ML-DSA-65'
+  verify_signature(key.identity(), base64url_decode(public['key']), base64url_decode(signature), f'{header}.{payload}'.encode())
+  proof = json.loads(base64url_decode(payload))
   assert proof['type'] == 'service-registration'
   assert proof['device'] == 'device-key'
   assert proof['challenge'] == 'ab' * 32

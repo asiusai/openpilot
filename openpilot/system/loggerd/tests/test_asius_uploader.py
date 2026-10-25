@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from openpilot.system.asius.pqc import RootIdentity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
@@ -28,7 +28,7 @@ from openpilot.system.asius.recording_keys import decode_public, public_text
 
 
 def reader_record():
-  return {"publicKey": public_identity(ed25519.Ed25519PrivateKey.generate()), "storagePublicKey": public_text(ec.generate_private_key(ec.SECP256R1()))}
+  return {"publicKey": public_identity(RootIdentity.generate()), "storagePublicKey": public_text(RootIdentity.generate().recording_key())}
 
 
 def decode64(value: str) -> bytes:
@@ -36,8 +36,8 @@ def decode64(value: str) -> bytes:
 
 
 def test_access_document_and_object_crypto() -> None:
-  device_key = ed25519.Ed25519PrivateKey.generate()
-  reader_key = ec.generate_private_key(ec.SECP256R1())
+  device_key = RootIdentity.generate()
+  reader_key = RootIdentity.generate().recording_key()
   owner = public_identity(device_key)
   reader = reader_record() | {"storagePublicKey": public_text(reader_key)}
   state = initial_state([reader])
@@ -50,10 +50,10 @@ def test_access_document_and_object_crypto() -> None:
   assert recovered["keys"][0]["key"] == state["keys"][0]["key"]
 
   grant = next(grant for grant in document["keys"][0]["grants"] if grant["to"] == reader["publicKey"])
-  shared = reader_key.exchange(ec.ECDH(), decode_public(grant["ephemeral"]))
-  wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-access-p256-v1:{owner}:{grant['keyId']}".encode(),
+  shared = reader_key.decapsulate(decode64(grant["kem"]))
+  wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-pq-v1:{owner}:{grant['keyId']}".encode(),
                   info=f"{owner}:{reader['publicKey']}".encode()).derive(shared)
-  aad = {**{key: grant[key] for key in ("v", "alg", "from", "to", "keyId", "iv", "ephemeral")}, "owner": owner}
+  aad = {**{key: grant[key] for key in ("v", "alg", "from", "to", "keyId", "iv", "kem")}, "owner": owner}
   folder_key = AESGCM(wrap_key).decrypt(decode64(grant["iv"]), decode64(grant["ciphertext"]), canonical_json(aad).encode())
 
   path = "routes/00000001--1234567890/0/qlog.zst"
@@ -82,7 +82,7 @@ def test_revocation_rotates_active_key() -> None:
   assert len(revoked["keys"]) == 2
 
 
-def test_rejects_invalid_p256_recipient() -> None:
+def test_rejects_invalid_mlkem_recipient() -> None:
   assert not can_wrap_for({"storagePublicKey": b64url(b"\x04" + b"\x00" * 64)})
   assert not can_wrap_for({})
 
@@ -94,7 +94,7 @@ def test_asius_uploader_reuses_default_uploader_flow() -> None:
 
 
 def test_sharing_adds_only_the_asius_data_recipient(monkeypatch) -> None:
-  device_key = ed25519.Ed25519PrivateKey.generate()
+  device_key = RootIdentity.generate()
   app_reader = reader_record()
   asius_reader = reader_record()
   published = {}
@@ -154,7 +154,7 @@ def test_app_permissions_update_without_changing_recording_keys() -> None:
   previous = {key: value for key, value in state.items() if key != "authorizedApps"}
   refreshed = update_state(previous, [reader], [reader["publicKey"]])
   assert refreshed["version"] == previous["version"] + 1
-  device_key = ed25519.Ed25519PrivateKey.generate()
+  device_key = RootIdentity.generate()
   document = access_document(device_key, refreshed, [reader])
   recovered = recover_state(device_key, document, [reader], [reader["publicKey"]])
   assert recovered["authorizedApps"] == [reader["publicKey"]]
@@ -162,7 +162,7 @@ def test_app_permissions_update_without_changing_recording_keys() -> None:
 
 
 def test_custom_upload_step_only_adds_compression_encryption_and_transport(tmp_path) -> None:
-  owner_key = ed25519.Ed25519PrivateKey.generate()
+  owner_key = RootIdentity.generate()
   owner = public_identity(owner_key)
   state = initial_state([])
   source = tmp_path / "qlog"
@@ -440,7 +440,7 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
   os.utime(source, (1700000000, 1700000000))
   directory_mtime = segment.stat().st_mtime_ns
   uploader = make_policy_uploader(root)
-  uploader.private_key = ed25519.Ed25519PrivateKey.generate()
+  uploader.private_key = RootIdentity.generate()
   uploader.owner = public_identity(uploader.private_key)
   uploader.sync_access = lambda: initial_state([])
   uploader.sync_summary = lambda route_id: None
@@ -452,7 +452,7 @@ def test_video_upload_uses_recording_time_and_keeps_temporary_files_outside_rout
     media = json.loads(data[28:28+int.from_bytes(data[24:28],'big')])
     assert path == f'routes/00000001--1234567890/0/{name}'
     assert media['owner'] == uploader.owner
-    assert media['alg'] == 'CENC-AES-CTR'
+    assert media['alg'] == 'CENC-A256CTR'
     assert media['codec'].startswith('avc1.' if codec == 'libx264' else ('hvc1.', 'hev1.'))
     unsigned = {key: value for key, value in media.items() if key != 'signature'}
     uploader.private_key.public_key().verify(decode64(media['signature']), canonical_json(unsigned).encode())
