@@ -11,7 +11,7 @@ from typing import Any
 
 import requests
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from openpilot.system.asius.pqc import RootIdentity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -20,8 +20,8 @@ from openpilot.system.loggerd.upload_progress import ProgressReader
 from openpilot.system.asius.identity import bytes_to_identity
 from openpilot.system.asius.recording_keys import decode_public, get_recording_key, public_text
 
-PROTOCOL_VERSION = 1
-ENCRYPTION_MAGIC = b"ASIUSDATA1\n"
+PROTOCOL_VERSION = 2
+ENCRYPTION_MAGIC = b"ASIUSDATA2\n"
 
 
 def wall_time() -> float:
@@ -36,7 +36,7 @@ def canonical_json(value: Any) -> str:
   return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def public_identity(private_key: ed25519.Ed25519PrivateKey) -> str:
+def public_identity(private_key: RootIdentity) -> str:
   return bytes_to_identity(private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
 
 
@@ -49,18 +49,17 @@ def can_wrap_for(reader: dict[str, str]) -> bool:
 
 
 def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_key: bytes) -> dict[str, Any]:
-  ephemeral = ec.generate_private_key(ec.SECP256R1())
-  shared = ephemeral.exchange(ec.ECDH(), decode_public(recipient['storagePublicKey']))
+  shared, ciphertext = decode_public(recipient['storagePublicKey']).encapsulate()
   iv = os.urandom(12)
-  aad = {"v": 1, "alg": "P256-HKDF-SHA256-A256GCM", "from": owner, "to": recipient['publicKey'], "owner": owner,
-         "keyId": key_id, "ephemeral": public_text(ephemeral), "iv": b64url(iv)}
-  wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-access-p256-v1:{owner}:{key_id}".encode(),
+  aad = {"v": PROTOCOL_VERSION, "alg": "MLKEM768-HKDF-SHA384-A256GCM", "from": owner, "to": recipient['publicKey'], "owner": owner,
+         "keyId": key_id, "kem": b64url(ciphertext), "iv": b64url(iv)}
+  wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-pq-v1:{owner}:{key_id}".encode(),
                   info=f"{owner}:{recipient['publicKey']}".encode()).derive(shared)
   ciphertext = AESGCM(wrap_key).encrypt(iv, folder_key, canonical_json(aad).encode())
   return {key: value for key, value in aad.items() if key != "owner"} | {"ciphertext": b64url(ciphertext)}
 
 
-def access_document(private_key: ed25519.Ed25519PrivateKey, state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
+def access_document(private_key: RootIdentity, state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
   owner = public_identity(private_key)
   device = {"publicKey": owner, "storagePublicKey": public_text(get_recording_key(private_key))}
   recipients = list({reader["publicKey"]: reader for reader in [*readers, device]}.values())
@@ -73,8 +72,9 @@ def access_document(private_key: ed25519.Ed25519PrivateKey, state: dict[str, Any
       "grants": [wrap_folder_key(owner, entry["id"], recipient, raw_key) for recipient in recipients],
     })
   unsigned = {
-    "v": 1,
+    "v": PROTOCOL_VERSION,
     "owner": owner,
+    "signingKey": b64url(private_key.public_key().public_bytes_raw()),
     "version": state["version"],
     "updatedAt": int(wall_time() * 1000),
     "activeKey": state["activeKey"],
@@ -84,20 +84,20 @@ def access_document(private_key: ed25519.Ed25519PrivateKey, state: dict[str, Any
   return unsigned | {"signature": b64url(private_key.sign(canonical_json(unsigned).encode()))}
 
 
-def recover_state(private_key: ed25519.Ed25519PrivateKey, document: dict[str, Any], readers: list[dict[str, str]],
+def recover_state(private_key: RootIdentity, document: dict[str, Any], readers: list[dict[str, str]],
                   authorized_apps: list[str] | None = None) -> dict[str, Any]:
   owner = public_identity(private_key)
-  if document.get("owner") != owner:
+  if document.get("v") != PROTOCOL_VERSION or document.get("owner") != owner or document.get("signingKey") != b64url(private_key.public_key().public_bytes_raw()):
     raise ValueError("access document owner mismatch")
   unsigned = {key: value for key, value in document.items() if key != "signature"}
   private_key.public_key().verify(base64.urlsafe_b64decode(document["signature"] + "=" * (-len(document["signature"]) % 4)), canonical_json(unsigned).encode())
   recovered = []
   for entry in document["keys"]:
     grant = next(grant for grant in entry["grants"] if grant["to"] == owner)
-    if grant.get('alg') != 'P256-HKDF-SHA256-A256GCM' or grant.get('from') != owner or grant.get('keyId') != entry['id']:
+    if grant.get('v') != PROTOCOL_VERSION or grant.get('alg') != 'MLKEM768-HKDF-SHA384-A256GCM' or grant.get('from') != owner or grant.get('keyId') != entry['id']:
       raise ValueError('Invalid recording grant')
-    shared = get_recording_key(private_key).exchange(ec.ECDH(), decode_public(grant['ephemeral']))
-    wrap_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-access-p256-v1:{owner}:{entry['id']}".encode(),
+    shared = get_recording_key(private_key).decapsulate(base64.urlsafe_b64decode(grant['kem'] + '=' * (-len(grant['kem']) % 4)))
+    wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-pq-v1:{owner}:{entry['id']}".encode(),
                     info=f"{owner}:{owner}".encode()).derive(shared)
     aad = {key: value for key, value in grant.items() if key != 'ciphertext'} | {'owner': owner}
     iv = base64.urlsafe_b64decode(grant["iv"] + "=" * (-len(grant["iv"]) % 4))
@@ -140,7 +140,7 @@ def encrypt_object(owner: str, path: str, plaintext: bytes, state: dict[str, Any
   active = next(entry for entry in state["keys"] if entry["id"] == state["activeKey"])
   folder_key = base64.urlsafe_b64decode(active["key"] + "=" * (-len(active["key"]) % 4))
   iv = os.urandom(12)
-  header = {"v": 1, "alg": "HKDF-SHA256-A256GCM", "owner": owner, "path": path, "keyId": active["id"], "iv": b64url(iv), "plaintextLength": len(plaintext)}
+  header = {"v": PROTOCOL_VERSION, "alg": "HKDF-SHA256-A256GCM", "owner": owner, "path": path, "keyId": active["id"], "iv": b64url(iv), "plaintextLength": len(plaintext)}
   object_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-object-v1:{owner}:{active['id']}".encode(), info=path.encode()).derive(folder_key)
   ciphertext = AESGCM(object_key).encrypt(iv, plaintext, canonical_json(header).encode())
   encoded_header = json.dumps(header, separators=(",", ":")).encode()
@@ -148,7 +148,7 @@ def encrypt_object(owner: str, path: str, plaintext: bytes, state: dict[str, Any
 
 
 class DataApiClient:
-  def __init__(self, base_url: str, private_key: ed25519.Ed25519PrivateKey, session: requests.Session | None = None):
+  def __init__(self, base_url: str, private_key: RootIdentity, session: requests.Session | None = None):
     self.base_url = base_url.rstrip("/")
     self.private_key = private_key
     self.owner = public_identity(private_key)
@@ -159,12 +159,13 @@ class DataApiClient:
     encoded = b"" if body is None else canonical_json(body).encode()
     now = int(wall_time()) if timestamp is None else timestamp
     claims = {
-      "v": 1,
+      "v": PROTOCOL_VERSION,
       "identity": self.owner,
+      "signingKey": b64url(self.private_key.public_key().public_bytes_raw()),
       "method": method,
       "path": path,
       "bodyHash": b64url(hashlib.sha256(encoded).digest()),
-      "scope": "asius-storage-request-v1",
+      "scope": "asius-storage-request-pq-v1",
       "timestamp": now,
     }
     signature = b64url(self.private_key.sign(canonical_json(claims).encode()))

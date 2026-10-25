@@ -1,12 +1,13 @@
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, load_pem_private_key, load_pem_public_key
+from cryptography.hazmat.primitives.asymmetric import mldsa
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, load_pem_public_key
+from openpilot.system.asius.pqc import ROOT_FILE_BYTES, RootIdentity, identity_from_public
 
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-ED25519_KEY_BYTES = 32
+IDENTITY_HASH_BYTES = 32
 DONGLE_ID_LEN = 44
-PRIVATE_KEY_PATH = Path("/persist/asius/id_ed25519")
+PRIVATE_KEY_PATH = Path("/persist/asius/identity.seed")
 
 
 def base58_encode(value: int) -> str:
@@ -33,15 +34,13 @@ def identity_to_bytes(value: str) -> bytes:
     raise ValueError("invalid identity")
 
   decoded = base58_decode(value)
-  if decoded >= 1 << (ED25519_KEY_BYTES * 8):
+  if decoded >= 1 << (IDENTITY_HASH_BYTES * 8):
     raise ValueError("invalid identity")
-  return decoded.to_bytes(ED25519_KEY_BYTES, "big")
+  return decoded.to_bytes(IDENTITY_HASH_BYTES, "big")
 
 
 def bytes_to_identity(value: bytes) -> str:
-  if len(value) != ED25519_KEY_BYTES:
-    raise ValueError("identity requires a 32-byte Ed25519 public key")
-  return base58_encode(int.from_bytes(value, "big")).rjust(DONGLE_ID_LEN, BASE58[0])
+  return identity_from_public(value)
 
 
 def is_dongle_id(dongle_id: str | None) -> bool:
@@ -56,18 +55,16 @@ def is_dongle_id(dongle_id: str | None) -> bool:
 
 def dongle_id_from_public_key(public_key: str) -> str:
   key = load_pem_public_key(public_key.encode())
-  if not isinstance(key, ed25519.Ed25519PublicKey):
-    raise ValueError("identity requires an Ed25519 public key")
+  if not isinstance(key, mldsa.MLDSA65PublicKey):
+    raise ValueError("identity requires an ML-DSA-65 public key")
 
   public_bytes = key.public_bytes(Encoding.Raw, PublicFormat.Raw)
   return bytes_to_identity(public_bytes)
 
 
-def get_device_private_key() -> ed25519.Ed25519PrivateKey:
-  key = load_pem_private_key(PRIVATE_KEY_PATH.read_bytes(), password=None)
-  if not isinstance(key, ed25519.Ed25519PrivateKey):
-    raise ValueError("device identity key is not Ed25519")
-  return key
+def get_device_private_key() -> RootIdentity:
+  with PRIVATE_KEY_PATH.open('rb') as source:
+    return RootIdentity.from_file_bytes(source.read(ROOT_FILE_BYTES + 1))
 
 
 def get_device_public_key() -> str | None:

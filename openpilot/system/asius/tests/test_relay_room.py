@@ -1,17 +1,15 @@
 import json
 
 import pytest
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from openpilot.system.asius.pqc import RootIdentity
 
-from openpilot.system.asius.relay_room import RelayRoom, STATUS_KEY_MAX_MESSAGES, STATUS_KEY_MAX_BYTES
-from openpilot.system.asius.session import SecureSession, canonical, unb64
+from openpilot.system.asius.relay_room import RelayRoom
+from openpilot.system.asius.session import SecureSession
 
 
 def harness():
-  identity = ed25519.Ed25519PrivateKey.generate()
-  app = ed25519.Ed25519PrivateKey.generate()
+  identity = RootIdentity.generate()
+  app = RootIdentity.generate()
   clients = {c: SecureSession(app, 'web') for c in ('tab-a', 'tab-b')}
   allowed = {clients['tab-a'].public_key}
   calls = []
@@ -32,10 +30,6 @@ def harness():
         result = clients[connection].receive(json.loads(message['payload']))
         if 'text' in result:
           bodies[connection].append(json.loads(result['text']))
-      if message['type'] == 'broadcast':
-        for connection, key in message.get('keys', {}).items():
-          result = clients[connection].receive(json.loads(key))
-          bodies[connection].append(json.loads(result['text']))
     return messages
 
   def join(connection):
@@ -51,118 +45,78 @@ def harness():
   return room, clients, allowed, calls, bodies, receive, drain, join
 
 
-def plaintext(room, key, message):
-  data = json.loads(message['payload'])
-  signed = {k: v for k, v in data.items() if k != 'sig'}
-  room.identity.public_key().verify(unb64(data['sig']), b'asius-status-v1\n' + canonical(signed))
-  header = {k: v for k, v in signed.items() if k != 'ciphertext'}
-  return json.loads(AESGCM(unb64(key['key'])).decrypt(data['n'].to_bytes(12, 'big'), unb64(data['ciphertext']), canonical(header)))
-
-
-def test_same_app_tabs_have_independent_private_sessions_and_one_shared_status():
+def test_tabs_have_independent_commands_and_status_sessions():
   room, clients, _, calls, bodies, receive, drain, join = harness()
-  join('tab-a')
-  first_key = bodies['tab-a'][-1]
-  join('tab-b')
-  assert bodies['tab-a'][-1] == bodies['tab-b'][-1]
-  assert first_key['epoch'] != bodies['tab-a'][-1]['epoch']
+  join('tab-a'); join('tab-b')
   assert calls[0][3] != calls[1][3]
   for connection, client in clients.items():
     receive(connection, client.encrypt(room.owner, json.dumps({'method': 'echo', 'id': connection})))
   for connection, _, body, sid in calls[2:]:
     room.send(connection, {'id': body['id'], 'result': 'private'}, sid)
   drain()
-  assert bodies['tab-a'][-1]['id'] == 'tab-a'
-  assert bodies['tab-b'][-1]['id'] == 'tab-b'
-  room.publish({'speed': 1})
-  room.publish({'speed': 2})
+  assert bodies['tab-a'][-1]['id'] == 'tab-a' and bodies['tab-b'][-1]['id'] == 'tab-b'
+  room.publish({'speed': 1}); room.publish({'speed': 2})
   messages = drain()
-  assert len(messages) == 1 and messages[0]['type'] == 'broadcast'
-  assert plaintext(room, bodies['tab-a'][-2], messages[0])['name'] == 'liveState'
+  assert len(messages) == 2
+  for message in messages:
+    assert message['type'] == 'peer'
+    assert bodies[message['connection']][-1]['name'] == 'liveState'
+    other = 'tab-b' if message['connection'] == 'tab-a' else 'tab-a'
+    with pytest.raises(ValueError):
+      clients[other].receive(json.loads(message['payload']))
+  assert drain() == []
 
 
-def test_leave_rotates_keys_and_old_key_cannot_decrypt_new_status():
-  room, _, _, _, bodies, _, drain, join = harness()
-  join('tab-a')
-  join('tab-b')
-  old_key = bodies['tab-a'][-1]
+def test_leave_stops_status_without_rekeying_other_apps():
+  room, clients, _, _, _, _, drain, join = harness()
+  join('tab-a'); join('tab-b')
+  previous = room.members['tab-a'].session.session_id(clients['tab-a'].public_key)
   room.receive({'type': 'leave', 'connection': 'tab-b'})
   room.publish({'speed': 10})
-  broadcast = next(message for message in drain() if message['type'] == 'broadcast')
-  new_key = bodies['tab-a'][-1]
-  assert old_key['epoch'] != new_key['epoch']
-  assert set(broadcast['keys']) == {'tab-a'}
-  with pytest.raises(InvalidTag):
-    plaintext(room, old_key, broadcast)
-  assert plaintext(room, new_key, broadcast)['payload']
+  messages = [m for m in drain() if m['type'] == 'peer']
+  assert len(messages) == 1 and messages[0]['connection'] == 'tab-a'
+  assert json.loads(messages[0]['payload'])['sid'] == previous
+  with pytest.raises(ValueError):
+    clients['tab-b'].receive(json.loads(messages[0]['payload']))
 
 
-def test_revoked_app_has_no_grace_period_and_no_status_key():
+def test_revoked_app_has_no_grace_period_or_status_access():
   room, _, allowed, _, _, _, drain, join = harness()
-  join('tab-a')
-  allowed.clear()
-  assert not room.has_subscribers()
-  assert not room.members
+  join('tab-a'); allowed.clear()
+  assert not room.has_subscribers() and not room.members
   assert drain()[0]['type'] == 'remove'
 
 
-def test_unchanged_members_reuse_one_key_and_only_send_one_ciphertext_per_update():
-  room, _, _, _, bodies, _, drain, join = harness()
-  join('tab-a')
-  join('tab-b')
-  key = bodies['tab-a'][-1]
+def test_status_uses_symmetric_messages_without_signatures_or_shared_keys():
+  room, clients, _, _, bodies, _, drain, join = harness()
+  join('tab-a'); join('tab-b')
   counters = []
   for n in range(10):
     room.publish({'speed': n})
     messages = drain()
-    assert len(messages) == 1
-    assert 'keys' not in messages[0]
-    data = json.loads(messages[0]['payload'])
-    assert data['sid'] == key['epoch']
-    assert data['v'] == 5 and data['type'] == 'data' and data['to'] == 'status'
-    counters.append(data['n'])
-    assert plaintext(room, key, messages[0])['name'] == 'liveState'
+    assert len(messages) == 2
+    for message in messages:
+      data = json.loads(message['payload'])
+      assert data['v'] == 6 and data['to'] == clients[message['connection']].public_key
+      assert 'sig' not in data and 'keys' not in message
+      assert bodies[message['connection']][-1]['name'] == 'liveState'
+    counters.append(json.loads(messages[0]['payload'])['n'])
   assert len(set(counters)) == 10 and counters == sorted(counters)
 
 
-@pytest.mark.parametrize('attribute,limit', [('counter', STATUS_KEY_MAX_MESSAGES), ('encrypted_bytes', STATUS_KEY_MAX_BYTES)])
-def test_usage_limits_rotate_before_sending_and_start_with_full_baseline(attribute, limit):
-  room, _, _, _, bodies, _, drain, join = harness()
+def test_reconnect_starts_status_with_full_baseline_and_rejects_previous_session():
+  room, clients, _, _, bodies, receive, drain, join = harness()
   join('tab-a')
-  old_key = bodies['tab-a'][-1]
-  setattr(room.publisher, attribute, limit)
-  room.publish({'speed': 10})
-  messages = drain()
-  assert len(messages) == 1 and set(messages[0]['keys']) == {'tab-a'}
-  key = bodies['tab-a'][-1]
-  assert key['epoch'] != old_key['epoch']
-  assert json.loads(messages[0]['payload'])['n'] == 1
-  assert plaintext(room, key, messages[0])['payload']['full'] is True
-  with pytest.raises(InvalidTag):
-    plaintext(room, old_key, messages[0])
+  room.publish({'speed': 1})
+  previous = json.loads(drain()[0]['payload'])
+  client = clients['tab-a']
+  receive('tab-a', client.begin(room.owner)); drain()
+  receive('tab-a', client.encrypt(room.owner, '{}')); drain()
+  assert bodies['tab-a'][-1]['payload']['full'] is True
+  with pytest.raises(ValueError):
+    client.receive(previous)
 
 
-def test_keys_are_wrapped_for_exact_private_session_even_for_same_identity_tabs():
-  room, clients, _, _, _, _, _, join = harness()
-  join('tab-a')
-  # Replace the second join's output handler so we can inspect its undelivered keys.
-  client = clients['tab-b']
-  room.receive({'type': 'join', 'connection': 'tab-b', 'from': client.public_key})
-  room.next_message()  # admit
-  room.receive({'type': 'peer', 'from': client.public_key, 'to': room.owner,
-                'connection': 'tab-b', 'payload': json.dumps(client.begin(room.owner))})
-  welcome = json.loads(room.next_message())
-  client.receive(json.loads(welcome['payload']))
-  room.receive({'type': 'peer', 'from': client.public_key, 'to': room.owner,
-                'connection': 'tab-b', 'payload': json.dumps(client.encrypt(room.owner, '{}'))})
-  room.publish({'speed': 10})
-  broadcast = json.loads(room.next_message())
-  assert set(broadcast['keys']) == {'tab-a', 'tab-b'}
-  for connection in clients:
-    other = 'tab-a' if connection == 'tab-b' else 'tab-b'
-    with pytest.raises(ValueError):
-      clients[connection].receive(json.loads(broadcast['keys'][other]))
-    assert json.loads(clients[connection].receive(json.loads(broadcast['keys'][connection]))['text'])['type'] == 'stream-key'
 def test_bad_client_cannot_disconnect_another_tab():
   room, clients, _, _, bodies, receive, drain, join = harness()
   join('tab-a')

@@ -1,46 +1,14 @@
-"""Device-owned relay room. The server never receives session or status keys."""
+"""Device-owned relay room. The server never receives session keys."""
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
-import secrets
 import threading
 import time
 
 from cryptography.exceptions import InvalidSignature, InvalidTag
 
 from openpilot.system.asius.live_state import StateEncoder
-from openpilot.system.asius.session import SecureSession, b64, canonical, encrypt_data
-
-# Bound each key well before nonce exhaustion. Reserve space for one maximum relay frame.
-STATUS_KEY_MAX_MESSAGES = 1 << 20
-STATUS_KEY_MAX_BYTES = 1 << 30
-MAX_FRAME_BYTES = 256 * 1024
-
-
-class StatusPublisher:
-  def __init__(self, identity, owner):
-    self.identity, self.owner = identity, owner
-    self.key, self.epoch, self.counter = secrets.token_bytes(32), b64(secrets.token_bytes(32)), 0
-    self.encrypted_bytes = 0
-    self.encoder = StateEncoder()
-
-  def key_message(self):
-    return {"type": "stream-key", "epoch": self.epoch, "key": b64(self.key)}
-
-  def exhausted(self):
-    return self.counter >= STATUS_KEY_MAX_MESSAGES or self.encrypted_bytes >= STATUS_KEY_MAX_BYTES - MAX_FRAME_BYTES
-
-  def encrypt(self, snapshot):
-    if self.exhausted():
-      raise ValueError("Status key exhausted")
-    body = canonical({"type": "event", "name": "liveState", "payload": self.encoder.encode(snapshot)})
-    if self.encrypted_bytes + len(body) > STATUS_KEY_MAX_BYTES:
-      raise ValueError("Status key byte limit exceeded")
-    self.counter += 1
-    self.encrypted_bytes += len(body)
-    message = encrypt_data(self.key, self.owner, "status", "web", self.epoch, self.counter, body)
-    return {**message, "sig": b64(self.identity.sign(b"asius-status-v1\n" + canonical(message)))}
-
+from openpilot.system.asius.session import SecureSession, canonical
 
 @dataclass
 class Member:
@@ -48,6 +16,9 @@ class Member:
   session: SecureSession
   deadline: float
   authorized: bool = False
+  encoder: StateEncoder = field(default_factory=StateEncoder)
+  status_sid: str | None = None
+  status_revision: int = -1
 
 
 class RelayRoom:
@@ -61,9 +32,7 @@ class RelayRoom:
     self.lock = threading.RLock()
     self.sequence = 0
     self.snapshot = None
-    self.group = ()
-    self.publisher = None
-    self.keys_pending = False
+    self.snapshot_revision = 0
     self.closed = False
 
   def clear(self):
@@ -74,8 +43,7 @@ class RelayRoom:
       self.members.clear()
       self.queue.clear()
       self.queued_bytes = 0
-      self.publisher, self.snapshot, self.group = None, None, ()
-      self.keys_pending = False
+      self.snapshot = None
 
   def _queue(self, message, connection=None, sid=None):
     size = len(canonical(message))
@@ -149,7 +117,8 @@ class RelayRoom:
 
   def publish(self, snapshot):
     with self.lock:
-      self.snapshot = snapshot  # Replace unsent state. Never queue old positions.
+      self.snapshot = snapshot  # Each connection sends only the latest unsent state.
+      self.snapshot_revision += 1
 
   def refresh(self):
     authorized = self.authorized()
@@ -161,19 +130,12 @@ class RelayRoom:
       if member.peer not in authorized or not member.session.ready(member.peer):
         if self.now() >= member.deadline:
           self._remove(connection)
-    group = tuple(sorted((c, m.session.session_id(m.peer)) for c, m in self.members.items()
-                         if m.peer in authorized and m.session.ready(m.peer)))
-    if group != self.group or (self.publisher and self.publisher.exhausted()):
-      self.group = group
-      self.publisher = StatusPublisher(self.identity, self.owner) if group else None
-      # Wrap only the latest key, together with its first status. Joins need no key acknowledgement.
-      self.keys_pending = bool(group)
     return authorized
 
   def has_subscribers(self):
     with self.lock:
       self.refresh()
-      return bool(self.group)
+      return any(m.authorized and m.session.ready(m.peer) for m in self.members.values())
 
   def next_message(self):
     with self.lock:
@@ -193,17 +155,24 @@ class RelayRoom:
                      "payload": json.dumps(member.session.encrypt(member.peer, json.dumps(message), expected_sid=sid))}
         break
       else:
-        if self.snapshot is None or self.publisher is None:
+        if self.snapshot is None:
           return None
-        payload = self.publisher.encrypt(self.snapshot)
-        self.snapshot = None
-        message = {"type": "broadcast", "from": self.owner, "payload": json.dumps(payload)}
-        if self.keys_pending:
-          key = json.dumps(self.publisher.key_message())
-          message["keys"] = {
-            connection: json.dumps(self.members[connection].session.encrypt(self.members[connection].peer, key, expected_sid=sid))
-            for connection, sid in self.group
-          }
-          self.keys_pending = False
+        for connection, member in self.members.items():
+          if member.peer not in authorized or not member.session.ready(member.peer):
+            continue
+          sid = member.session.session_id(member.peer)
+          if sid != member.status_sid:
+            member.encoder = StateEncoder()
+            member.status_sid, member.status_revision = sid, -1
+          if member.status_revision == self.snapshot_revision:
+            continue
+          body = {"type": "event", "name": "liveState", "payload": member.encoder.encode(self.snapshot)}
+          payload = member.session.encrypt(member.peer, canonical(body).decode(), expected_sid=sid)
+          member.status_revision = self.snapshot_revision
+          message = {"type": "peer", "from": self.owner, "to": member.peer, "connection": connection,
+                     "payload": json.dumps(payload)}
+          break
+        else:
+          return None
       self.sequence += 1
       return json.dumps({**message, "sequence": self.sequence})
