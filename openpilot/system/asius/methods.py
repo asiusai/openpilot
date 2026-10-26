@@ -873,6 +873,12 @@ def installSoftwareUpdate() -> dict[str, int]:
 
 
 @dispatcher.add_method
+def prepareLive(phoneOnline: bool = True, localWifiSupported: bool = False) -> dict:
+  from openpilot.system.asius.turn import prepare_live
+  return prepare_live(phoneOnline, localWifiSupported)
+
+
+@dispatcher.add_method
 def startStream(sdp: str, cameras: list[str], bridge_services_out: list[str], enabled: bool = True, inCar: bool = False) -> dict:
   from openpilot.system.asius.streaming import start_stream
   return start_stream(sdp, cameras, bridge_services_out, enabled, inCar)
@@ -1077,27 +1083,27 @@ def dispatcher_for_peer(sender: str):
   }
 
 
-navigation_rpc_slots = threading.BoundedSemaphore(4)
+network_rpc_slots = threading.BoundedSemaphore(4)
 
 
 def handle_rpc(sender: str, body: dict, connection: str, sid: str) -> None:
   room = relay_room
   if room is None:
     return
-  if body.get("method") not in SEARCH_METHODS:
+  if body.get("method") not in SEARCH_METHODS and body.get("method") != "prepareLive":
     room.send(connection, json.loads(handle(body, dispatcher_for_peer(sender))), sid)
     return
-  # Search can wait for a response over this same socket. Keep its receiver free.
-  if not navigation_rpc_slots.acquire(blocking=False):
-    room.send(connection, {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32000, "message": "Navigation is busy"}}, sid)
+  # Network preparation and search can block. Keep the relay receiver free.
+  if not network_rpc_slots.acquire(blocking=False):
+    room.send(connection, {"jsonrpc": "2.0", "id": body.get("id"), "error": {"code": -32000, "message": "Device is busy. Try again."}}, sid)
     return
 
   def run():
     try:
       room.send(connection, json.loads(handle(body, dispatcher_for_peer(sender))), sid)
     finally:
-      navigation_rpc_slots.release()
-  threading.Thread(target=run, daemon=True, name="navigation-search").start()
+      network_rpc_slots.release()
+  threading.Thread(target=run, daemon=True, name="network-rpc").start()
 
 
 def handle_peer_message(connection: str, sender: str, body: dict, sid: str) -> None:
