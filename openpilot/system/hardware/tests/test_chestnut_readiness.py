@@ -65,7 +65,8 @@ class TestChestnutModelFiles(unittest.TestCase):
       root = Path(directory)
       self.assertFalse(helpers.chestnut_compiled())
       self.assertEqual(helpers.modeld_pkl_path(True), root / 'big_driving_tinygrad.pkl')
-      helpers.modeld_pkl_path(True).touch()
+      model = helpers.modeld_pkl_path(True)
+      model.write_bytes(b'compiled model' * 100)
       for size in ('1344x760', '1928x1208'):
         (root / f'driving_warp_{size}_tinygrad.pkl').touch()
       self.assertFalse(helpers.chestnut_compiled())
@@ -73,3 +74,5 @@ class TestChestnutModelFiles(unittest.TestCase):
       self.assertFalse(helpers.chestnut_compiled())
       (root / 'big_driving_warp_1928x1208_tinygrad.pkl').touch()
       self.assertTrue(helpers.chestnut_compiled())
+      model.write_text('version https://git-lfs.github.com/spec/v1\noid sha256:' + '0' * 64 + '\nsize 2048\n')
+      self.assertFalse(helpers.chestnut_compiled())
