@@ -13,6 +13,7 @@ from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGH
                                                 STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
 
 STARTUP_GRACE = 30.
+OFFROAD_SLEEP_TIMEOUT = 30.
 RUNTIME_HZ = 60.
 STARTED_AT = time.monotonic()
 CAM_LED_ADDR = 0x5b
@@ -425,10 +426,32 @@ def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[in
   return camera_channels([[state.red, state.green, state.blue]] * 6)
 
 
-def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedState:
+class OffroadLedSleep:
+  def __init__(self) -> None:
+    self.offroad_since: float | None = None
+
+  def update(self, sm, now: float) -> bool:
+    # Require fresh ignition data, including when openpilot cannot start.
+    ignition_off = (
+      sm.seen['pandaStates'] and sm.alive['pandaStates'] and sm.valid['pandaStates'] and
+      len(sm['pandaStates']) > 0 and
+      all(p.pandaType != log.PandaState.PandaType.unknown and not p.ignitionLine and not p.ignitionCan
+          for p in sm['pandaStates'])
+    )
+    if not ignition_off:
+      self.offroad_since = None
+    elif self.offroad_since is None:
+      self.offroad_since = now
+    return self.offroad_since is not None and now - self.offroad_since >= OFFROAD_SLEEP_TIMEOUT
+
+
+def led_state(sm, now: float | None = None, setup_complete: bool = True, offroad_asleep: bool = False) -> LedState:
   calibrating = calibration_state(sm)
   if persistent_error(sm) or calibrating == RED:
     return blinking(RED, now) if selfdrive_state_available(sm) and sm['selfdriveState'].active else RED
+
+  if offroad_asleep:
+    return OFF
 
   if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
     return BLUE if setup_complete else SETUP_PENDING
@@ -449,8 +472,9 @@ def led_state(sm, now: float | None = None, setup_complete: bool = True) -> LedS
   return BLUE
 
 
-def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool = True) -> dict[int, list[int]] | None:
-  state = led_state(sm, now, setup_complete)
+def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool = True,
+                           offroad_asleep: bool = False) -> dict[int, list[int]] | None:
+  state = led_state(sm, now, setup_complete, offroad_asleep)
   if state in (RED, DM_WARNING, OFF):
     state = max_brightness(state, brightness)
     rgb = [state.red, state.green, state.blue]
@@ -526,9 +550,11 @@ def main() -> None:
   rk = Ratekeeper(RUNTIME_HZ)
   live_request = {}
   next_live_read = 0.
+  sleep = OffroadLedSleep()
 
   while not done:
     sm.update(0)
+    offroad_asleep = sleep.update(sm, time.monotonic())
     if time.monotonic() >= next_live_read:
       live_request = live_lighting_state()
       next_live_read = time.monotonic() + .1
@@ -544,11 +570,11 @@ def main() -> None:
         rk.keep_time()
         continue
       setup_complete = setup_status(params)["complete"]
-      animated_channels = automatic_led_channels(sm, brightness, now, setup_complete)
+      animated_channels = automatic_led_channels(sm, brightness, now, setup_complete, offroad_asleep)
       if animated_channels is not None:
         led.set_channels(animated_channels)
       else:
-        led.set(led_state(sm, now, setup_complete), brightness=brightness)
+        led.set(led_state(sm, now, setup_complete, offroad_asleep), brightness=brightness)
     rk.keep_time()
 
   led.clear()

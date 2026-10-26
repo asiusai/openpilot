@@ -36,6 +36,8 @@ def healthy_sm(*, started=True):
     faultStatus=None,
     faults=[],
     heartbeatLost=False,
+    ignitionLine=started,
+    ignitionCan=False,
   )])
   sm.set('driverMonitoringState', SimpleNamespace(alertLevel=log.DriverMonitoringState.AlertLevel.none, lockout=False, alwaysOnLockout=False,
                                                 visionPolicyState=SimpleNamespace(faceDetected=True)))
@@ -74,6 +76,47 @@ def test_live_light_preview_only_changes_road_rgb_and_preserves_faults():
 
 def test_blue_when_ready():
   assert ledd.led_state(healthy_sm()) == ledd.BLUE
+
+
+def test_offroad_sleep_and_ignition_wake():
+  sm = healthy_sm(started=False)
+  sleep = ledd.OffroadLedSleep()
+  assert not sleep.update(sm, 100.)
+  assert not sleep.update(sm, 129.9)
+  assert sleep.update(sm, 130.)
+  assert ledd.led_state(sm, offroad_asleep=True) == ledd.OFF
+  assert ledd.led_state(sm, setup_complete=False, offroad_asleep=True) == ledd.OFF
+  assert ledd.automatic_led_channels(sm, 127, 160., offroad_asleep=True) == ledd.camera_channels([[0, 0, 0]] * 6)
+  sm['pandaStates'][0].ignitionCan = True
+  assert not sleep.update(sm, 161.)
+  sm['pandaStates'][0].ignitionCan = False
+  assert not sleep.update(sm, 162.)
+  assert not sleep.update(sm, 191.9)
+  assert sleep.update(sm, 192.)
+  sm['pandaStates'][0].ignitionLine = True
+  assert not sleep.update(sm, 223.)
+
+
+@pytest.mark.parametrize('field', ['seen', 'alive', 'valid'])
+def test_offroad_sleep_requires_continuous_fresh_ignition(field):
+  sm = healthy_sm(started=False)
+  sleep = ledd.OffroadLedSleep()
+  assert not sleep.update(sm, 0.)
+  assert not sleep.update(sm, 29.9)
+  assert sleep.update(sm, 30.)
+  getattr(sm, field)['pandaStates'] = False
+  assert not sleep.update(sm, 61.)
+  getattr(sm, field)['pandaStates'] = True
+  assert not sleep.update(sm, 120.)
+  assert not sleep.update(sm, 149.)
+  assert sleep.update(sm, 150.)
+
+
+def test_offroad_sleep_preserves_faults():
+  sm = healthy_sm(started=False)
+  sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.overheated
+  assert ledd.led_state(sm, offroad_asleep=True) == ledd.RED
+  assert ledd.automatic_led_channels(sm, 6, 160., offroad_asleep=True) == ledd.camera_channels([[6, 0, 0]] * 6)
 
 
 def test_blue_when_not_engageable_or_waiting_for_brake_release():
