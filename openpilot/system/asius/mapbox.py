@@ -12,8 +12,9 @@ NAVIGATION_API = 'https://api.asius.ai/v1/nav'
 
 
 class NavigationApi:
-  def get_token(self):
-    return sign_jwt({'type': 'navigation', 'aud': 'asius-navigation', 'identity': dongle_id_from_public_key(get_device_public_key())}, expiry_seconds=60)
+  def get_token(self, path):
+    return sign_jwt({'type': 'navigation', 'aud': 'asius-navigation', 'identity': dongle_id_from_public_key(get_device_public_key()),
+                     'method': 'GET', 'path': path}, expiry_seconds=60)
 
 
 class MapboxTiles:
@@ -29,8 +30,9 @@ class MapboxTiles:
   def _fetch(self, key):
     z, x, y = key
     try:
-      response = requests.get(f'{NAVIGATION_API}/maps/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf',
-                              headers={'Authorization': f'Bearer {self.api.get_token()}'}, timeout=10)
+      path = f'/v1/nav/maps/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf'
+      response = requests.get(NAVIGATION_API.removesuffix('/v1/nav') + path,
+                              headers={'Authorization': f'Bearer {self.api.get_token(path)}'}, timeout=10)
       response.raise_for_status()
       if len(response.content) > 4 * 1024 * 1024:
         raise OSError('Oversized map tile')
