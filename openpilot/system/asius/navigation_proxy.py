@@ -13,13 +13,13 @@ import time
 import zlib
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlsplit
 
 import requests
 
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
-from openpilot.system.asius.mapbox import NAVIGATION_API
+from openpilot.system.asius.mapbox import NAVIGATION_API, NavigationApi
 from openpilot.system.asius.navigation_route import CHUNK_BYTES, MAX_ROUTE_BYTES
 
 BRIDGE_METHODS = {"claimNavigationRequest", "writeNavigationResponse", "releaseNavigationRequest"}
@@ -107,7 +107,9 @@ class NavigationRequests:
       lease = secrets.token_hex(16)
       db.execute("UPDATE requests SET owner = ?, lease = ?, lease_until = ?, status = 0, total = 0, digest = '', data = ? WHERE id = ?",
                  (peer, lease, time.monotonic() + LEASE_SECONDS, b"", requestId))
-      return {"accepted": True, "lease": lease, "path": row["path"]}
+      # Sign at claim time so direct HTTP timeouts cannot expire the app's proof.
+      return {"accepted": True, "lease": lease, "path": row["path"],
+              "authorization": f"Bearer {NavigationApi().get_token(row['path'])}"}
 
   def write(self, peer, requestId, lease, status, total, digest, offset, chunk):
     if (type(status) is not int or status not in range(200, 600) or type(total) is not int or not 1 <= total <= MAX_ROUTE_BYTES or
@@ -143,20 +145,22 @@ class NavigationRequests:
             "releaseNavigationRequest": lambda **kwargs: self.release(peer, **kwargs)}
 
 
-def request_json(path, query, headers, *, params=None, destination=None, max_bytes=MAX_ROUTE_BYTES):
+def request_json(path, query, *, params=None, destination=None, max_bytes=MAX_ROUTE_BYTES):
   if REQUEST_PATH.fullmatch(path) is None:
     raise ValueError("Unsupported navigation request")
+  url = requests.Request('GET', NAVIGATION_API + path, params=query).prepare().url
+  parsed = urlsplit(url)
+  forwarded = parsed.path + ('?' + parsed.query if parsed.query else '')
+  if len(forwarded) > 4096:
+    raise ValueError("Navigation request is too large")
   try:
-    response = requests.get(NAVIGATION_API + path, params=query, headers=headers, timeout=(2, 8))
+    response = requests.get(url, headers={"Authorization": f"Bearer {NavigationApi().get_token(forwarded)}"}, timeout=(2, 8))
     response.raise_for_status()
     if len(response.content) > max_bytes:
       raise ValueError("Navigation response is too large") from None
     return response.json()
   except (requests.ConnectionError, requests.Timeout):
     # An HTTP error proves the server is reachable. Do not retry provider errors through every app.
-    forwarded = "/v1/nav" + path + "?" + urlencode({key: value for key, value in query.items() if value is not None}, doseq=True)
-    if len(forwarded) > 4096:
-      raise ValueError("Navigation request is too large") from None
     result = NavigationRequests(params).request(forwarded, destination, timeout=90 if path.startswith('/directions/') else 30)
     if len(json.dumps(result).encode()) > max_bytes:
       raise ValueError("Navigation response is too large") from None
