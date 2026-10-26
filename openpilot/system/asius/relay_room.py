@@ -1,14 +1,15 @@
 """Device-owned relay room. The server never receives session keys."""
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
+import secrets
 import threading
 import time
 
 from cryptography.exceptions import InvalidSignature, InvalidTag
 
-from openpilot.system.asius.live_state import StateEncoder
 from openpilot.system.asius.session import SecureSession, canonical
+from openpilot.system.asius.status_stream import StatusStream, status_tag
 
 @dataclass
 class Member:
@@ -16,9 +17,9 @@ class Member:
   session: SecureSession
   deadline: float
   authorized: bool = False
-  encoder: StateEncoder = field(default_factory=StateEncoder)
   status_sid: str | None = None
-  status_revision: int = -1
+  status_epoch: str | None = None
+  status_mac: bytes | None = None
 
 
 class RelayRoom:
@@ -34,6 +35,8 @@ class RelayRoom:
     self.snapshot = None
     self.snapshot_revision = 0
     self.closed = False
+    self.allowlist = frozenset(authorized())
+    self.status = StatusStream(self.owner, now)
 
   def clear(self):
     with self.lock:
@@ -44,6 +47,7 @@ class RelayRoom:
       self.queue.clear()
       self.queued_bytes = 0
       self.snapshot = None
+      self.status = None
 
   def _queue(self, message, connection=None, sid=None):
     size = len(canonical(message))
@@ -121,7 +125,10 @@ class RelayRoom:
       self.snapshot_revision += 1
 
   def refresh(self):
-    authorized = self.authorized()
+    authorized = frozenset(self.authorized())
+    if authorized != self.allowlist or self.status.expired():
+      self.allowlist = authorized
+      self.status = StatusStream(self.owner, self.now)
     for connection, member in list(self.members.items()):
       if member.authorized and member.peer not in authorized:
         self._remove(connection)
@@ -157,22 +164,27 @@ class RelayRoom:
       else:
         if self.snapshot is None:
           return None
+        # A full snapshot bounds the next delta's plaintext size, including removed keys.
+        if self.status.expired(len(canonical(self.snapshot)) + len(canonical(self.status.encoder.previous)) + 1024):
+          self.status = StatusStream(self.owner, self.now)
+        recipients = {}
         for connection, member in self.members.items():
           if member.peer not in authorized or not member.session.ready(member.peer):
             continue
           sid = member.session.session_id(member.peer)
-          if sid != member.status_sid:
-            member.encoder = StateEncoder()
-            member.status_sid, member.status_revision = sid, -1
-          if member.status_revision == self.snapshot_revision:
-            continue
-          body = {"type": "event", "name": "liveState", "payload": member.encoder.encode(self.snapshot)}
-          payload = member.session.encrypt(member.peer, canonical(body).decode(), expected_sid=sid)
-          member.status_revision = self.snapshot_revision
-          message = {"type": "peer", "from": self.owner, "to": member.peer, "connection": connection,
-                     "payload": json.dumps(payload)}
-          break
+          if sid != member.status_sid or member.status_epoch != self.status.epoch:
+            mac = secrets.token_bytes(32)
+            payload = member.session.encrypt(member.peer, canonical(self.status.installation(mac)).decode(), expected_sid=sid)
+            member.status_sid, member.status_epoch, member.status_mac = sid, self.status.epoch, mac
+            message = {"type": "peer", "from": self.owner, "to": member.peer, "connection": connection,
+                       "payload": json.dumps(payload)}
+            break
+          recipients[connection] = member.status_mac
         else:
-          return None
+          if not recipients or self.status.revision == self.snapshot_revision:
+            return None
+          packet = self.status.encrypt(self.snapshot, self.snapshot_revision)
+          message = {'type': 'status', 'from': self.owner, 'payload': packet,
+                     'auth': {connection: status_tag(mac, packet) for connection, mac in recipients.items()}}
       self.sequence += 1
       return json.dumps({**message, "sequence": self.sequence})
