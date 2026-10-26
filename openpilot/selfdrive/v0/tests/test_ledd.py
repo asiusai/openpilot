@@ -119,6 +119,20 @@ def test_offroad_sleep_preserves_faults():
   assert ledd.automatic_led_channels(sm, 6, 160., offroad_asleep=True) == ledd.camera_channels([[6, 0, 0]] * 6)
 
 
+def test_button_wakes_leds_and_extends_awake_time():
+  sm = healthy_sm(started=False)
+  sleep = ledd.OffroadLedSleep()
+  assert not sleep.update(sm, 0.)
+  assert sleep.update(sm, 30.)
+  asleep = sleep.update(sm, 40., button_pressed=True)
+  assert not asleep
+  assert ledd.led_state(sm, offroad_asleep=asleep) == ledd.BLUE
+  assert not sleep.update(sm, 69.9)
+  assert not sleep.update(sm, 69.9, button_pressed=True)
+  assert not sleep.update(sm, 99.8)
+  assert sleep.update(sm, 100.)
+
+
 def test_blue_when_not_engageable_or_waiting_for_brake_release():
   sm = healthy_sm()
   sm['selfdriveState'].engageable = False
