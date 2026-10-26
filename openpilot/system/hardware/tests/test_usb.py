@@ -65,3 +65,13 @@ def test_comma_cable_detection_does_not_require_enumeration(topology, monkeypatc
   assert state().usbState.connected
   usb.TYPEC_CC_ORIENTATION_PATH.write_text('0')
   assert not state().usbState.connected
+
+
+@pytest.mark.parametrize('udc_state,connected', [(None, False), ('not attached', False), ('configured', True), ('suspended', True)])
+def test_usb_host_detection(tmp_path, monkeypatch, udc_state, connected):
+  monkeypatch.setattr(usb, 'UDC_PATH', tmp_path)
+  controller = tmp_path / 'a600000.ssusb'
+  controller.mkdir()
+  if udc_state is not None:
+    (controller / 'state').write_text(udc_state + '\n')
+  assert usb.usb_host_connected() == connected
