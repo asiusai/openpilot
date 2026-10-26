@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from openpilot.selfdrive.v0.buttond import ButtonAction, PandaButton
 from openpilot.system.asius.pairing_confirmation import read_confirmation
 from openpilot.system.asius.live_lighting import read_state as live_lighting_state
 
@@ -430,7 +431,7 @@ class OffroadLedSleep:
   def __init__(self) -> None:
     self.offroad_since: float | None = None
 
-  def update(self, sm, now: float) -> bool:
+  def update(self, sm, now: float, button_pressed: bool = False) -> bool:
     # Require fresh ignition data, including when openpilot cannot start.
     ignition_off = (
       sm.seen['pandaStates'] and sm.alive['pandaStates'] and sm.valid['pandaStates'] and
@@ -440,7 +441,7 @@ class OffroadLedSleep:
     )
     if not ignition_off:
       self.offroad_since = None
-    elif self.offroad_since is None:
+    elif self.offroad_since is None or button_pressed:
       self.offroad_since = now
     return self.offroad_since is not None and now - self.offroad_since >= OFFROAD_SLEEP_TIMEOUT
 
@@ -551,10 +552,14 @@ def main() -> None:
   live_request = {}
   next_live_read = 0.
   sleep = OffroadLedSleep()
+  # Evdev gives each reader its own queue; buttond still handles Bluetooth actions.
+  button = PandaButton()
 
   while not done:
     sm.update(0)
-    offroad_asleep = sleep.update(sm, time.monotonic())
+    now = time.monotonic()
+    button_pressed = any(event.action == ButtonAction.CANCEL for event in button.poll(now))
+    offroad_asleep = sleep.update(sm, now, button_pressed)
     if time.monotonic() >= next_live_read:
       live_request = live_lighting_state()
       next_live_read = time.monotonic() + .1
@@ -577,6 +582,7 @@ def main() -> None:
         led.set(led_state(sm, now, setup_complete, offroad_asleep), brightness=brightness)
     rk.keep_time()
 
+  button.close()
   led.clear()
 
 
