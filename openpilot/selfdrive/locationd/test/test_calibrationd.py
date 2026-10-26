@@ -41,7 +41,8 @@ class TestCalibrationd(OpenpilotTestCase):
         with self.subTest(device_type=device_type), patch.object(calibrationd.HARDWARE, 'get_device_type', return_value=device_type):
           reload(calibrationd)
           for yaw, accepted in ((3.9, True), (4.5, device_type in ('mici', 'v0')),
-                                (4.99, device_type in ('mici', 'v0')), (5.01, False)):
+                                (4.99, device_type in ('mici', 'v0')), (5.0, device_type == 'v0'), (5.01, device_type == 'v0'),
+                                (6.0, device_type == 'v0'), (6.99, device_type == 'v0'), (7.0, False), (7.01, False)):
             for sign in (-1, 1):
               with self.subTest(yaw=sign * yaw):
                 c = calibrationd.Calibrator(param_put=False)
