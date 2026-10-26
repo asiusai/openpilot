@@ -20,6 +20,7 @@ from openpilot.system.asius.navigation_route import RouteStore
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+  monkeypatch.setattr(proxy.NavigationApi, "get_token", lambda self, path: "device-proof:" + path)
   monkeypatch.setattr(proxy.Paths, "shm_path", lambda: str(tmp_path))
   return proxy.NavigationRequests(Params(str(tmp_path / "params")))
 
@@ -51,26 +52,26 @@ def test_direct_http_and_provider_errors_never_queue(store, monkeypatch):
   response.json.return_value = {"routes": []}
   get = MagicMock(return_value=response)
   monkeypatch.setattr(proxy.requests, "get", get)
-  assert proxy.request_json("/search/searchbox/v1/suggest", {"q": "Tartu"}, {}, params=store.params) == {"routes": []}
+  assert proxy.request_json("/search/searchbox/v1/suggest", {"q": "Tartu"}, params=store.params) == {"routes": []}
   assert store.pending() == []
   response.raise_for_status.side_effect = requests.HTTPError("429")
   with pytest.raises(requests.HTTPError):
-    proxy.request_json("/search/searchbox/v1/suggest", {}, {}, params=store.params)
+    proxy.request_json("/search/searchbox/v1/suggest", {}, params=store.params)
   assert store.pending() == []
   with pytest.raises(ValueError, match="Unsupported"):
-    proxy.request_json("/maps/v4/mapbox.mapbox-streets-v8/1/1/1.vector.pbf", {}, {})
+    proxy.request_json("/maps/v4/mapbox.mapbox-streets-v8/1/1/1.vector.pbf", {})
 
 
-def test_offline_device_uses_app_response_without_forwarding_credentials(store, monkeypatch):
+def test_offline_device_uses_app_response_with_request_bound_device_proof(store, monkeypatch):
   monkeypatch.setattr(proxy.requests, "get", MagicMock(side_effect=requests.ConnectionError()))
   data = {"suggestions": [], "padding": secrets.token_hex(12000)}
   with ThreadPoolExecutor() as pool:
     result = pool.submit(proxy.request_json, "/search/searchbox/v1/suggest", {"q": "Tartu & Tallinn", "session_token": "a" * 32},
-                         {"Authorization": "Bearer device-proof"}, params=store.params)
+                         params=store.params)
     request_id = pending(store)
     claim = store.claim("phone", request_id)
     assert "q=Tartu+%26+Tallinn" in claim["path"]
-    assert "device-proof" not in str(claim)
+    assert claim["authorization"] == "Bearer device-proof:" + claim["path"]
     assert store.claim("other-phone", request_id) == {"accepted": False}
     assert store.pending() == []
     upload(store, request_id, claim, data)
@@ -85,7 +86,6 @@ def test_device_keeps_route_ownership_with_offline_http(store, monkeypatch):
   monkeypatch.setattr(proxy.requests, "get", MagicMock(side_effect=requests.ConnectionError()))
   monkeypatch.delenv("MAPBOX_TOKEN", raising=False)
   engine = RouteEngine(MagicMock(), MagicMock(), store.params, RouteStore(store.params))
-  engine.api = MagicMock()
   engine.last_position = (24.7, 59.4)
   route = {"geometry": {"coordinates": [[24.7, 59.4], [24.75, 59.45], [24.8, 59.5]]}, "distance": 100, "duration": 10,
            "legs": [{"steps": [{"geometry": {"coordinates": [[24.7, 59.4], [24.75, 59.45]]}, "distance": 50, "duration": 5},

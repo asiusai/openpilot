@@ -65,7 +65,8 @@ def test_recent_destinations_persist_and_merge(tmp_path, monkeypatch):
   assert Params(str(tmp_path)).get(navigation.RECENT_DESTINATIONS) == recent
 
 
-@pytest.mark.parametrize('field,value', [('latitude', float('nan')), ('longitude', float('inf')), ('latitude', True), ('name', ''), ('name', 'x' * 257), ('address', 'x' * 1025)])
+@pytest.mark.parametrize('field,value', [('latitude', float('nan')), ('longitude', float('inf')), ('latitude', True),
+                                       ('name', ''), ('name', 'x' * 257), ('address', 'x' * 1025)])
 def test_invalid_destination_cannot_change_route_or_history(tmp_path, monkeypatch, field, value):
   monkeypatch.setattr(navigation, 'Params', lambda: Params(str(tmp_path)))
   place = {'latitude': 59, 'longitude': 24, 'name': 'Home', 'address': 'Tallinn'}
@@ -98,15 +99,14 @@ def test_route_engine_uses_asius_proxy_without_mapbox_token(monkeypatch):
   values = {}
   params = MagicMock()
   params.get.side_effect = values.get
-  with patch('openpilot.selfdrive.navigation.navd.Api'):
-    engine = RouteEngine(MagicMock(), MagicMock(), params, store=MagicMock())
-    engine.api.get_token.return_value = 'signed-device-proof'
+  engine = RouteEngine(MagicMock(), MagicMock(), params, store=MagicMock())
+  monkeypatch.setattr('openpilot.system.asius.mapbox.NavigationApi.get_token', lambda self, path: 'signed-device-proof')
   engine.last_position = (24.7, 59.4)
   with patch('requests.get') as get:
     get.return_value.json.return_value = {'routes': []}
     engine.calculate_route((24.8, 59.5))
   assert get.call_args.args[0].startswith('https://api.asius.ai/v1/nav/directions/')
-  assert 'access_token' not in get.call_args.kwargs['params']
+  assert 'access_token' not in get.call_args.args[0]
   assert get.call_args.kwargs['headers']['Authorization'] == 'Bearer signed-device-proof'
 
 
@@ -153,6 +153,8 @@ def test_device_navigation_proof_uses_base58_identity(monkeypatch):
   key = RootIdentity.generate().public_key()
   monkeypatch.setattr(mapbox, 'get_device_public_key', lambda: key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode())
   monkeypatch.setattr(mapbox, 'sign_jwt', lambda claims, expiry_seconds: (claims, expiry_seconds))
-  claims, expiry = mapbox.NavigationApi().get_token()
-  assert claims == {'type': 'navigation', 'aud': 'asius-navigation', 'identity': bytes_to_identity(key.public_bytes(Encoding.Raw, PublicFormat.Raw))}
+  path = '/v1/nav/search/searchbox/v1/suggest?q=Tartu&session_token=test'
+  claims, expiry = mapbox.NavigationApi().get_token(path)
+  assert claims == {'type': 'navigation', 'aud': 'asius-navigation', 'identity': bytes_to_identity(key.public_bytes(Encoding.Raw, PublicFormat.Raw)),
+                    'method': 'GET', 'path': path}
   assert expiry == 60

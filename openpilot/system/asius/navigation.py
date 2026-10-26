@@ -85,10 +85,9 @@ def setNavDestination(latitude, longitude, name, address, previewRevision=None, 
 
 def navigation_request(path, params, max_bytes=256 * 1024):
   import requests
-  from openpilot.system.asius.mapbox import NavigationApi
   from openpilot.system.asius.navigation_proxy import request_json
   try:
-    return request_json('/' + path, params, {"Authorization": f"Bearer {NavigationApi().get_token()}"}, max_bytes=max_bytes)
+    return request_json('/' + path, params, max_bytes=max_bytes)
   except requests.RequestException:
     raise ValueError("Navigation service unavailable. Try again shortly.") from None
 
