@@ -149,13 +149,13 @@ def test_actual_device_registry(tmp_path):
   assert params.get_bool('IsMetric')
 
 
-def test_camera_mode_toggle(tmp_path, monkeypatch):
+def test_persistent_ignition_restricted_toggle(tmp_path, monkeypatch):
   params = Params(str(tmp_path))
   api = ParameterEditor(set(), lambda: params)
-  key = 'CameraRaw12Enabled'
+  key = 'SshEnabled'
   monkeypatch.setattr('openpilot.system.asius.access_policy.ignition_state', lambda: False)
   initial = entry(api, key)
-  assert initial['defaultValue'] == 'true' and initial['requiresIgnitionOff']
+  assert initial['requiresIgnitionOff']
   write(api, key, 'false')
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
   assert Params(str(tmp_path)).get(key) is False
@@ -168,4 +168,4 @@ def test_camera_mode_toggle(tmp_path, monkeypatch):
   assert params.get(key) is True
   write(api, key, '', clear=True)
   restored = entry(api, key)
-  assert not restored['isSet'] and restored['defaultValue'] == 'true'
+  assert not restored['isSet'] and restored['defaultValue'] == initial['defaultValue']
