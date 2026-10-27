@@ -163,15 +163,15 @@ def test_gps_methods_only_exist_on_bluetooth_dispatcher(gps, monkeypatch):
   assert service.owner is None
 
 
-def test_asius_uses_phone_gps_even_with_stale_ublox_parameter(monkeypatch):
+def test_asius_subscribes_to_phone_and_usb_gps(monkeypatch):
   from openpilot.common import gps as selection
   from unittest.mock import Mock
   params = Mock()
   params.get_bool.return_value = True
   monkeypatch.setattr(selection, 'ASIUS_HARDWARE', True)
-  assert selection.get_gps_location_service(params) == 'gpsLocation'
+  assert selection.get_gps_location_services(params) == ['gpsLocation', 'gpsLocationExternal']
   monkeypatch.setattr(selection, 'ASIUS_HARDWARE', False)
-  assert selection.get_gps_location_service(params) == 'gpsLocationExternal'
+  assert selection.get_gps_location_services(params) == ['gpsLocationExternal']
 
 
 def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
