@@ -8,11 +8,14 @@ import openpilot.cereal.messaging as messaging
 from openpilot.common.time_helpers import min_date, MAX_DATE, system_time_valid
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
-from openpilot.common.gps import get_gps_location_service
+from openpilot.common.gps import get_gps_location_services, latest_gps_source
+from openpilot.common.hardware import ASIUS_HARDWARE
 
 
 def set_time(new_time):
   diff = datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - new_time
+  if ASIUS_HARDWARE and diff > datetime.timedelta(0):
+    return
   if abs(diff) < datetime.timedelta(seconds=10):
     cloudlog.debug(f"Time diff too small: {diff}")
     return
@@ -34,10 +37,10 @@ def main() -> NoReturn:
   """
 
   params = Params()
-  gps_location_service = get_gps_location_service(params)
+  gps_services = get_gps_location_services(params)
 
   pm = messaging.PubMaster(['clocks'])
-  sm = messaging.SubMaster([gps_location_service])
+  sm = messaging.SubMaster(gps_services)
   while True:
     sm.update(1000)
 
@@ -46,6 +49,9 @@ def main() -> NoReturn:
     msg.clocks.wallTimeNanos = time.time_ns()
     pm.send('clocks', msg)
 
+    gps_location_service = latest_gps_source(sm, gps_services)
+    if gps_location_service is None:
+      continue
     gps = sm[gps_location_service]
     gps_time = datetime.datetime.fromtimestamp(gps.unixTimestampMillis / 1000., datetime.UTC).replace(tzinfo=None)
     if not sm.updated[gps_location_service] or (time.monotonic() - sm.logMonoTime[gps_location_service] / 1e9) > 2.0:
