@@ -12,7 +12,7 @@ from openpilot.system.asius.navigation_proxy import request_json
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.navigation.helpers import latest_gps_source
+from openpilot.common.gps import latest_gps_source
 from openpilot.selfdrive.navigation.route import along_path, local_meters, nearest_segment
 
 REROUTE_DISTANCE = 25

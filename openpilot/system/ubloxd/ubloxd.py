@@ -56,8 +56,8 @@ class UbxFramer:
         break
       start = self.buf.find(b"\xb5\x62")
       if start < 0:
-        # no preamble in buffer
-        self.buf.clear()
+        # Preserve a split preamble after NMEA or other discarded bytes.
+        self.buf = self.buf[-1:] if self.buf[-1] == self.PREAMBLE1 else bytearray()
         break
       if start > 0:
         # drop garbage before preamble

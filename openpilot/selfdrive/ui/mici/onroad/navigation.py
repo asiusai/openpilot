@@ -4,7 +4,7 @@ import pyray as rl
 from msgq.visionipc import VisionIpcClient
 from openpilot.cereal.visionipc import VisionStreamType
 from openpilot.common.constants import CV
-from openpilot.selfdrive.navigation.helpers import latest_gps_source
+from openpilot.common.gps import latest_gps_source
 from openpilot.selfdrive.navigation.renderer import EGO, ROUTE_INTENSITY, SIZE
 from openpilot.selfdrive.ui.mici.onroad.cameraview import CONNECTION_RETRY_INTERVAL
 from openpilot.selfdrive.ui.ui_state import ui_state

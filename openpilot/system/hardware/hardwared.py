@@ -15,7 +15,7 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
-from openpilot.common.gps import get_gps_location_service
+from openpilot.common.gps import get_gps_location_services, latest_gps_source
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, ASIUS_HARDWARE, PC
@@ -209,8 +209,8 @@ def hw_state_thread(end_event, hw_queue):
 def hardware_thread(end_event, hw_queue) -> None:
   system_stats = LinuxSystemStats() if sys.platform == "linux" else None
   pm = messaging.PubMaster(['deviceState'])
-  gps_service = get_gps_location_service(Params())
-  sm = messaging.SubMaster(["peripheralState", gps_service, "selfdriveState", "pandaStates", "chestnutState"], poll="pandaStates")
+  gps_services = get_gps_location_services(Params())
+  sm = messaging.SubMaster(["peripheralState", "selfdriveState", "pandaStates", "chestnutState"] + gps_services, poll="pandaStates")
 
   count = 0
 
@@ -263,6 +263,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   while not end_event.is_set():
     sm.update(PANDA_STATES_TIMEOUT)
+    gps_service = latest_gps_source(sm, gps_services)
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
@@ -472,7 +473,7 @@ def hardware_thread(end_event, hw_queue) -> None:
         'count': count,
         'pandaStates': [strip_deprecated_keys(p.to_dict()) for p in pandaStates],
         'peripheralState': strip_deprecated_keys(peripheralState.to_dict()),
-        'location': (strip_deprecated_keys(sm[gps_service].to_dict()) if sm.alive[gps_service] and sm[gps_service].hasFix else None),
+        'location': (strip_deprecated_keys(sm[gps_service].to_dict()) if gps_service is not None else None),
         'deviceState': strip_deprecated_keys(msg.to_dict())
       }
       cloudlog.event("STATUS_PACKET", **dat)
