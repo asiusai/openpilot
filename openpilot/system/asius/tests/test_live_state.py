@@ -204,4 +204,4 @@ def test_live_snapshot_marks_stale_gps_unavailable(monkeypatch):
   monkeypatch.setattr(methods, 'getDeviceName', lambda: 'Asius v0')
   monkeypatch.setattr(methods, 'load_authorized_peers', dict)
   monkeypatch.setattr(methods, '_software_update_state', lambda _: {})
-  assert methods._live_state_snapshot(sm, params)['services']['gpsLocation'] == {'hasFix': False}
+  assert methods._live_state_snapshot(sm, params)['services']['gpsLocation'] == {'hasFix': False, 'connected': False}

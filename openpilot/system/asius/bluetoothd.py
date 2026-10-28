@@ -22,7 +22,6 @@ from openpilot.common.hardware import ASIUS_HARDWARE, HARDWARE
 from openpilot.common.swaglog import cloudlog
 import openpilot.cereal.messaging as messaging
 from openpilot.system.asius import methods
-from openpilot.system.asius.phone_gps import PHONE_GPS_METHODS, PhoneGps
 from openpilot.system.asius.identity import is_dongle_id, get_device_private_key
 from openpilot.system.asius.session import SecureSession, wrap_peer, unwrap_peer
 from openpilot.system.asius.bluetooth_wire import encode_message, decode_message
@@ -406,8 +405,6 @@ class BlePeerEngine:
     self.params = Params()
     self.dongle_id = self.params.get("DongleId")
     self.sm = messaging.SubMaster(methods.LIVE_STATE_SERVICES)
-    self.gps_pm = messaging.PubMaster(['gpsLocation'] if ASIUS_HARDWARE else [])
-    self.phone_gps = PhoneGps(lambda message: self.gps_pm.send('gpsLocation', message))
     self.loop: asyncio.AbstractEventLoop | None = None
     self.terminal_output: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=TERMINAL_OUTPUT_QUEUE_SIZE)
     self.terminal_manager = TerminalManager(self.queue_terminal_output)
@@ -436,7 +433,6 @@ class BlePeerEngine:
     self.active_peers.clear()
     self.sessions.clear()
     self.peer_devices.clear()
-    self.phone_gps.clear()
 
   def disconnect(self, device: str) -> None:
     self.sessions.pop(device, None)
@@ -513,11 +509,6 @@ class BlePeerEngine:
     async def respond(response):
       await self.send_body(sender, response, expected_sid=sid)
 
-    if ASIUS_HARDWARE and body.get("method") in PHONE_GPS_METHODS:
-      # The publisher stays on the Bluetooth event loop, never the relay dispatcher.
-      response = json.loads(methods.handle(body, self.phone_gps.dispatcher(sender)))
-      await respond(response)
-      return
     if body.get("method") in methods.NETWORK_ONLY_METHODS:
       await respond({"jsonrpc": "2.0", "id": body.get("id"),
                                     "error": {"code": -32000, "message": "Live video requires a network connection"}})
@@ -604,11 +595,6 @@ class BlePeerEngine:
         cloudlog.exception("asius.bluetooth.terminal_output_failed")
 
 
-  async def expire_phone_gps(self, stop: asyncio.Event) -> None:
-    while not stop.is_set():
-      self.phone_gps.tick(load_authorized_peers())
-      await asyncio.sleep(0.25)
-
   async def process_messages(self, stop: asyncio.Event) -> None:
     pending = set()
     while not stop.is_set():
@@ -620,7 +606,7 @@ class BlePeerEngine:
         if isinstance(message, dict) and message.get("type") == "hello":
           await self.handle_hello()
         else:
-          # Disk/HTTP RPCs must not block phone GPS or other control requests.
+          # Disk/HTTP RPCs must not block other control requests.
           if len(pending) >= 32:
             cloudlog.warning("Bluetooth request queue is full")
           else:
@@ -672,12 +658,10 @@ class BlePeerEngine:
       asyncio.create_task(self.process_messages(stop)),
       asyncio.create_task(self.live_state(stop)),
       asyncio.create_task(self.send_terminal_output(stop)),
-      asyncio.create_task(self.expire_phone_gps(stop)),
     ]
     try:
       await stop.wait()
     finally:
-      self.phone_gps.clear()
       for task in tasks:
         task.cancel()
       await asyncio.gather(*tasks, return_exceptions=True)
