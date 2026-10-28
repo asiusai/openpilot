@@ -6,7 +6,7 @@ from openpilot.common.hardware import ASIUS_HARDWARE
 
 def get_gps_location_services(params: Params) -> list[str]:
   if ASIUS_HARDWARE:
-    return ['gpsLocation', 'gpsLocationExternal']
+    return ['gpsLocationExternal']
   return ['gpsLocationExternal' if params.get_bool('UbloxAvailable') else 'gpsLocation']
 
 
