@@ -149,9 +149,9 @@ BLUETOOTH_STATE_FIELDS = {
                   "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "usbState", "uptime"),
   "peripheralState": ("pandaType", "voltage", "current"),
   "extrinsicsCalibration": ("calStatus", "calPerc"),
-  "gpsLocation": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
+  "gpsLocation": ("connected", "hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
                   "speed", "bearingDeg", "bearingAccuracyDeg", "sampleMonoTime"),
-  "gpsLocationExternal": ("hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
+  "gpsLocationExternal": ("connected", "hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
                           "speed", "bearingDeg", "bearingAccuracyDeg", "sampleMonoTime"),
   "navInstruction": ("maneuverPrimaryText", "maneuverSecondaryText", "maneuverType", "maneuverModifier",
                      "maneuverDistance", "distanceRemaining", "timeRemaining"),
@@ -918,7 +918,9 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
       if service == "modelV2":
         continue  # Used for GPU readiness; never send model geometry over Bluetooth.
       if service in ("gpsLocation", "gpsLocationExternal") and not (sm.alive[service] and sm.valid[service]):
-        services[service] = {"hasFix": False}
+        services[service] = {"hasFix": False, "connected": bool(sm.alive[service])}
+        if sm.alive[service]:
+          services[service]["sampleMonoTime"] = int(sm.logMonoTime[service]) / 1e9
         continue
       if (service in ("deviceState", "carState", "navInstruction", "selfdriveState", "onroadEvents", "driverMonitoringState")
           and not (sm.alive[service] and sm.valid[service])):
@@ -930,6 +932,7 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
         if service == "deviceState":
           services[service]["usbState"] = {"connected": data.usbState.connected}
         if service in ("gpsLocation", "gpsLocationExternal"):
+          services[service]["connected"] = True
           services[service]["sampleMonoTime"] = int(sm.logMonoTime[service]) / 1e9
         if service == "carState":
           # Home needs only these readings, including over the Bluetooth link.

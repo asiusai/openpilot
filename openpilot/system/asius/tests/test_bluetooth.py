@@ -33,12 +33,12 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
     self.assertFalse(bluez_registration_lost(changed('org.bluez', '', ':1.3'), '/org/bluez/hci0'))
     self.assertFalse(bluez_registration_lost(changed('other.service', ':1.2', ''), '/org/bluez/hci0'))
 
-  async def test_slow_rpc_does_not_block_phone_gps(self):
+  async def test_slow_rpc_does_not_block_control(self):
     engine = BlePeerEngine.__new__(BlePeerEngine)
     engine.rpc_active = 0
     engine.incoming = asyncio.Queue()
     engine.send_authenticated_error = AsyncMock()
-    slow_started, release, gps = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    slow_started, release, control = asyncio.Event(), asyncio.Event(), asyncio.Event()
     client, device_session = SecureSession(RootIdentity.generate(), 'bluetooth'), SecureSession(RootIdentity.generate(), 'bluetooth')
     client.receive(device_session.receive(client.begin(device_session.public_key))['reply'])
     async def handle(payload, device):
@@ -48,15 +48,15 @@ class TestBluetoothDiscovery(unittest.IsolatedAsyncioTestCase):
         slow_started.set()
         await release.wait()
       else:
-        gps.set()
+        control.set()
     engine.handle_encrypted = handle
     stop = asyncio.Event()
     task = asyncio.create_task(engine.process_messages(stop))
     try:
       await engine.incoming.put(('/phone', encode_message(wrap_peer(client.encrypt(device_session.public_key, '{"method":"searchNavigation"}')))))
       await asyncio.wait_for(slow_started.wait(), 1)
-      await engine.incoming.put(('/phone', encode_message(wrap_peer(client.encrypt(device_session.public_key, '{"method":"updatePhoneGps"}')))))
-      await asyncio.wait_for(gps.wait(), 0.2)
+      await engine.incoming.put(('/phone', encode_message(wrap_peer(client.encrypt(device_session.public_key, '{"method":"echo"}')))))
+      await asyncio.wait_for(control.wait(), 0.2)
     finally:
       release.set()
       stop.set()
