@@ -40,19 +40,17 @@ def test_screen_button_requires_ignition_off(monkeypatch, tmp_path, ignition):
     assert until is None
 
 
-def test_comma_bluetooth_keeps_builtin_gps(monkeypatch, tmp_path):
-  monkeypatch.setattr(bluetoothd, 'ASIUS_HARDWARE', False)
+def test_bluetooth_does_not_publish_gps(monkeypatch, tmp_path):
   monkeypatch.setattr(bluetoothd, 'Params', lambda: Params(str(tmp_path)))
   monkeypatch.setattr(bluetoothd.messaging, 'SubMaster', Mock())
   pubmaster = Mock()
   monkeypatch.setattr(bluetoothd.messaging, 'PubMaster', pubmaster)
   engine = bluetoothd.BlePeerEngine(Mock())
-  pubmaster.assert_called_once_with([])
+  pubmaster.assert_not_called()
   engine.send_body = AsyncMock()
   engine.peer_devices = {'app': '/test'}
   engine.sessions = {'/test': Mock(session_id=lambda _peer: 'test-session')}
   for method in ('startPhoneGps', 'updatePhoneGps', 'stopPhoneGps'):
     asyncio.run(engine.handle_rpc('app', {'jsonrpc': '2.0', 'id': 1, 'method': method}))
     assert engine.send_body.call_args.args[1]['error']['code'] == -32601
-  assert engine.phone_gps.owner is None
   pubmaster.return_value.send.assert_not_called()
