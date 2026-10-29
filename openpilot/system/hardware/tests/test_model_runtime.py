@@ -4,11 +4,21 @@ import pickle
 import numpy as np
 import pytest
 from tinygrad import Context, Tensor, dtypes
+from tinygrad.device import Buffer
 
 from openpilot.common.hardware import ASIUS_HARDWARE
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.helpers import MODELS_DIR
 from openpilot.selfdrive.modeld.modeld import ModelState, input_view
+
+
+class ArtifactUnpickler(pickle.Unpickler):
+  def find_class(self, module, name):
+    cls = super().find_class(module, name)
+    # Embedded warp buffers retain their original AMD device despite Context(DEV='NULL').
+    if cls is Buffer:
+      return lambda _device, *args, **kwargs: Buffer('NULL', *args, **kwargs)
+    return cls
 
 
 @pytest.mark.parametrize('dtype,np_dtype,offset', [(dtypes.float32, np.float32, 16), (dtypes.uint8, np.uint8, 4)])
@@ -54,6 +64,6 @@ def test_chestnut_artifact_matches_runtime(name):
       artifact = load_pickle(path, out_of_band=True)
     else:
       with path.open('rb') as source:
-        artifact = pickle.load(source)
+        artifact = ArtifactUnpickler(source).load()
     assert artifact['input_specs']
     assert artifact['run'].captured is not None
