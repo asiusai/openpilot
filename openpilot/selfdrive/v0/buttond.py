@@ -7,7 +7,7 @@ import signal
 import stat
 import struct
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 EV_KEY = 0x01
@@ -31,21 +31,22 @@ class ButtonEvent:
   started: float
 
 
-def find_panda_key() -> str | None:
+def find_button_keys() -> list[str]:
+  paths = []
   for name_path in sorted(glob.glob("/sys/class/input/event*/device/name")):
     try:
       with open(name_path, encoding="utf-8") as f:
-        if f.read().strip() == "gpio-keys":
+        if f.read().strip() in ("gpio-keys", "pmic_pwrkey"):
           event_name = name_path.split("/")[-3]
-          return f"/dev/input/{event_name}"
+          paths.append(f"/dev/input/{event_name}")
     except OSError:
       continue
-  return None
+  return paths
 
 
 @dataclass
-class PandaButton:
-  event_device: str | None = None
+class InputButton:
+  event_device: str
   hold_seconds: float = PAIR_HOLD_SECONDS
   fd: int | None = None
   pressed_at: float | None = None
@@ -59,17 +60,11 @@ class PandaButton:
     if now < self.next_retry:
       return False
 
-    path = self.event_device or find_panda_key()
-    if path is None:
-      self.next_retry = now + RECONNECT_SECONDS
-      return False
-
     try:
-      self.fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+      self.fd = os.open(self.event_device, os.O_RDONLY | os.O_NONBLOCK)
       if stat.S_ISCHR(os.fstat(self.fd).st_mode):
         # EVIOCSCLOCKID: use event timestamps, including releases queued during a stall.
         fcntl.ioctl(self.fd, 0x400445a0, struct.pack('i', time.CLOCK_MONOTONIC))
-      self.event_device = path
       self.pending = b""
       return True
     except OSError:
@@ -120,7 +115,7 @@ class PandaButton:
       if event_type != EV_KEY or code != KEY_PROG1:
         continue
 
-      if value == KEY_PRESSED:
+      if value == KEY_PRESSED and self.pressed_at is None:
         self.pressed_at = event_time
         self.pair_sent = False
       elif value == KEY_RELEASED and self.pressed_at is not None:
@@ -133,6 +128,32 @@ class PandaButton:
     self.pending = self.pending[complete:]
     actions.extend(self._long_hold(now))
     return actions
+
+
+@dataclass
+class DeviceButtons:
+  event_device: str | None = None
+  buttons: dict[str, InputButton] = field(default_factory=dict)
+  next_scan: float = 0.0
+
+  def poll(self, now: float | None = None) -> list[ButtonEvent]:
+    now = time.monotonic() if now is None else now
+    if now >= self.next_scan:
+      paths = [self.event_device] if self.event_device else find_button_keys()
+      for path in self.buttons.keys() - set(paths):
+        self.buttons.pop(path).close()
+      for path in paths:
+        if path not in self.buttons:
+          self.buttons[path] = InputButton(path)
+      self.next_scan = now + RECONNECT_SECONDS
+    # Each physical button keeps its own hold timer and release state.
+    return sorted((event for button in self.buttons.values() for event in button.poll(now)), key=lambda event: event.started)
+
+  def close(self) -> None:
+    for button in self.buttons.values():
+      button.close()
+    self.buttons.clear()
+    self.next_scan = 0.0
 
 
 def main() -> None:
@@ -153,7 +174,7 @@ def main() -> None:
   signal.signal(signal.SIGINT, sigterm_handler)
   signal.signal(signal.SIGTERM, sigterm_handler)
 
-  button = PandaButton(event_device=args.event_device)
+  button = DeviceButtons(event_device=args.event_device)
   rk = Ratekeeper(RUNTIME_HZ)
 
   while not done:
