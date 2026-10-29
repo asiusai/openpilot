@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from openpilot.selfdrive.v0.buttond import ButtonAction, PandaButton
+from openpilot.selfdrive.v0.buttond import ButtonAction, DeviceButtons
 from openpilot.system.asius.pairing_confirmation import read_confirmation
 from openpilot.system.asius.live_lighting import read_state as live_lighting_state
 
@@ -553,7 +553,7 @@ def main() -> None:
   next_live_read = 0.
   sleep = OffroadLedSleep()
   # Evdev gives each reader its own queue; buttond still handles Bluetooth actions.
-  button = PandaButton()
+  button = DeviceButtons()
 
   while not done:
     sm.update(0)
