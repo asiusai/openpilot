@@ -163,6 +163,8 @@ static const std::vector<i2c_random_wr_payload> &os04_default_init_regs(bool dri
       {0x3002, 0x21}, {0x3663, 0x26}, {0x368a, 0x00}, {0x3822, 0x14},
       {0x3823, 0x08}, {0x3844, 0x08}, {0x382b, 0x00},
       // Match the Asius module orientation and Bayer crop used by the road cameras.
+      // 0x3716 must match 0x3820's vertical orientation, as in os04c10_mirror_flip.
+      {0x3716, 0x24},
       {0x3811, 0x09}, {0x3813, 0x09}, {0x3820, 0x88}, {0x3880, 0x25},
       {0x5100, 0x04}, {0x5101, 0x00}, {0x5140, 0x04}, {0x5141, 0x00},
       {0x5104, 0x04}, {0x5105, 0x00}, {0x5144, 0x04}, {0x5145, 0x00},
@@ -595,7 +597,9 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   sensor = std::make_unique<OS04C10>();
   sensor->bits_per_pixel = 12;
   LOG("cam %d: using OS04C10 RAW%d media path, %d CSI-2 lanes", cam_idx, sensor->bits_per_pixel, lanes);
-  sensor->black_level = 128;
+  // The four-lane mode retains the sensor's upstream black level.
+  // Only the two-lane table changes its black-level target to 128.
+  if (!driver) sensor->black_level = 128;
   sensor->bayer_pattern = CAM_ISP_PATTERN_BAYER_RGRGRG;
   sensor->mipi_format = CAM_FORMAT_MIPI_RAW_12;
   sensor->frame_data_type = CSI_RAW12;
