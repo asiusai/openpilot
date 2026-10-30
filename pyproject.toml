@@ -36,7 +36,9 @@ dependencies = [
 
   # athena
   "PyJWT[crypto]",
+  "cryptography==50.0.2",  # Asius ML-DSA and ML-KEM provider
   "websocket_client",
+  "dbus-fast==5.0.22",  # Asius Bluetooth transport
 
   # joystickd
   "inputs",
@@ -52,6 +54,8 @@ dependencies = [
 
 [project.optional-dependencies]
 testing = [
+  "pytest>=9.1.1",
+  "pytest-asyncio==1.4.0",  # Asius pairing and Bluetooth tests
   "coverage",   # line coverage
   "ty",         # type checking
   "ruff",       # linting
@@ -149,6 +153,7 @@ unresolved-attribute = "ignore"  # many from capnp and Cython modules
 
 [tool.uv]
 python-preference = "only-managed"
+constraint-dependencies = ["pillow==13.0.0"]
 default-groups = ["standalone"]
 override-dependencies = [
   "opendbc",  # panda pins opendbc from git for standalone use; always use our submodule

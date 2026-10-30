@@ -183,6 +183,7 @@ struct InitData {
     pc @5;
     tizi @6;  # comma 3X
     mici @7;  # comma four
+    v0 @8;    # asius v0
   }
 
   deprecated :group {

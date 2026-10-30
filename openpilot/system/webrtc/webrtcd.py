@@ -7,6 +7,8 @@ import socket
 import time
 import capnp
 import argparse
+import base64
+from collections import deque
 import asyncio
 import contextlib
 import json
@@ -18,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from typing import Any
 
+from openpilot.system.asius.access_policy import ignition_state
 from openpilot.system.webrtc.helpers import StreamRequestBody
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
@@ -73,10 +76,16 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
     super().__init__()
     self.services = list(services)
     self.raw = raw
+    self.can_sock = None
     if raw:
       self.socks = [messaging.sub_sock(s) for s in self.services]
     else:
-      self.sm = messaging.SubMaster(self.services)
+      # CAN is an event stream. Preserve all packets for the app's JSON bridge.
+      self.can_sock = messaging.sub_sock("can", conflate=False, timeout=0) if "can" in services else None
+      self.sm = messaging.SubMaster([s for s in services if s != "can"], frequency=100)
+    self.can_sequence = 0
+    self.can_pending: deque[tuple[int, int]] = deque()
+    self.can_pending_bytes = 0
     self.channels = []
     self._enabled = enabled
 
@@ -105,17 +114,48 @@ class CerealOutgoingMessageProxy(AsyncTaskRunner):
           if channel.is_open() and len(dat) <= channel.max_message_size():
             channel.send(dat)
 
+  def acknowledge_can(self, sequence: int):
+    if type(sequence) is not int or not 0 < sequence <= self.can_sequence:
+      return
+    while self.can_pending and self.can_pending[0][0] <= sequence:
+      self.can_pending_bytes -= self.can_pending.popleft()[1]
+
   def update(self):
     if self.raw:
       self.update_raw()
       return
 
+    if self.can_sock is not None:
+      # Acknowledgements bound the queue even when the browser stops rendering.
+      # libdatachannel-py buffered_amount() crashes on the pinned native binding.
+      for _ in range(256):
+        if self.can_pending_bytes > 1024 * 1024:
+          for channel in self.channels:
+            if channel.is_open():
+              channel.close()
+          self._enabled = False
+          return
+        event = messaging.recv_one_or_none(self.can_sock)
+        if event is None:
+          break
+        self.can_sequence += 1
+        encoded = json.dumps({
+          "type": "can", "sequence": self.can_sequence, "logMonoTime": str(event.logMonoTime),
+          "valid": event.valid, "encoding": "base64",
+          "data": [{"address": m.address, "src": m.src, "dat": base64.b64encode(m.dat).decode("ascii")} for m in event.can],
+        }).encode()
+        self.can_pending.append((self.can_sequence, len(encoded)))
+        self.can_pending_bytes += len(encoded)
+        for channel in self.channels:
+          if channel.is_open():
+            channel.send(encoded)
     # this is blocking in async context...
     self.sm.update(0)
     for service, updated in self.sm.updated.items():
       if not updated:
         continue
-      msg_dict = self.to_json(self.sm[service])
+      # Cabana needs the fingerprint, not binary firmware records or vehicle identity.
+      msg_dict = {"carFingerprint": self.sm[service].carFingerprint} if service == "carParams" else self.to_json(self.sm[service])
       mono_time, valid = self.sm.logMonoTime[service], self.sm.valid[service]
       outgoing_msg = {"type": service, "logMonoTime": mono_time, "valid": valid, "data": msg_dict}
       encoded_msg = json.dumps(outgoing_msg).encode()
@@ -248,9 +288,16 @@ class StreamSession:
 
     self.identifier = str(uuid.uuid4())
     self.params = Params()
-    builder = WebRTCAnswerBuilder(body.sdp, bind_address=_default_route_ip())
+    builder = WebRTCAnswerBuilder(body.sdp, bind_address=body.bind_address or _default_route_ip(), local_only=body.bind_address is not None)
 
     self.enabled = body.enabled
+    self.session_timeout = None if body.in_car or "can" in body.bridge_services_out else SESSION_TIMEOUT_SECONDS
+    self.in_car_state = None
+    self.in_car_request_id = 0
+    self.in_car_request_at = 0.0
+    if body.in_car:
+      from openpilot.system.webrtc.in_car import InCarTelemetry
+      self.in_car_state = InCarTelemetry()
     self.video_tracks = []
     for camera in body.cameras:
       track = LiveStreamVideoStreamTrack(camera, self.enabled)
@@ -269,7 +316,8 @@ class StreamSession:
       self.incoming_bridge = CerealIncomingMessageProxy(self.shared_pub_master)
     if len(body.bridge_services_out) > 0:
       self.outgoing_bridge = CerealOutgoingMessageProxy(body.bridge_services_out, self.enabled, self.raw)
-    self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.enabled)
+    if body.cameras:
+      self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.enabled)
 
     self.run_task: asyncio.Task | None = None
     self._cleanup_lock = asyncio.Lock()
@@ -298,6 +346,8 @@ class StreamSession:
     try:
       if self.raw and isinstance(message, bytes):
         service = messaging.log_from_bytes(message).which()
+        if service == "testJoystick" and ignition_state() is not False:
+          return
         if service in self.incoming_bridge_services:
           self.shared_pub_master.send(service, message)
         return
@@ -307,6 +357,17 @@ class StreamSession:
         msg_type = payload.get("type")
 
         match msg_type:
+          case "canAck":
+            if self.outgoing_bridge is not None:
+              self.outgoing_bridge.acknowledge_can(payload.get("sequence"))
+          case "inCarState":
+            identifier = payload.get("id")
+            if (self.in_car_state is not None and type(identifier) is int and self.in_car_request_id < identifier < 2**32
+                and time.monotonic() - self.in_car_request_at >= 0.05):
+              self.in_car_request_id = identifier
+              self.in_car_request_at = time.monotonic()
+              self.stream.get_messaging_channel().send(json.dumps({"type": "inCarState", "id": identifier,
+                                                                 "state": self.in_car_state.snapshot()}))
           case "livestreamCameraSwitch":
             # only needed for 1 track stream
             if len(self.video_tracks) == 1:
@@ -323,7 +384,7 @@ class StreamSession:
               self.outgoing_bridge.enable(enabled)
             if self.bitrate_controller is not None:
               self.bitrate_controller.enable(enabled)
-            if not enabled:
+            if not enabled and self.video_tracks:
               self.params.put("LivestreamRequestKeyframe", True)
           case "clockSync":
             pong = json.dumps({"type": "clockSync", "data": {
@@ -336,6 +397,8 @@ class StreamSession:
           case _:
             if msg_type not in self.incoming_bridge_services:
               return
+            if msg_type == "testJoystick" and ignition_state() is not False:
+              return
             if self.incoming_bridge is not None:
               self.incoming_bridge.send(message)
     except Exception:
@@ -343,7 +406,7 @@ class StreamSession:
 
   async def run_normal_session(self):
     try:
-      await asyncio.wait_for(self.stream.wait_for_disconnection(), timeout=SESSION_TIMEOUT_SECONDS)
+      await asyncio.wait_for(self.stream.wait_for_disconnection(), timeout=self.session_timeout)
     except TimeoutError:
       self.logger.warning("Stream session (%s) timed out after %d s", self.identifier, SESSION_TIMEOUT_SECONDS)
       try:
@@ -356,7 +419,8 @@ class StreamSession:
 
   async def run(self):
     try:
-      self.params.put("LivestreamRequestKeyframe", True)
+      if self.video_tracks:
+        self.params.put("LivestreamRequestKeyframe", True)
 
       # avoid datachannel race by adding messange_handler immediately
       self.stream.set_message_handler(self.message_handler)
@@ -392,11 +456,13 @@ class StreamSession:
       if self._cleanup_done:
         return
       self._cleanup_done = True
-      self.params.put("LivestreamRequestKeyframe", False)
+      if self.video_tracks:
+        self.params.put("LivestreamRequestKeyframe", False)
       if self.bitrate_controller is not None:
         await self.bitrate_controller.stop()
       if self.outgoing_bridge is not None:
         await self.outgoing_bridge.stop()
+      self.in_car_state = None
       for track in self.video_tracks:
         track.stop()
       self.video_tracks.clear()
@@ -435,7 +501,8 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     return _json_response({"error": "unsupported media type"}, status=415)
 
   stream_dict = state.streams
-  body = StreamRequestBody(**json.loads(raw_body))
+  stream_body = json.loads(raw_body)
+  body = StreamRequestBody(**stream_body)
 
   async with state.stream_lock:
     # don't remove existing connection on prewarm request
@@ -453,6 +520,8 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
       await s.stop()
       stream_dict.pop(sid, None)
 
+    Params().put_bool("IsLiveStreaming", bool(body.cameras))
+    schedule_teardown(state)
     session = StreamSession(body)
     stream_dict[session.identifier] = session
     try:
@@ -466,6 +535,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     except TimeoutError:
       await session.stop()
       stream_dict.pop(session.identifier, None)
+      schedule_teardown(state)
       logging.getLogger("webrtcd").exception("Timed out creating stream answer")
       with cloudlog.ctx(session_id=session.identifier):
         cloudlog.warning("webrtcd.session.answer_timeout")
@@ -473,6 +543,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     except Exception:
       await session.stop()
       stream_dict.pop(session.identifier, None)
+      schedule_teardown(state)
       logging.getLogger("webrtcd").exception("Failed to create stream answer")
       with cloudlog.ctx(session_id=session.identifier):
         cloudlog.exception("webrtcd.session.answer_exception")
@@ -508,6 +579,9 @@ async def handle_post_notify(state: ServerState, payload: Any) -> tuple[int, byt
 
 
 async def on_shutdown(state: ServerState):
+  if state.teardown is not None:
+    state.teardown.cancel()
+  Params().put_bool("IsLiveStreaming", False)
   for session in list(state.streams.values()):
     try:
       ch = session.stream.get_messaging_channel()
@@ -628,6 +702,8 @@ def webrtcd_thread(host: str, port: int):
   loop = asyncio.new_event_loop()
   asyncio.set_event_loop(loop)
   state = ServerState()
+  # No peer connection survives a daemon restart. Retire any orphaned camera demand.
+  Params().put_bool("IsLiveStreaming", False)
 
   server = WebrtcdHTTPServer((host, port), WebrtcdHandler)
   server.state = state

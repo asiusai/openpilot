@@ -284,7 +284,7 @@ void process_peripheral_state(Panda *panda, PubMaster *pm, bool no_fan_control, 
 
   static uint64_t last_cabin_camera_t = 0;
   static uint16_t prev_fan_speed = 999;
-  static int ir_pwr = 0;
+  static int automatic_ir_pwr = 0;
   static int prev_ir_pwr = 999;
   static uint32_t prev_frame_id = UINT32_MAX;
   static bool driver_view = false;
@@ -322,13 +322,15 @@ void process_peripheral_state(Panda *panda, PubMaster *pm, bool no_fan_control, 
       last_cabin_camera_t = event.getLogMonoTime();
 
       if (cur_integ_lines <= CUTOFF_IL) {
-        ir_pwr = 0;
+        automatic_ir_pwr = 0;
       } else if (cur_integ_lines > SATURATE_IL) {
-        ir_pwr = 100;
+        automatic_ir_pwr = 100;
       } else {
-        ir_pwr = 100 * (cur_integ_lines - CUTOFF_IL) / (SATURATE_IL - CUTOFF_IL);
+        automatic_ir_pwr = 100 * (cur_integ_lines - CUTOFF_IL) / (SATURATE_IL - CUTOFF_IL);
       }
     }
+
+    int ir_pwr = Hardware::get_ir_power(automatic_ir_pwr, is_onroad);
 
     // Disable IR on input timeout or when requested offroad.
     if (nanos_since_boot() - last_cabin_camera_t > 1e9 || (!is_onroad && params.getBool("DisableDriverCameraIR"))) {
@@ -420,6 +422,9 @@ void pandad_run(Panda *panda) {
     }
   }
 
+  #ifdef __ASIUS_HARDWARE__
+  Hardware::set_ir_power(0);
+  #endif
   send_thread.join();
 }
 

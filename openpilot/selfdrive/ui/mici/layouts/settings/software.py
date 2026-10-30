@@ -1,3 +1,4 @@
+from openpilot.system.updated.install import request_install
 import subprocess
 import threading
 import pyray as rl
@@ -186,7 +187,7 @@ class InstallUpdateButton(BigButton):
     self.set_enabled(False)
 
     def run():
-      ui_state.params.put_bool("DoReboot", True, block=True)
+      request_install()
 
     threading.Thread(target=run, daemon=True).start()
 

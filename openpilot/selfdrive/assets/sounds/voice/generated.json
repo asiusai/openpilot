@@ -1,0 +1,128 @@
+{
+  "clips": {
+    "calibrating": {
+      "seconds": 4.464,
+      "sha256": "b262c381cea30b9fbeec01bc598baafdf98a87b7814ad1d5123b0d0932e5df1f"
+    },
+    "calibration_error": {
+      "seconds": 4.344,
+      "sha256": "c19f9b9961befda90c66fc10f2bee83c85660969e985f7cddd4f2f4a9f9c889c"
+    },
+    "camera_error": {
+      "seconds": 1.872,
+      "sha256": "733456298c17bd41adc4b88fb70436d97180e036faffcf566c7da3585452a9e7"
+    },
+    "cannot_engage": {
+      "seconds": 2.016,
+      "sha256": "b8802dc449b1e23392e0b1b179090fd0eb17963bba2f96a68566719dabce19fe"
+    },
+    "car_unrecognized": {
+      "seconds": 4.32,
+      "sha256": "d85143a327a9dd25953a156c92ec7363c42c26c7f18d454dfec911f117cee6c5"
+    },
+    "chestnut_error": {
+      "seconds": 1.92,
+      "sha256": "91d85f0833579847b458e7fca4eabc26bec0721f6464ff99367940bbe1031c32"
+    },
+    "model_error": {
+      "seconds": 2.136,
+      "sha256": "18ada7b2658270bec7b3050481102b7ade196449402350a29a141df2f9c0a9c5"
+    },
+    "overheat": {
+      "seconds": 3.792,
+      "sha256": "eba5940543bcad25dc66ba147ca12a9d62f5c768ddbff918ce61b76d0cd022e4"
+    },
+    "pairing_0": {
+      "seconds": 1.51,
+      "sha256": "56dc455a9256a0b68e56e66686e7b9347334c521452093de5ce54493176a1435"
+    },
+    "pairing_1": {
+      "seconds": 1.136,
+      "sha256": "bde28f4363d3b652008188df8cf697425fa8035737278cb8f0a6c9772a201085"
+    },
+    "pairing_2": {
+      "seconds": 1.509,
+      "sha256": "dbea6adcd4063ea7c29ac3e7144bfa9ea4f8629340a8425d5aac456dd8f4e8d2"
+    },
+    "pairing_3": {
+      "seconds": 1.099,
+      "sha256": "76fd94b3c260fd9b96e9d1ce5455fcabfa76b26f7cf2b632e168626f428a39b9"
+    },
+    "pairing_4": {
+      "seconds": 1.499,
+      "sha256": "ec359626624223617bda7237029fbf44de5e1097cbf0d713a1c5a7d0c92f91b3"
+    },
+    "pairing_5": {
+      "seconds": 1.503,
+      "sha256": "8ecad2d138cebbdd956f83de43e1901541b4ca81a14e27f278da082a1fc0f2a9"
+    },
+    "pairing_6": {
+      "seconds": 1.272,
+      "sha256": "d9aec6f2e89f0255bde119b5f192c23cb66753ebffeb332604730ec79c13eb6f"
+    },
+    "pairing_7": {
+      "seconds": 1.509,
+      "sha256": "50e35ee049a40da27774936de4de24f5fa2e29a83238592d5e97b72a361fc8fa"
+    },
+    "pairing_8": {
+      "seconds": 1.508,
+      "sha256": "353bbe3be4a01e39868f40e39fd1f7a044bcff29c47a8ed5a3d9433e225a05f1"
+    },
+    "pairing_9": {
+      "seconds": 1.173,
+      "sha256": "b3b589580b2094c4832b6397b0688d1aaceafc44a3997da25dd85cdd3c905d23"
+    },
+    "pairing_compare": {
+      "seconds": 1.872,
+      "sha256": "02a0bc17034ecbbb071e4c7b3fa19da85380e0a065bf17af95d28808692b506e"
+    },
+    "pairing_confirm_button": {
+      "seconds": 3.672,
+      "sha256": "b41730e69d76726f0fe610b1ee16d4a09b02cf542e09de4b2ad8792b1feba129"
+    },
+    "pairing_confirm_screen": {
+      "seconds": 2.664,
+      "sha256": "402faa031879153d427c9b9b845b502e7c206b1e858d1cb9b532090e7d343f35"
+    },
+    "pairing_failed": {
+      "seconds": 3.528,
+      "sha256": "ce7df0b0811e9975c9a738ba17fc9171aec4d8b1023fc531cfb580d4da005c9c"
+    },
+    "pairing_ignition_on": {
+      "seconds": 3.096,
+      "sha256": "0783eb0e920430f7c150029e5d57836dcdc7a987b08cf885eadcc2abbfe35c62"
+    },
+    "pairing_started": {
+      "seconds": 4.296,
+      "sha256": "381c1bcf1d30e22ca0f4971b1fb04530886abd40218386eb92a3a12bda4a41ab"
+    },
+    "pairing_success": {
+      "seconds": 2.16,
+      "sha256": "0492b0730be99ce128f190b90cb9be3534be0775cd808e14136671cd191f46ec"
+    },
+    "pay_attention": {
+      "seconds": 1.896,
+      "sha256": "4625f685fa3f9ffbd12f10809021a34574a868714d4f043029e6717fa8c61796"
+    },
+    "pedal_pressed": {
+      "seconds": 3.792,
+      "sha256": "02a6d30e88f1a05a408ba2ccbc4fc222d09c1dab6d91d923e6b297253210451d"
+    },
+    "system_error": {
+      "seconds": 1.872,
+      "sha256": "6e7e1e7784fba2da013bf871a05b1f52b219f6a20969d86cbb19fb3c63203d43"
+    },
+    "take_control": {
+      "seconds": 1.872,
+      "sha256": "59254320a5cfcbc257472024a0615d5172796eaef20df22e3762293c0953f72e"
+    },
+    "touch_wheel": {
+      "seconds": 2.208,
+      "sha256": "088273926de21747545d922ade047eb27b71abe62f29f50b8965e6b6260328c8"
+    }
+  },
+  "digit_filter": "atempo=1.25",
+  "filter": "aresample=48000,aformat=channel_layouts=stereo,highpass=f=180,loudnorm=I=-11:TP=-1:LRA=4,aresample=48000,highpass=f=280,acompressor=threshold=0.05:ratio=3:attack=5:release=120:makeup=10,alimiter=limit=0.85:attack=5:release=80:level=false",
+  "source_hash": "fc371d872776e35efaad227000d6ff3f732465a0c2be294bdb9922973461fc2b",
+  "voice": "en-US-JennyNeural"
+}

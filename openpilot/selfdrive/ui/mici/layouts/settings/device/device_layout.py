@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Union
 
 from openpilot.common.basedir import BASEDIR
+from openpilot.common.hardware import BLUETOOTH_AVAILABLE
 from openpilot.common.params import Params
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.mici.layouts.settings.device.prime import PrimeScroller
@@ -18,6 +19,7 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.system.ui.widgets.html_render import HtmlRenderer
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
+from openpilot.system.asius.bluetooth_ui import start_pairing
 
 
 class ReviewTermsPage(TermsPage, NavScroller):
@@ -151,6 +153,11 @@ class DeviceLayoutMici(NavScroller):
     self._pairing_button = PairBigButton()
     self._pending_pairing_grow_animation = False
 
+    bluetooth_btn = BigButton("pair Bluetooth", "Asius App", gui_app.texture("icons_mici/settings/device/phone.png", 85, 64))
+    bluetooth_btn.set_click_callback(lambda: gui_app.push_widget(BigDialog("", tr(start_pairing()))))
+    bluetooth_btn.set_visible(BLUETOOTH_AVAILABLE)
+    bluetooth_btn.set_enabled(ui_state.is_offroad)
+
     def power_off_callback():
       ui_state.params.put_bool("DoShutdown", True, block=True)
 
@@ -167,7 +174,7 @@ class DeviceLayoutMici(NavScroller):
 
     reset_calibration_btn = EngagedConfirmationButton("reset calibration", "reset", gui_app.texture("icons_mici/settings/device/lkas.png", 122, 64),
                                                       reset_calibration_callback,
-                                                      description="Mount the device within 4° left or right and 5° up or 9° down. openpilot calibrates " +
+                                                      description="Mount the device within 5° left or right and 5° up or 9° down. openpilot calibrates " +
                                                                   "continuously; resetting is rarely needed. Resetting clears learned calibration.")
 
     reboot_btn = EngagedConfirmationCircleButton("reboot", gui_app.texture("icons_mici/settings/device/reboot.png", 64, 70),
@@ -195,6 +202,7 @@ class DeviceLayoutMici(NavScroller):
     self._scroller.add_widgets([
       DeviceInfoLayoutMici(),
       self._pairing_button,
+      bluetooth_btn,
       review_training_guide_btn,
       cabin_cam_btn,
       terms_btn,
