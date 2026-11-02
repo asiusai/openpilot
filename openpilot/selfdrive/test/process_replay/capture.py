@@ -1,5 +1,6 @@
 import os
 import sys
+from multiprocessing.reduction import DupFd
 
 from typing import no_type_check
 
@@ -16,6 +17,13 @@ class FdRedirect:
   def __del__(self):
     os.close(self.dest_fd)
 
+  def __getstate__(self):
+    return {**self.__dict__, "dest_fd": DupFd(self.dest_fd)}
+
+  def __setstate__(self, state):
+    self.__dict__.update(state)
+    self.dest_fd = state["dest_fd"].detach()
+
   def purge(self) -> None:
     os.unlink(self.dest_fname)
 
@@ -29,13 +37,15 @@ class FdRedirect:
 
 class ProcessOutputCapture:
   def __init__(self, proc_name: str, prefix: str):
+    self.owner_pid = os.getpid()
     prefix = f"{proc_name}_{prefix}"
     self.stdout_redirect = FdRedirect(prefix, 1)
     self.stderr_redirect = FdRedirect(prefix, 2)
 
   def __del__(self):
-    self.stdout_redirect.purge()
-    self.stderr_redirect.purge()
+    if self.owner_pid == os.getpid():
+      self.stdout_redirect.purge()
+      self.stderr_redirect.purge()
 
   @no_type_check # ipython classes have incompatible signatures
   def link_with_current_proc(self) -> None:

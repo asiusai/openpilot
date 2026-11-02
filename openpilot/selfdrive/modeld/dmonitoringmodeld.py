@@ -45,7 +45,9 @@ class ModelState:
     self.model_run = jits['run']
     self.outputs = {name: Tensor(np.zeros(shape, dtype=dtype), device=device).realize() for name, (shape, dtype, device) in jits['output_specs'].items()}
     with open(MODELS_DIR / f'dm_warp_{cam_w}x{cam_h}_tinygrad.pkl', "rb") as f:
-      self.image_warp = pickle.load(f)['run']
+      warp = pickle.load(f)
+      self.image_warp = warp['run']
+      self.warp_device = warp['input_specs']['input_frame'][2]
 
   def run(self, buf: VisionBuf, calib: np.ndarray, transform: np.ndarray) -> tuple[np.ndarray, float]:
     self.numpy_inputs['calib'][0,:] = calib
@@ -57,10 +59,10 @@ class ModelState:
     # There is a ringbuffer of imgs, just cache tensors pointing to all of them
     cache_key = (ptr, buf.fd)
     if cache_key not in self._blob_cache:
-      self._blob_cache[cache_key] = tensor_from_dma_buf(ptr, buf.fd, self.frame_buf_params[3], self.DEV)
+      self._blob_cache[cache_key] = tensor_from_dma_buf(ptr, buf.fd, self.frame_buf_params[3], self.warp_device)
 
     self.warp_inputs_np['transform'][:] = transform[:]
-    self.tensor_inputs['input_img'] = self.image_warp(input_frame=self._blob_cache[cache_key], M_inv=self.warp_inputs['transform'])
+    self.tensor_inputs['input_img'] = self.image_warp(input_frame=self._blob_cache[cache_key], M_inv=self.warp_inputs['transform']).to(self.DEV).realize()
 
     self.model_run(output_buffers=self.outputs, **self.tensor_inputs)
     output = self.outputs['outputs'].numpy().astype(np.float32).reshape(-1)

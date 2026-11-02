@@ -1,7 +1,9 @@
 import ctypes.util
 import glob
 import os
-from SCons.Script import Action, Value
+import shlex
+from SCons.Script import Action, Value, ARGUMENTS
+from SCons.Errors import UserError
 from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, DM_INPUT_SIZE
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
@@ -51,8 +53,35 @@ def compile_model(onnx_path, pkl_path, flags=tg_flags):
     Action(cmd, "  [ONNX] $TARGET"),
   )
 
-compile_model('models/dmonitoring_model.onnx', 'models/dmonitoring_model_tinygrad.pkl')
-compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl', driving_tg_flags)
+qnn_context = ARGUMENTS.get('qnn_dmonitoring_context')
+qnn_sample = ARGUMENTS.get('qnn_dmonitoring_sample')
+if bool(qnn_context) != bool(qnn_sample):
+  raise UserError('qnn_dmonitoring_context and qnn_dmonitoring_sample must be provided together')
+if qnn_context:
+  if not ASIUS_HARDWARE or arch != 'comma_arm64':
+    raise UserError('Package QNN models on the Dragon target')
+  source = File('models/dmonitoring_model.onnx').abspath
+  target = File('models/dmonitoring_model_tinygrad.pkl').abspath
+  context, sample = File(qnn_context).abspath, File(qnn_sample).abspath
+  cmd = 'DEV=QNN ' + shlex.join(['python3', f'{compiler}/compile_qnn.py', source, context, target, '--sample', sample])
+  lenv.Command(target, tinygrad_files + [source, context, sample, Value(cmd)], Action(cmd, '  [QNN] $TARGET'))
+else:
+  compile_model('models/dmonitoring_model.onnx', 'models/dmonitoring_model_tinygrad.pkl')
+driving_qnn = {name: ARGUMENTS.get(f'qnn_driving_{name}') for name in ('context', 'sample', 'pre', 'post')}
+if any(driving_qnn.values()):
+  if not all(driving_qnn.values()):
+    raise UserError('qnn_driving_context, qnn_driving_sample, qnn_driving_pre and qnn_driving_post must be provided together')
+  if not ASIUS_HARDWARE or arch != 'comma_arm64':
+    raise UserError('Package QNN models on the Dragon target')
+  paths = {name: File(path).abspath for name, path in driving_qnn.items()}
+  source = File('models/driving_supercombo.onnx').abspath
+  target = File('models/driving_tinygrad.pkl').abspath
+  cmd = 'DEV=QCOM IMAGE=1 FLOAT16=0 NOLOCALS=1 JIT_BATCH_SIZE=0 OPENPILOT_HACKS=1 ' + shlex.join([
+    'python3', f'{compiler}/compile_qnn.py', source, paths['context'], target,
+    '--sample', paths['sample'], '--pre', paths['pre'], '--post', paths['post']])
+  lenv.Command(target, tinygrad_files + [source, *paths.values(), Value(cmd)], Action(cmd, '  [QNN] $TARGET'))
+else:
+  compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl', driving_tg_flags)
 
 model_w, model_h = MEDMODEL_INPUT_SIZE
 for cam_w, cam_h in camera_configs:

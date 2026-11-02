@@ -78,6 +78,9 @@ def or_(*fns):
 def and_(*fns):
   return lambda *args: operator.and_(*(fn(*args) for fn in fns))
 
+# QNN libraries need normal process exit for DSP cleanup on Asius ARM devices.
+MODEL_START_METHOD = "spawn" if ASIUS_HARDWARE and platform.machine() == "aarch64" else None
+
 procs = [
   DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid", enabled=False),
   DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelayPid"),
@@ -97,12 +100,12 @@ procs = [
   PythonProcess("micd", "openpilot.system.micd", iscar),
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
-  PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
+  PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad, start_method=MODEL_START_METHOD),
   PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
 
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview,
-                enabled=(WEBCAM or not PC)),
+                enabled=(WEBCAM or not PC), start_method=MODEL_START_METHOD),
   PythonProcess("sensord", "openpilot.system.sensord.sensord", only_onroad, enabled=not PC),
   PythonProcess("ui", "openpilot.selfdrive.ui.ui", always_run, enabled=not ASIUS_HARDWARE),
   PythonProcess("soundd", "openpilot.selfdrive.ui.soundd", sound),
