@@ -7,6 +7,7 @@ import platform
 import re
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 MODEL_NAMES = (
@@ -18,7 +19,9 @@ MODEL_NAMES = (
 BINARIES = (
   "openpilot/system/camerad/camerad", "openpilot/system/loggerd/loggerd",
   "openpilot/system/loggerd/encoderd", "openpilot/selfdrive/pandad/pandad",
-  "openpilot/common/libparams_c.so", "msgq_repo/msgq/visionipc/visionipc_pyx.so",
+  "openpilot/common/libparams_c.so",
+  f"msgq_repo/msgq/_ipc{sysconfig.get_config_var('EXT_SUFFIX')}",
+  f"msgq_repo/msgq/visionipc/_visionipc{sysconfig.get_config_var('EXT_SUFFIX')}",
 )
 
 
@@ -43,6 +46,22 @@ def validate(root: Path) -> None:
       header = stream.read(20)
     if header[:6] != b"\x7fELF\x02\x01" or int.from_bytes(header[18:20], "little") != 183:
       raise ValueError(f"Expected an AArch64 ELF binary: {name}")
+
+
+def deduplicate_lfs(root: Path) -> None:
+  objects = json.loads(subprocess.check_output([
+    sys.executable, "-c", "import json, lfs; print(json.dumps([(oid, size, paths) for (oid, size), paths in lfs.pointers_for_index().items()]))",
+  ], cwd=root, text=True))
+  for oid, size, names in objects:
+    obj = root / ".git/lfs/objects" / oid[:2] / oid[2:4] / oid
+    for name in names:
+      model = root / name
+      if model.stat().st_size != size or sha256(model) != oid:
+        raise ValueError(f"Invalid LFS model: {name}")
+    if obj.stat().st_size != size or sha256(obj) != oid:
+      raise ValueError(f"Invalid LFS object: {oid}")
+    obj.unlink()
+    os.link(root / names[0], obj)
 
 
 def package(source: Path, root: Path, output: Path) -> dict:
@@ -79,15 +98,7 @@ def package(source: Path, root: Path, output: Path) -> dict:
   git(root, "gc", "--prune=now")
 
   # Keep LFS functional, but store each large model only once in the archive.
-  for row in git(root, "lfs", "ls-files", "-l").splitlines():
-    oid, _, name = row.split(" ", 2)
-    model = root / name
-    obj = root / ".git/lfs/objects" / oid[:2] / oid[2:4] / oid
-    if sha256(model) != oid or sha256(obj) != oid:
-      raise ValueError(f"Invalid LFS model: {name}")
-    obj.unlink()
-    os.link(model, obj)
-  git(root, "lfs", "fsck")
+  deduplicate_lfs(root)
   if git(root, "status", "--porcelain") or git(root, "submodule", "status"):
     raise ValueError("Prebuilt checkout is dirty or contains submodules")
 

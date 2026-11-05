@@ -267,16 +267,15 @@ msgq_visionbuf = patched_msgq_source(Path(Dir('#').abspath))
 
 env_msgq = env.Clone()
 # Redirect only this compilation unit to its patched build copy.
-msgq_shared_object = env_msgq.SharedObject
-def msgq_objects(_env, sources):
+def msgq_objects(_env, target=None, source=None, **kwargs):
   original = File('#msgq_repo/msgq/visionipc/visionbuf.cc').abspath
-  return msgq_shared_object([str(msgq_visionbuf) if File(source).abspath == original else source for source in sources])
+  def redirect(sources):
+    return [str(msgq_visionbuf) if _env.File(s).abspath == original else s for s in _env.Flatten(sources)]
+  if source is None:
+    return _env['BUILDERS']['SharedObject'](_env, None, redirect(target), **kwargs)
+  return _env['BUILDERS']['SharedObject'](_env, target, redirect(source), **kwargs)
 
 env_msgq.AddMethod(msgq_objects, 'SharedObject')
-# Cython's generated C++ can stay unchanged when the native class layout changes.
-# Include headers in the object cache keys to prevent stale Python bindings.
-envCython.Depends(['#msgq_repo/msgq/ipc_pyx.o', '#msgq_repo/msgq/visionipc/visionipc_pyx.o'],
-                  Glob('#msgq_repo/msgq/*.h') + Glob('#msgq_repo/msgq/visionipc/*.h'))
 SConscript(['msgq_repo/SConscript'], exports={'env': env_msgq})
 
 SConscript(['openpilot/cereal/SConscript'])

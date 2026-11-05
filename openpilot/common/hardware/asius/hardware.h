@@ -1,12 +1,12 @@
 #pragma once
 
 #include <fstream>
+#include <ctime>
 #include <map>
 #include <string>
 
 #include "common/hardware/base.h"
 #include "common/hardware/asius/lighting.h"
-#include "common/timing.h"
 #include "common/util.h"
 
 class HardwareAsius : public HardwareNone {
@@ -30,7 +30,9 @@ public:
   }
 
   static int get_ir_power(int automatic, bool onroad) {
-    return live_ir_power(automatic, onroad, util::read_file("/dev/shm/asius-live-lighting.json"), nanos_monotonic() / 1e9);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return live_ir_power(automatic, onroad, util::read_file("/dev/shm/asius-live-lighting.json"), now.tv_sec + now.tv_nsec * 1e-9);
   }
 
   static std::map<std::string, std::string> get_init_logs(bool = false) {
