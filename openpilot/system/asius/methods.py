@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import subprocess
 import tempfile
 import threading
@@ -32,7 +33,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata, terms_version, training_version
 from openpilot.system.hardware.chestnut.app_status import gpu_status
 from openpilot.system.athena import athenad as upstream_athena
-from openpilot.system.athena.rpc import Dispatcher, handle
+from openpilot.system.athena.rpc import Dispatcher, boolean, dict_of, either, handle, integer, list_of, number, one_of, regex
 from openpilot.system.asius.terminal import TerminalManager
 from openpilot.system.asius.param_editor import ParameterEditor
 from openpilot.system.asius.relayd import (
@@ -157,20 +158,36 @@ BLUETOOTH_STATE_FIELDS = {
                      "maneuverDistance", "distanceRemaining", "timeRemaining"),
   "selfdriveState": ("enabled", "active", "engageable", "alertText1", "alertText2", "alertStatus", "alertSize", "alertType"),
 }
-dispatcher["echo"] = lambda s: s
+def _string(value: Any) -> bool:
+  return isinstance(value, str)
+
+
+def _json_value(value: Any) -> bool:
+  if value is None or isinstance(value, (str, bool, int)):
+    return True
+  if isinstance(value, float):
+    return math.isfinite(value)
+  if isinstance(value, list):
+    return all(_json_value(item) for item in value)
+  return isinstance(value, dict) and all(isinstance(key, str) and _json_value(item) for key, item in value.items())
+
+
+dispatcher.add_method(lambda s: s, method_name="echo", s=_json_value)
+dispatcher.add_method(upstream_athena.getMessage, service=one_of(*messaging.SERVICE_LIST), timeout=integer(0, 10_000))
+dispatcher.add_method(upstream_athena.listDataDirectory, prefix=either(one_of(''), regex(upstream_athena.DATA_PATH)))
+dispatcher.add_method(upstream_athena.setRouteViewed, route=regex(upstream_athena.RE.ROUTE_NAME))
+dispatcher.add_method(setNavDestination, latitude=number(-90, 90), longitude=number(-180, 180), name=_string, address=_string,
+                      previewRevision=either(one_of(None), _string), routeIndex=either(one_of(None), integer(0, 2**31 - 1)))
+dispatcher.add_method(getNavigationRoute, revision=_string, offset=integer(0, 2**31 - 1))
+dispatcher.add_method(previewNavigation, latitude=number(-90, 90), longitude=number(-180, 180), name=_string, address=_string)
+dispatcher.add_method(getNavigationPreview, revision=_string, offset=integer(0, 2**31 - 1))
+dispatcher.add_method(searchNavigation, query=_string, session=_string, latitude=either(one_of(None), number(-90, 90)),
+                      longitude=either(one_of(None), number(-180, 180)), language=_string)
+dispatcher.add_method(retrieveNavigationLocation, mapboxId=_string, session=_string)
 for method in (
-  upstream_athena.getMessage,
-  setNavDestination,
   getRecentNavDestinations,
-  getNavigationRoute,
   getNavigationState,
-  previewNavigation,
-  getNavigationPreview,
-  searchNavigation,
-  retrieveNavigationLocation,
   upstream_athena.clearNavDestination,
-  upstream_athena.listDataDirectory,
-  upstream_athena.setRouteViewed,
   upstream_athena.getSimInfo,
   upstream_athena.getNetworkType,
   upstream_athena.getNetworkMetered,
@@ -242,24 +259,24 @@ def getAllParams() -> dict[str, Any]:
   return _read_params(params, [key.decode('utf-8') for key in params.all_keys()])
 
 
-@dispatcher.add_method
+@dispatcher.add_method(names=list_of(_string))
 def getParams(names: list[str]) -> dict[str, Any]:
   if not isinstance(names, list) or len(names) > 256 or any(not isinstance(name, str) for name in names):
     raise ValueError("Expected a list of up to 256 parameter names")
   return _read_params(Params(), names)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(after=_string, limit=integer(1, 2**31 - 1))
 def getParamCatalog(after: str = '', limit: int = 24) -> dict:
   return parameter_editor.catalog(after, limit)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(name=_string, revision=_string, offset=integer(0, 2**31 - 1))
 def readParamValue(name: str, revision: str, offset: int = 0) -> dict:
   return parameter_editor.read(name, revision, offset)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(params_to_update=dict_of(_string, _json_value))
 def saveParams(params_to_update: dict[str, str | bool | int | float | dict | list | None]) -> dict[str, str]:
   params = Params()
   results = {}
@@ -293,7 +310,7 @@ def getDeviceName() -> str:
   }.get(HARDWARE.get_device_type(), "Asius v0")
 
 
-@dispatcher.add_method
+@dispatcher.add_method(name=_string)
 def setDeviceName(name: str) -> dict[str, str]:
   name = name.strip()
   if not name or len(name) > 40 or not name.isprintable():
@@ -316,7 +333,7 @@ def getAuthorizedPeers() -> dict[str, Any]:
   }
 
 
-@dispatcher.add_method
+@dispatcher.add_method(publicKey=_string)
 def removeAuthorizedPeer(publicKey: str) -> dict[str, Any]:
   return {"removed": forget_peer(publicKey)}
 
@@ -329,7 +346,7 @@ def getPairingUrl() -> str:
   return pairing_url(dongle_id)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(username=regex(r'\s*(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?)?\s*'))
 def setGithubUsername(username: str) -> dict[str, str]:
   require_ignition_off()
   params = Params()
@@ -391,7 +408,7 @@ def getTailscaleState() -> dict[str, Any]:
   }
 
 
-@dispatcher.add_method
+@dispatcher.add_method(disconnect=boolean)
 def configureTailscale(disconnect: bool = False) -> str | None:
   if disconnect:
     subprocess.run([*TAILSCALE_COMMAND, "logout"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
@@ -769,7 +786,7 @@ def refreshNetworks() -> dict:
   return getNetworkState()
 
 
-@dispatcher.add_method
+@dispatcher.add_method(ssid=_string, password=_string, hidden=boolean)
 def connectNetwork(ssid: str, password: str = "", hidden: bool = False) -> dict[str, int | str]:
   if not ssid:
     return {"success": 0, "error": "SSID is required"}
@@ -784,7 +801,7 @@ def connectNetwork(ssid: str, password: str = "", hidden: bool = False) -> dict[
   return _start_network_operation("connect", ssid, connect)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(ssid=_string)
 def disconnectNetwork(ssid: str = "") -> dict[str, int | str]:
   active_ssid = _nmcli_wifi_state()["ssid"] or ""
   if ssid and active_ssid != ssid:
@@ -799,7 +816,7 @@ def disconnectNetwork(ssid: str = "") -> dict[str, int | str]:
   return _start_network_operation("disconnect", active_ssid, disconnect)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(ssid=_string)
 def forgetNetwork(ssid: str) -> dict[str, int | str]:
   if not ssid:
     return {"success": 0, "error": "SSID is required"}
@@ -811,7 +828,7 @@ def forgetNetwork(ssid: str) -> dict[str, int | str]:
   return _start_network_operation("forget", ssid, forget)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(enabled=boolean)
 def setTethering(enabled: bool) -> dict[str, int | str]:
   if not _network_capabilities()["hotspot"]:
     return {"success": 0, "error": "Hotspot is not supported on this device"}
@@ -822,7 +839,7 @@ def setTethering(enabled: bool) -> dict[str, int | str]:
   return {"success": 1}
 
 
-@dispatcher.add_method
+@dispatcher.add_method(password=_string)
 def setTetheringPassword(password: str) -> dict[str, int | str]:
   if not _network_capabilities()["hotspot"]:
     return {"success": 0, "error": "Hotspot is not supported on this device"}
@@ -832,7 +849,7 @@ def setTetheringPassword(password: str) -> dict[str, int | str]:
   return {"success": 1}
 
 
-@dispatcher.add_method
+@dispatcher.add_method(metered=one_of("default", "metered", "unmetered", 0, 1, 2))
 def setCurrentNetworkMetered(metered: int | str) -> dict[str, int]:
   connection = _active_wifi_connection()
   if not connection:
@@ -854,7 +871,7 @@ def downloadSoftwareUpdate() -> dict[str, int | str]:
   return _signal_updated("SIGHUP")
 
 
-@dispatcher.add_method
+@dispatcher.add_method(branch=_string)
 def setUpdateBranch(branch: str) -> dict[str, int | str]:
   require_ignition_off()
   branch = branch.strip()
@@ -872,13 +889,14 @@ def installSoftwareUpdate() -> dict[str, int]:
   return {"success": 1}
 
 
-@dispatcher.add_method
+@dispatcher.add_method(phoneOnline=boolean, localWifiSupported=boolean)
 def prepareLive(phoneOnline: bool = True, localWifiSupported: bool = False) -> dict:
   from openpilot.system.asius.turn import prepare_live
   return prepare_live(phoneOnline, localWifiSupported)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(sdp=regex(r'[\x20-\x7e\r\n]*'), cameras=list_of(one_of("road", "wideRoad", "driver")),
+                       bridge_services_out=list_of(one_of(*messaging.SERVICE_LIST)), enabled=boolean, inCar=boolean)
 def startStream(sdp: str, cameras: list[str], bridge_services_out: list[str], enabled: bool = True, inCar: bool = False) -> dict:
   from openpilot.system.asius.streaming import start_stream
   return start_stream(sdp, cameras, bridge_services_out, enabled, inCar)
@@ -890,7 +908,7 @@ def getRouteUploadProgress() -> dict | None:
   return read_progress()
 
 
-@dispatcher.add_method
+@dispatcher.add_method(paths=list_of(_string))
 def requestRouteUpload(paths: list[str]) -> dict:
   from openpilot.common.hardware.hw import Paths
   from openpilot.system.loggerd.data_upload_queue import request_uploads
@@ -1184,24 +1202,24 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
       end_event.set()
 
 
-@dispatcher.add_method
+@dispatcher.add_method(relay=_string, cloud=_string)
 def setServiceHosts(relay: str, cloud: str) -> dict:
   from openpilot.system.asius.service_registration import set_service_hosts
   return set_service_hosts(relay, cloud)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(challenge=_string, terms=_string)
 def getServiceRegistration(challenge: str, terms: str) -> str:
   from openpilot.system.asius.service_registration import registration_proof
   return registration_proof(challenge, terms)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(version=_string)
 def acceptTerms(version: str) -> dict:
   return onboarding.accept(version)
 
 
-@dispatcher.add_method
+@dispatcher.add_method(version=_string, recordFront=boolean, shareDrivingData=boolean)
 def completeTraining(version: str, recordFront: bool, shareDrivingData: bool) -> dict:
   return onboarding.complete(version, recordFront, shareDrivingData)
 

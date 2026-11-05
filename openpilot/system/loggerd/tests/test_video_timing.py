@@ -34,7 +34,7 @@ def test_capture_timestamps_and_audio_share_one_clock(tmp_path, audio_delay_us):
   assert float(result['format']['duration']) == pytest.approx(2.2, abs=0.05)
   assert float(video[20]['pts_time']) - float(video[19]['pts_time']) == pytest.approx(0.25, abs=0.001)
   assert result['format']['tags']['ai.asius.startOffsetMs'] == '46000'
-  manifest = package_cenc_mp4(output, tmp_path / 'encrypted.mp4', bytes(range(16)), bytes(range(16)))
+  manifest = package_cenc_mp4(output, tmp_path / 'encrypted.mp4', bytes(range(32)), bytes(range(16)))
   assert manifest['startOffsetMs'] == 46000
   assert sum(f.get('durationMs', 0) for f in manifest['fragments']) == pytest.approx(2200, abs=30)
 

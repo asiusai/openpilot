@@ -42,8 +42,8 @@ def test_build_failure_leds(monkeypatch, tmp_path, asius, results):
   for board in boards:
     for channel, path in enumerate(board.channel_paths):
       if asius and results[-1]:
-        # No camera exposure exists yet. Middle LEDs and the driver board stay off.
-        expected = ledd.BOOT_BRIGHTNESS if board.camera_num in (2, 3) and channel in (0, 6) else 0
+        # Each AW9523 board exposes two RGB LEDs. The driver board stays off.
+        expected = ledd.BOOT_BRIGHTNESS if board.camera_num in (2, 3) and channel in (0, 3) else 0
         assert (path / 'trigger').read_text() == 'none'
       else:
         expected = 17

@@ -10,6 +10,35 @@ from openpilot.common.params import Params, UnknownKeyName
 from openpilot.system.asius import methods
 
 
+@pytest.mark.parametrize('method,params', [
+  ('setDeviceName', {'name': 1}),
+  ('configureTailscale', {'disconnect': 'false'}),
+  ('connectNetwork', {'ssid': 'test', 'hidden': 1}),
+  ('completeTraining', {'version': '0', 'recordFront': 1, 'shareDrivingData': False}),
+  ('setGithubUsername', {'username': '../other'}),
+  ('getNavigationRoute', {'revision': 'test', 'offset': True}),
+  ('saveParams', {'params_to_update': {'IsMetric': float('nan')}}),
+  ('startStream', {'sdp': '', 'cameras': ['invalid'], 'bridge_services_out': []}),
+])
+def test_rpc_rejects_invalid_parameters_before_side_effects(monkeypatch, method, params):
+  monkeypatch.setattr(methods, 'Params', Mock(side_effect=AssertionError('unexpected parameter access')))
+  monkeypatch.setattr(methods.subprocess, 'run', Mock(side_effect=AssertionError('unexpected command')))
+  result = json.loads(methods.handle({'id': 1, 'method': method, 'params': params}, methods.dispatcher_for_peer('test')))
+  assert result['error']['code'] == -32602
+
+
+def test_rpc_validates_name_parameter_and_preserves_nested_json(tmp_path, monkeypatch):
+  params = Params(str(tmp_path))
+  monkeypatch.setattr(methods, 'Params', lambda: params)
+  dispatcher = methods.dispatcher_for_peer('test')
+  result = json.loads(methods.handle({'id': 1, 'method': 'setDeviceName', 'params': {'name': 'Bench'}}, dispatcher))
+  assert result['result'] == {'name': 'Bench'}
+  assert params.get('DeviceName') == 'Bench'
+  value = {'nested': [None, True, 2, 3.5, 'text']}
+  result = json.loads(methods.handle({'id': 2, 'method': 'echo', 'params': {'s': value}}, dispatcher))
+  assert result['result'] == value
+
+
 def test_version_includes_stable_fork_identity(monkeypatch):
   monkeypatch.setattr(methods.upstream_athena, 'getVersion', lambda: {'version': 'test', 'remote': 'custom', 'branch': 'test', 'commit': 'abc'})
   assert methods.getVersion() == {'version': 'test', 'remote': 'custom', 'branch': 'test', 'commit': 'abc', 'fork': methods.FORK,

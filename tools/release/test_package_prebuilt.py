@@ -1,8 +1,11 @@
 import tempfile
 import unittest
+import hashlib
+import shutil
+import subprocess
 from pathlib import Path
 
-from package_prebuilt import BINARIES, MODEL_NAMES, validate
+from package_prebuilt import BINARIES, MODEL_NAMES, deduplicate_lfs, validate
 
 
 class TestPrebuiltValidation(unittest.TestCase):
@@ -43,3 +46,38 @@ class TestPrebuiltValidation(unittest.TestCase):
 
   def test_accepts_complete_arm64_build(self):
     validate(self.root)
+
+
+class TestLfsPackaging(unittest.TestCase):
+  def setUp(self):
+    self.directory = tempfile.TemporaryDirectory()
+    self.addCleanup(self.directory.cleanup)
+    self.root = Path(self.directory.name)
+    subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+    shutil.copy(Path(__file__).resolve().parents[2] / 'lfs.py', self.root / 'lfs.py')
+    self.data = bytes(range(256)) * 8
+    oid = hashlib.sha256(self.data).hexdigest()
+    self.model = self.root / 'model.pkl'
+    self.model.write_text(f'version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {len(self.data)}\n')
+    subprocess.run(['git', '-C', str(self.root), 'add', 'model.pkl'], check=True)
+    self.model.write_bytes(self.data)
+    self.obj = self.root / '.git/lfs/objects' / oid[:2] / oid[2:4] / oid
+    self.obj.parent.mkdir(parents=True)
+    self.obj.write_bytes(self.data)
+
+  def test_validated_model_shares_storage_with_lfs(self):
+    deduplicate_lfs(self.root)
+    self.assertTrue(self.model.samefile(self.obj))
+    self.assertEqual(self.obj.read_bytes(), self.data)
+
+  def test_corrupt_model_is_rejected_before_linking(self):
+    self.model.write_bytes(self.data[::-1])
+    with self.assertRaisesRegex(ValueError, 'Invalid LFS model'):
+      deduplicate_lfs(self.root)
+    self.assertEqual(self.obj.read_bytes(), self.data)
+
+  def test_corrupt_object_is_rejected_before_linking(self):
+    self.obj.write_bytes(self.data[::-1])
+    with self.assertRaisesRegex(ValueError, 'Invalid LFS object'):
+      deduplicate_lfs(self.root)
+    self.assertEqual(self.model.read_bytes(), self.data)

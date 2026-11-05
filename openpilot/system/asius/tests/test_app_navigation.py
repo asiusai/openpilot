@@ -27,7 +27,7 @@ def test_navigation_rpc_uses_upstream_params(tmp_path, monkeypatch):
     assert {key: params.get('NavDestination')[key] for key in place} == place
     assert params.get_bool('NavigationEnabled')
     result = json.loads(methods.handle({'id': 2, 'method': 'setNavDestination', 'params': {**place, 'latitude': 100}}, dispatcher))
-    assert result['result']['success'] == 0
+    assert result['error']['code'] == -32602
     assert params.get('NavDestination')['latitude'] == 59.4
     methods.handle({'id': 3, 'method': 'clearNavDestination'}, dispatcher)
     assert params.get('NavDestination') is None
