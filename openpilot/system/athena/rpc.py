@@ -59,9 +59,9 @@ class Dispatcher(dict[str, Callable[..., Any]]):
   def __setitem__(self, name: str, fn: Callable[..., Any]) -> None:
     raise TypeError("register methods with add_method")
 
-  def add_method(self, f: Callable[..., Any] | None = None, *, name: str | None = None, **validators: Validator):
+  def add_method(self, f: Callable[..., Any] | None = None, *, method_name: str | None = None, **validators: Validator):
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-      method = name or fn.__name__
+      method = method_name or fn.__name__
       sig = inspect.signature(fn)
       if set(sig.parameters) != set(validators):
         raise TypeError(f"{method}: params {sorted(sig.parameters)} need exactly one validator each, got {sorted(validators)}")

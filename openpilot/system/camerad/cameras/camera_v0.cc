@@ -1023,7 +1023,7 @@ void camerad_thread() {
       int buf_idx = cam->camera.dequeue_frame(&timestamp);
       if (buf_idx < 0) {
         if (buf_idx != -ETIMEDOUT) {
-          LOGW_100("cam %d: dequeue failed: %d (%s)", cam->camera.cc.camera_num, -buf_idx, strerror(-buf_idx));
+          cloudlog_rl(2, 100, CLOUDLOG_WARNING, "cam %d: dequeue failed: %d (%s)", cam->camera.cc.camera_num, -buf_idx, strerror(-buf_idx));
           usleep(1000);
         }
         continue;

@@ -224,7 +224,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
 
 
 def jsonrpc_handler(end_event: threading.Event) -> None:
-  dispatcher.add_method(partial(startLocalProxy, end_event), name="startLocalProxy",
+  dispatcher.add_method(partial(startLocalProxy, end_event), method_name="startLocalProxy",
                         remote_ws_uri=regex(r'wss://ssh\.comma\.ai(:(443|8443))?/[0-9a-f]{16}'), local_port=one_of(8022, *LOCAL_PORT_WHITELIST))
   while not end_event.is_set():
     try:

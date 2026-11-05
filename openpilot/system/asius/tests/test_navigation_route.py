@@ -64,13 +64,12 @@ def test_late_mapbox_reply_cannot_replace_new_destination(tmp_path):
   store = RouteStore(params)
   engine = RouteEngine(MagicMock(), MagicMock(), params, store=store)
   engine.last_position = (24., 59.)
-  engine.api = MagicMock()
   def response(*args, **kwargs):
     params.put("NavDestination", {**place, "longitude": 25., "requestId": "second"}, block=True)
     result = MagicMock(status_code=200)
     result.json.return_value = {"routes": [{"legs": [{"steps": []}]}]}
     return result
-  with patch("requests.get", side_effect=response):
+  with patch("requests.get", side_effect=response), patch("openpilot.system.asius.navigation_proxy.NavigationApi"):
     engine.calculate_route((24., 59.))
   assert engine.route is None
   assert store.state()["destination"]["requestId"] == "second"
@@ -86,11 +85,10 @@ def test_parked_preview_uses_device_saved_origin_without_live_guidance(tmp_path)
   store.save_position([24., 59.])
   publisher = MagicMock()
   engine = RouteEngine(MagicMock(), publisher, params, store=store)
-  engine.api = MagicMock()
   result = MagicMock(status_code=200)
   result.json.return_value = {"routes": [{"distance": 100, "duration": 15, "geometry": {"coordinates": [[24., 59.], [24.001, 59.]]},
     "legs": [{"steps": [{"distance": 100, "duration": 15, "geometry": {"coordinates": [[24., 59.], [24.001, 59.]]}, "bannerInstructions": []}]}]}]}
-  with patch("requests.get", return_value=result):
+  with patch("requests.get", return_value=result), patch("openpilot.system.asius.navigation_proxy.NavigationApi"):
     engine.recompute_route(gps_ok=False)
   assert store.state()["status"] == "ready"
   assert store.state()["lastKnown"] is True

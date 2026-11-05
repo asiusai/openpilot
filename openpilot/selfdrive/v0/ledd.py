@@ -26,8 +26,8 @@ CAM_LED_SYSFS_ROOT = Path("/sys/class/leds")
 SYSTEM_FAULT_EVENTS = {
   'cameraMalfunction', 'cameraFrameRate', 'modeldLagging', 'bigModelFailed', 'posenetInvalid',
   'processNotRunning', 'commIssue', 'commIssueAvgFreq', 'selfdrivedLagging', 'controlsMismatch',
-  'sensorDataInvalid', 'locationdTemporaryError', 'locationdPermanentError',
-  'paramsdTemporaryError', 'paramsdPermanentError', 'fanMalfunction', 'overheat', 'lowMemory', 'outOfSpace',
+  'sensorDataInvalid', 'locationdTemporaryError',
+  'paramsdTemporaryError', 'fanMalfunction', 'overheat', 'lowMemory', 'outOfSpace',
   'canError', 'canBusMissing', 'relayMalfunction',
 }
 CAM_LED_CHANNELS = (
