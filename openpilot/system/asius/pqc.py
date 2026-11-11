@@ -12,20 +12,21 @@ from functools import cached_property
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import mldsa, mlkem
+from cryptography.hazmat.primitives.asymmetric import mldsa
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from openpilot.system.asius import xwing
 
 ROOT_BYTES = 64
 ROOT_MAGIC = b"ASIUSID\x01"
 ROOT_FILE_BYTES = len(ROOT_MAGIC) + ROOT_BYTES + 32
 SIGNING_PUBLIC_BYTES = 1952
 SIGNATURE_BYTES = 3309
-KEM_PUBLIC_BYTES = 1184
-KEM_CIPHERTEXT_BYTES = 1088
+KEM_PUBLIC_BYTES = xwing.PUBLIC_BYTES
+KEM_CIPHERTEXT_BYTES = xwing.CIPHERTEXT_BYTES
 IDENTITY_CONTEXT = b"asius-identity-v1\x00ML-DSA-65\x00"
 ROOT_SALT = b"asius-root-keys-v1"
 SIGNING_CONTEXT = b"identity:ML-DSA-65"
-RECORDING_CONTEXT = b"recording:ML-KEM-768"
+RECORDING_CONTEXT = b"recording:X-Wing"
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
@@ -84,12 +85,12 @@ class RootIdentity:
   def _signing_key(self) -> mldsa.MLDSA65PrivateKey:
     return mldsa.MLDSA65PrivateKey.from_seed_bytes(self.derive(SIGNING_CONTEXT, 32))
 
-  def recording_key(self) -> mlkem.MLKEM768PrivateKey:
+  def recording_key(self) -> xwing.PrivateKey:
     return self._recording_key
 
   @cached_property
-  def _recording_key(self) -> mlkem.MLKEM768PrivateKey:
-    return mlkem.MLKEM768PrivateKey.from_seed_bytes(self.derive(RECORDING_CONTEXT, 64))
+  def _recording_key(self) -> xwing.PrivateKey:
+    return xwing.PrivateKey(self.derive(RECORDING_CONTEXT, 32))
 
   def sign(self, message: bytes) -> bytes:
     return self.signing_key().sign(message)

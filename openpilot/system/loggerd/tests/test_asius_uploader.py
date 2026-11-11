@@ -24,7 +24,7 @@ from openpilot.system.loggerd.data_api import (
 )
 from openpilot.system.loggerd.asius_uploader import AsiusUploader
 from openpilot.system.loggerd.uploader import Uploader
-from openpilot.system.asius.recording_keys import decode_public, public_text
+from openpilot.system.asius.recording_keys import public_text
 
 
 def reader_record():
@@ -51,7 +51,7 @@ def test_access_document_and_object_crypto() -> None:
 
   grant = next(grant for grant in document["keys"][0]["grants"] if grant["to"] == reader["publicKey"])
   shared = reader_key.decapsulate(decode64(grant["kem"]))
-  wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-pq-v1:{owner}:{grant['keyId']}".encode(),
+  wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-xwing-v1:{owner}:{grant['keyId']}".encode(),
                   info=f"{owner}:{reader['publicKey']}".encode()).derive(shared)
   aad = {**{key: grant[key] for key in ("v", "alg", "from", "to", "keyId", "iv", "kem")}, "owner": owner}
   folder_key = AESGCM(wrap_key).decrypt(decode64(grant["iv"]), decode64(grant["ciphertext"]), canonical_json(aad).encode())
@@ -82,9 +82,24 @@ def test_revocation_rotates_active_key() -> None:
   assert len(revoked["keys"]) == 2
 
 
-def test_rejects_invalid_mlkem_recipient() -> None:
+def test_rejects_invalid_xwing_recipient() -> None:
   assert not can_wrap_for({"storagePublicKey": b64url(b"\x04" + b"\x00" * 64)})
   assert not can_wrap_for({})
+  reader = reader_record()
+  assert can_wrap_for(reader)
+  raw = decode64(reader['storagePublicKey'])
+  assert not can_wrap_for(reader | {'storagePublicKey': b64url(raw[:-32] + bytes(32))})
+
+
+def test_grant_algorithm_change_republishes_retained_content_keys():
+  state = initial_state([])
+  state.pop('grantAlgorithm')
+  state['publishedVersion'] = state['version']
+  refreshed = update_state(state, [])
+  assert refreshed['version'] > refreshed['publishedVersion']
+  assert refreshed['keys'] == state['keys']
+  assert refreshed['activeKey'] == state['activeKey']
+  assert update_state(refreshed, []) is refreshed
 
 
 def test_asius_uploader_reuses_default_uploader_flow() -> None:

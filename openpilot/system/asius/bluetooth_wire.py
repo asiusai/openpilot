@@ -1,11 +1,11 @@
-"""Compact Bluetooth transport for unchanged, authenticated v6 session objects."""
+"""Compact Bluetooth transport for authenticated v7 session objects."""
 import json
 import struct
 
 from openpilot.system.asius.identity import base58_encode, identity_to_bytes
 from openpilot.system.asius.session import b64, unb64
 
-MAGIC = 0xa6
+MAGIC = 0xa7
 MAX_BYTES = 256 * 1024
 TYPES = ('hello', 'welcome', 'data')
 
@@ -24,7 +24,7 @@ def encode_message(text: str) -> bytes:
   require(outer.get('type') == 'peer')
   value = json.loads(outer['payload'])
   kind = TYPES.index(value['type'])
-  require(value['v'] == 6 and value['transport'] == 'bluetooth')
+  require(value['v'] == 7 and value['transport'] == 'bluetooth')
   require(value['from'] == outer['from'] and value['to'] == outer['to'])
   parts = [bytes((MAGIC, kind + 1)), identity_to_bytes(value['from']), identity_to_bytes(value['to'])]
 
@@ -40,7 +40,7 @@ def encode_message(text: str) -> bytes:
     add('ciphertext')
   else:
     add('nonce', 32)
-    add('kem', 1184 if kind == 0 else 1088)
+    add('kem', 1216 if kind == 0 else 1120)
     add('key', 1952)
     if kind == 1:
       add('hello', 48)
@@ -69,7 +69,7 @@ def decode_message(packet: bytes) -> str:
     return data
 
   sender, recipient = (base58_encode(int.from_bytes(take(32), 'big')).rjust(44, '1') for _ in range(2))
-  value = {'v': 6, 'type': TYPES[kind], 'from': sender, 'to': recipient, 'transport': 'bluetooth'}
+  value = {'v': 7, 'type': TYPES[kind], 'from': sender, 'to': recipient, 'transport': 'bluetooth'}
 
   def read(field, size):
     value[field] = b64(take(size))
@@ -81,7 +81,7 @@ def decode_message(packet: bytes) -> str:
     read('ciphertext', len(packet) - offset)
   else:
     read('nonce', 32)
-    read('kem', 1184 if kind == 0 else 1088)
+    read('kem', 1216 if kind == 0 else 1120)
     read('key', 1952)
     if kind == 1:
       read('hello', 48)

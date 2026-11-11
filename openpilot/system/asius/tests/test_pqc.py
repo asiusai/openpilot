@@ -53,5 +53,5 @@ def test_recording_recovery_and_domain_separation():
   shared, ciphertext = key.public_key().encapsulate()
   restored = RootIdentity.from_file_bytes(root.file_bytes())
   assert restored.recording_key().decapsulate(ciphertext) == shared
-  assert root.derive(b"identity:ML-DSA-65", 32) != root.derive(b"recording:ML-KEM-768", 32)
+  assert root.derive(b"identity:ML-DSA-65", 32) != root.derive(b"recording:X-Wing", 32)
   assert RootIdentity.generate().recording_key().decapsulate(ciphertext) != shared

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import mlkem
+from openpilot.system.asius import xwing
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
@@ -50,13 +50,13 @@ def data_header(message):
 
 
 def encrypt_data(key, sender, recipient, transport, sid, counter, plaintext):
-  header = {'v': 6, 'type': 'data', 'from': sender, 'to': recipient, 'transport': transport, 'sid': sid, 'n': counter}
+  header = {'v': 7, 'type': 'data', 'from': sender, 'to': recipient, 'transport': transport, 'sid': sid, 'n': counter}
   return {**header, 'ciphertext': b64(AESGCM(key).encrypt(message_nonce(counter), plaintext, canonical(header)))}
 
 
 def decrypt_data(key, message):
   header = data_header(message)
-  if header['v'] != 6 or header['type'] != 'data':
+  if header['v'] != 7 or header['type'] != 'data':
     raise ValueError('Invalid encrypted message')
   return AESGCM(key).decrypt(message_nonce(header['n']), unb64(message['ciphertext']), canonical(header))
 
@@ -117,7 +117,8 @@ class SecureSession:
       return channel is not None and self.usable(channel)
 
   def usable(self, channel, extra=0):
-    return (channel.started < 0 or self.now() - channel.started < 86400) and max(channel.tx, channel.rx) < (1 << 20) - 1 and channel.bytes_used + extra <= 1 << 30
+    return ((channel.started < 0 or self.now() - channel.started < 86400)
+            and max(channel.tx, channel.rx) < (1 << 20) - 1 and channel.bytes_used + extra <= 1 << 30)
 
   def session_id(self, peer):
     with self.lock:
@@ -130,11 +131,11 @@ class SecureSession:
 
   def signed(self, value):
     value = {**value, 'key': b64(self.identity.public_key().public_bytes_raw())}
-    return {**value, 'sig': b64(self.identity.sign(b'asius-session-pq-v1\n' + canonical(value)))}
+    return {**value, 'sig': b64(self.identity.sign(b'asius-session-xwing-v1\n' + canonical(value)))}
 
   @staticmethod
   def ephemeral():
-    key = mlkem.MLKEM768PrivateKey.generate()
+    key = xwing.PrivateKey.generate()
     return key, b64(key.public_key().public_bytes_raw())
 
   def begin(self, peer):
@@ -144,7 +145,7 @@ class SecureSession:
       if len(self.pending) >= 32:
         raise ValueError('Too many pending sessions')
       key, kem = self.ephemeral()
-      hello = self.signed({'v': 6, 'type': 'hello', 'from': self.public_key, 'to': peer,
+      hello = self.signed({'v': 7, 'type': 'hello', 'from': self.public_key, 'to': peer,
                            'transport': self.transport, 'nonce': b64(secrets.token_bytes(32)), 'kem': kem})
       self.pending[peer] = (hello, key, self.now())
       return hello
@@ -152,7 +153,7 @@ class SecureSession:
   def derive(self, hello, welcome, shared, initiator):
     salt = digest([unsigned(hello), unsigned(welcome)])
     def derive(direction):
-      return HKDF(algorithm=hashes.SHA384(), length=32, salt=salt, info=f'asius-session-pq-v1:{direction}'.encode()).derive(shared)
+      return HKDF(algorithm=hashes.SHA384(), length=32, salt=salt, info=f'asius-session-xwing-v1:{direction}'.encode()).derive(shared)
     forward, reverse = derive('initiator'), derive('responder')
     return Channel(b64(salt), (welcome if initiator else hello)['from'], forward if initiator else reverse,
                    reverse if initiator else forward, self.now())
@@ -175,7 +176,7 @@ class SecureSession:
   def receive(self, message):
     with self.lock:
       self.prune()
-      if not isinstance(message, dict) or message.get('v') != 6 or message.get('to') != self.public_key or message.get('transport') != self.transport:
+      if not isinstance(message, dict) or message.get('v') != 7 or message.get('to') != self.public_key or message.get('transport') != self.transport:
         raise ValueError('Invalid session context')
       peer = message['from']
       identity_to_bytes(peer)
@@ -197,15 +198,16 @@ class SecureSession:
         self.activate(channel)
         self.candidates = {sid: candidate for sid, candidate in self.candidates.items() if candidate.peer != peer}
         return {'peer': peer, 'text': text, 'ready': True}
-      if message.get('type') not in ('hello', 'welcome') or len(unb64(message.get('nonce'))) != 32 or len(unb64(message.get('kem'))) != (1184 if message['type'] == 'hello' else 1088):
+      if (message.get('type') not in ('hello', 'welcome') or len(unb64(message.get('nonce'))) != 32
+          or len(unb64(message.get('kem'))) != (xwing.PUBLIC_BYTES if message['type'] == 'hello' else xwing.CIPHERTEXT_BYTES)):
         raise ValueError('Invalid handshake')
-      verify_signature(peer, unb64(message.get('key')), unb64(message['sig']), b'asius-session-pq-v1\n' + canonical(unsigned(message)))
+      verify_signature(peer, unb64(message.get('key')), unb64(message['sig']), b'asius-session-xwing-v1\n' + canonical(unsigned(message)))
       if message['type'] == 'hello':
         if len(self.candidates) >= 32:
           raise ValueError('Too many pending sessions')
-        shared, ciphertext = mlkem.MLKEM768PublicKey.from_public_bytes(unb64(message['kem'])).encapsulate()
+        shared, ciphertext = xwing.PublicKey(unb64(message['kem'])).encapsulate()
         kem = b64(ciphertext)
-        welcome = self.signed({'v': 6, 'type': 'welcome', 'from': self.public_key, 'to': peer, 'transport': self.transport,
+        welcome = self.signed({'v': 7, 'type': 'welcome', 'from': self.public_key, 'to': peer, 'transport': self.transport,
                               'hello': b64(digest(unsigned(message))), 'nonce': b64(secrets.token_bytes(32)), 'kem': kem})
         channel = self.derive(message, welcome, shared, False)
         self.candidates[channel.sid] = channel
