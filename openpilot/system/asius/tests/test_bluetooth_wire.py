@@ -16,8 +16,8 @@ def test_binary_handshake_and_authenticated_messages():
 
   hello = a.begin(b.public_key)
   welcome = b.receive(transmit(hello))['reply']
-  assert len(encode_message(wrap_peer(hello))) == 6543
-  assert len(encode_message(wrap_peer(welcome))) == 6495
+  assert len(encode_message(wrap_peer(hello))) == 6575
+  assert len(encode_message(wrap_peer(welcome))) == 6527
   a.receive(transmit(welcome))
   data = a.encrypt(b.public_key, 'status')
   assert len(encode_message(wrap_peer(data))) == 140
@@ -49,6 +49,6 @@ def test_binary_handshake_and_authenticated_messages():
 def test_only_setup_greeting_uses_json():
   greeting = json.dumps({'type': 'hello', 'v': 1, 'maxFrameBytes': 180})
   assert decode_message(encode_message(greeting)) == greeting
-  for packet in (b'', b'\xa6', b'\xa6\x04', b'{"type":"hello","v":6}'):
+  for packet in (b'', b'\xa7', b'\xa7\x04', b'{"type":"hello","v":7}'):
     with pytest.raises(ValueError):
       decode_message(packet)

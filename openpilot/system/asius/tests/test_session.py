@@ -3,7 +3,7 @@ import copy
 import pytest
 from openpilot.system.asius.pqc import RootIdentity
 from cryptography.exceptions import InvalidTag, InvalidSignature
-from openpilot.system.asius.session import SecureSession, SessionChanged
+from openpilot.system.asius.session import SecureSession, SessionChanged, b64, unb64
 
 
 def sessions():
@@ -60,6 +60,30 @@ def test_transport_binding_and_counter_types():
   for n in (True, 0, -1, 1.5, 0xffffffff):
     with pytest.raises(ValueError):
       b.receive({**a.encrypt(b.public_key, 'hello'), 'n': n})
+
+
+def test_downgrade_and_hybrid_handshake_tampering():
+  a = SecureSession(RootIdentity.generate(), 'web')
+  b = SecureSession(RootIdentity.generate(), 'web')
+  hello = a.begin(b.public_key)
+  with pytest.raises(ValueError):
+    b.receive({**hello, 'v': 6})
+  for offset in (0, 1184):
+    kem = bytearray(unb64(hello['kem']))
+    kem[offset] ^= 1
+    with pytest.raises(InvalidSignature):
+      b.receive({**hello, 'kem': b64(kem)})
+  welcome = b.receive(hello)['reply']
+  for offset in (0, 1088):
+    kem = bytearray(unb64(welcome['kem']))
+    kem[offset] ^= 1
+    with pytest.raises(InvalidSignature):
+      a.receive({**welcome, 'kem': b64(kem)})
+  a.receive(welcome)
+  wire = a.encrypt(b.public_key, 'still connected')
+  with pytest.raises(ValueError):
+    b.receive({**wire, 'v': 6})
+  assert b.receive(wire)['text'] == 'still connected'
 
 
 def test_old_queued_response_cannot_cross_session_replacement():

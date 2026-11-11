@@ -43,10 +43,10 @@ def test_recording_key_is_deterministic_and_identity_bound():
   first = RootIdentity(seed)
   reloaded = RootIdentity(seed)
   second = RootIdentity(bytes(reversed(seed)))
-  assert len(public_text(get_recording_key(first))) == 1579
+  assert len(public_text(get_recording_key(first))) == 1622
   assert public_text(get_recording_key(first)) == public_text(get_recording_key(reloaded))
   assert public_text(get_recording_key(first)) != public_text(get_recording_key(second))
-  assert first.derive(b'identity:ML-DSA-65', 32) != first.derive(b'recording:ML-KEM-768', 64)[:32]
+  assert first.derive(b'identity:ML-DSA-65', 32) != first.derive(b'recording:X-Wing', 32)
 
 
 def test_identity_alone_recovers_recording_grants():
