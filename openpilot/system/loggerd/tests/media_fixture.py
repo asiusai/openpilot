@@ -1,22 +1,26 @@
 import subprocess
-import shutil
+import hashlib
+import json
 from pathlib import Path
 
 
-def make_video(path, seconds, codec='libx264', format_name=None):
+def make_video(path, seconds, codec='libx264'):
   # Remux committed synthetic frames; device tests need no software encoder.
   if seconds not in (1, 2, 3):
     raise ValueError('Video fixtures contain three seconds at 20 fps')
   name = {'libx264': 'h264', 'libx265': 'hevc'}[codec]
   fixtures = Path(__file__).parent / 'fixtures'
-  if format_name:
-    if format_name != name or seconds != 1:
-      raise ValueError('Raw fixtures contain one second in their native codec')
-    shutil.copyfile(fixtures / f'{name}.{name}', path)
-    return
   command = ['ffmpeg', '-v', 'error', '-i', str(fixtures / f'{name}.mp4'), '-map', '0:v:0', '-c:v', 'copy',
              '-frames:v', str(seconds * 20), '-movflags', '+frag_keyframe+empty_moov+default_base_moof']
   subprocess.run([*command, str(path)], check=True)
+
+
+def raw_video(codec):
+  fixtures = Path(__file__).parent / 'fixtures'
+  metadata = json.loads((fixtures / 'packets.json').read_text())[codec]
+  encoded = (fixtures / f'{codec}.{codec}').read_bytes()
+  assert hashlib.sha256(encoded).hexdigest() == metadata['sha256'], 'Raw fixture and packet index disagree'
+  return encoded, metadata['packets']
 
 
 def decrypt_recording(path, key):

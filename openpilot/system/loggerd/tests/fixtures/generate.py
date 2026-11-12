@@ -1,11 +1,13 @@
 """Regenerate synthetic recording fixtures on a host with libx264 and libx265."""
 
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 
 
 def main():
+  packet_index = {}
   frames = b''.join(bytes([16 + index // 20 % 2 * 64]) * (64 * 64) + bytes([128]) * (64 * 64 // 2) for index in range(60))
   for name, codec in (('h264', 'libx264'), ('hevc', 'libx265')):
     path = Path(__file__).parent / f'{name}.mp4'
@@ -22,6 +24,10 @@ def main():
     subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', str(path), '-map', '0:v:0', '-c:v', 'copy',
                     '-frames:v', '20', '-f', name, str(raw)], check=True)
     print(f'{hashlib.sha256(raw.read_bytes()).hexdigest()}  {raw.name}')
+    packets = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_packets', '-show_entries',
+                                                  'packet=pos,size,flags', '-of', 'json', str(raw)]))['packets']
+    packet_index[name] = {'sha256': hashlib.sha256(raw.read_bytes()).hexdigest(), 'packets': packets}
+  (Path(__file__).parent / 'packets.json').write_text(json.dumps(packet_index, indent=2) + '\n')
 
 
 if __name__ == '__main__':

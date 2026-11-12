@@ -1,6 +1,5 @@
 import numpy as np
 import json
-import tempfile
 import os
 import re
 import random
@@ -22,7 +21,7 @@ from openpilot.common.timeout import Timeout
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.system.loggerd.xattr_cache import getxattr
-from openpilot.system.loggerd.tests.media_fixture import make_video
+from openpilot.system.loggerd.tests.media_fixture import raw_video
 from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE
 from openpilot.system.manager.process_config import managed_processes
 from openpilot.common.version import get_version
@@ -222,12 +221,7 @@ class TestLoggerd(OpenpilotTestCase):
   @parameterized.expand(['hevc', 'h264'])
   def test_recordings_are_fragmented_mp4(self, codec):
     Params().put_bool("RecordFront", True, block=True)
-    with tempfile.TemporaryDirectory() as temporary:
-      source = Path(temporary) / f"input.{codec}"
-      make_video(source, 1, codec="libx265" if codec == "hevc" else "libx264", format_name=codec)
-      encoded = source.read_bytes()
-      packets = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_packets",
-                           "-show_entries", "packet=pos,size,flags", "-of", "json", str(source)]))["packets"]
+    encoded, packets = raw_video(codec)
     first = encoded[:int(packets[0]["size"])]
     starts = list(re.finditer(b"\x00\x00(?:\x00)?\x01", first))
     header = b"".join(first[nal.start():starts[i + 1].start() if i + 1 < len(starts) else len(first)]
