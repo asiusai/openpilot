@@ -18,6 +18,10 @@ def main():
     command += ['-movflags', '+frag_keyframe+empty_moov+default_base_moof', str(path)]
     subprocess.run(command, input=frames, check=True)
     print(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}')
+    raw = path.with_suffix(f'.{name}')
+    subprocess.run(['ffmpeg', '-y', '-v', 'error', '-i', str(path), '-map', '0:v:0', '-c:v', 'copy',
+                    '-frames:v', '20', '-f', name, str(raw)], check=True)
+    print(f'{hashlib.sha256(raw.read_bytes()).hexdigest()}  {raw.name}')
 
 
 if __name__ == '__main__':
