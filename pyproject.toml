@@ -28,7 +28,7 @@ dependencies = [
   # vendored native dependencies
   "comma-deps-capnproto",
   "comma-deps-acados",
-  "Cython",  # acados solver python bindings
+  "Cython==3.3.1",  # acados solver python bindings
   "comma-deps-ffmpeg",
   "comma-deps-zstd",
   "comma-deps-json11",
