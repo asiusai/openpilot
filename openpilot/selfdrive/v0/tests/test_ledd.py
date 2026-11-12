@@ -61,7 +61,7 @@ def test_live_light_preview_only_changes_road_rgb_and_preserves_faults():
   sm['pandaStates'][0].ignitionCan = False
   request = {'led': {'color': '#00ff00', 'brightness': 6}}
   channels = ledd.live_led_channels(sm, request)
-  assert channels == {1: [0] * 9, 2: [0, 6, 0, 0, 0, 0, 0, 6, 0], 3: [0, 6, 0, 0, 0, 0, 0, 6, 0]}
+  assert channels == {1: [0] * 12, 2: [0, 6, 0] * 4, 3: [0, 6, 0] * 4}
   request['led']['brightness'] = 0
   assert all(not any(values) for values in ledd.live_led_channels(sm, request).values())
   sm['pandaStates'][0].ignitionCan = True
@@ -86,7 +86,7 @@ def test_offroad_sleep_and_ignition_wake():
   assert sleep.update(sm, 130.)
   assert ledd.led_state(sm, offroad_asleep=True) == ledd.OFF
   assert ledd.led_state(sm, setup_complete=False, offroad_asleep=True) == ledd.OFF
-  assert ledd.automatic_led_channels(sm, 127, 160., offroad_asleep=True) == ledd.camera_channels([[0, 0, 0]] * 6)
+  assert ledd.automatic_led_channels(sm, 127, 160., offroad_asleep=True) == ledd.camera_channels([[0, 0, 0]] * 8)
   sm['pandaStates'][0].ignitionCan = True
   assert not sleep.update(sm, 161.)
   sm['pandaStates'][0].ignitionCan = False
@@ -116,7 +116,7 @@ def test_offroad_sleep_preserves_faults():
   sm = healthy_sm(started=False)
   sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.overheated
   assert ledd.led_state(sm, offroad_asleep=True) == ledd.RED
-  assert ledd.automatic_led_channels(sm, 6, 160., offroad_asleep=True) == ledd.camera_channels([[6, 0, 0]] * 6)
+  assert ledd.automatic_led_channels(sm, 6, 160., offroad_asleep=True) == ledd.camera_channels([[6, 0, 0]] * 8)
 
 
 def test_button_wakes_leds_and_extends_awake_time():
@@ -229,7 +229,7 @@ def test_invalid_calibration_is_red_over_driver_monitoring_and_setup(active):
   sm['driverMonitoringState'].alertLevel = log.DriverMonitoringState.AlertLevel.one
   assert ledd.led_state(sm, now=0., setup_complete=False) == ledd.RED
   assert ledd.led_state(sm, now=0.5, setup_complete=False) == (ledd.OFF if active else ledd.RED)
-  assert ledd.automatic_led_channels(sm, brightness=127, now=0.) == ledd.camera_channels([[127, 0, 0]] * 6)
+  assert ledd.automatic_led_channels(sm, brightness=127, now=0.) == ledd.camera_channels([[127, 0, 0]] * 8)
 
 
 @pytest.mark.parametrize('service', ['extrinsicsCalibration', 'deviceState'])
@@ -279,9 +279,9 @@ def test_driver_monitoring_blinks_orange_then_red_with_upstream_alerts(event, st
   assert ledd.led_state(sm, now=0.5) == ledd.OFF
   green = 0 if stage == 3 else 3
   assert ledd.automatic_led_channels(sm, brightness=26, now=0.) == {
-    1: [0] * 9,
-    2: [26, green, 0, 0, 0, 0, 26, green, 0],
-    3: [26, green, 0, 0, 0, 0, 26, green, 0],
+    1: [0] * 12,
+    2: [26, green, 0] * 4,
+    3: [26, green, 0] * 4,
   }
   sm['selfdriveState'].alertType = ''
   sm['selfdriveState'].alertSound = 'none'
@@ -326,7 +326,7 @@ def test_calibration_priority_over_no_face_and_driver_warning(status):
   assert ledd.led_state(sm, now=0., setup_complete=False) == (ledd.RED if status == 'invalid' else ledd.DM_WARNING)
   # A higher-priority blink stays off between flashes instead of revealing orange or setup magenta.
   assert ledd.led_state(sm, now=0.5, setup_complete=False) == ledd.OFF
-  assert ledd.automatic_led_channels(sm, brightness=127, now=0.5) == ledd.camera_channels([[0, 0, 0]] * 6)
+  assert ledd.automatic_led_channels(sm, brightness=127, now=0.5) == ledd.camera_channels([[0, 0, 0]] * 8)
 
 
 def test_persistent_process_failure_is_solid_red(monkeypatch):
@@ -350,13 +350,13 @@ def test_pairing_blinks_blue_without_driver_camera(monkeypatch):
   monkeypatch.setattr(ledd.time, 'monotonic', lambda: 0.)
   channels = ledd.pairing_led_channels(26)
   assert channels == {
-    1: [0] * 9,
-    2: [0, 0, 26, 0, 0, 0, 0, 0, 26],
-    3: [0, 0, 26, 0, 0, 0, 0, 0, 26],
+    1: [0] * 12,
+    2: [0, 0, 26] * 4,
+    3: [0, 0, 26] * 4,
   }
 
   monkeypatch.setattr(ledd.time, 'monotonic', lambda: 0.5)
-  assert ledd.pairing_led_channels(26) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
+  assert ledd.pairing_led_channels(26) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
 
 
 def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
@@ -365,11 +365,10 @@ def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
   for now, lit in [(10., True), (10.3, False), (10.5, True), (10.9, False), (12., True)]:
     monkeypatch.setattr(ledd.time, 'monotonic', lambda now=now: now)
     channels = ledd.pairing_led_channels(26)
-    assert channels[1] == [0] * 9
+    assert channels[1] == [0] * 12
     assert channels[2] == channels[3]
-    assert channels[2][3:6] == [0] * 3
     assert channels[2][:3] == ([26, 12, 0] if lit else [0, 0, 0])
-    assert channels[2][6:] == channels[2][:3]
+    assert channels[2] == channels[2][:3] * 4
   monkeypatch.setattr(ledd, 'pairing_mode_active', lambda: False)
   assert ledd.pairing_led_channels(26) is None
 
@@ -413,7 +412,7 @@ def test_runtime_brightness_reaches_requested_peak():
   assert ledd.max_brightness(ledd.ORANGE, 26) == ledd.LedState("orange", 26, 3, 0)
 
 
-def test_status_colors_leave_leds_two_and_five_off(monkeypatch):
+def test_status_colors_use_all_four_rgb_packages(monkeypatch):
   for camera_num in ledd.CAM_LED_STATUS_CAMERAS:
     board = ledd.CameraLedBoard("test", camera_num=camera_num, bus_num=0)
     sent = []
@@ -421,11 +420,11 @@ def test_status_colors_leave_leds_two_and_five_off(monkeypatch):
     for state in (ledd.BLUE, ledd.GREEN, ledd.ORANGE, ledd.RED, ledd.DM_WARNING, ledd.OFF):
       board.set(state)
       rgb = [state.red, state.green, state.blue]
-      assert sent[-1] == rgb + [0, 0, 0] + rgb
+      assert sent[-1] == rgb * 4
 
 
 @pytest.mark.parametrize('kernel_leds', [False, True])
-def test_direct_channel_writes_cannot_enable_middle_led(monkeypatch, tmp_path, kernel_leds):
+def test_direct_channel_writes_reach_all_rgb_outputs(monkeypatch, tmp_path, kernel_leds):
   monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
   board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0, initialized=True, kernel_leds=kernel_leds)
   writes = {}
@@ -434,10 +433,12 @@ def test_direct_channel_writes_cannot_enable_middle_led(monkeypatch, tmp_path, k
     for path in board.channel_paths:
       path.mkdir()
       (path / 'brightness').write_text('99')
-  board.set_channels([255] * 9)
+  board.set_channels([255] * 12)
   actual = ([int((path / 'brightness').read_text()) for path in board.channel_paths] if kernel_leds else
-            [writes[ledd.AW9523_DIM_BASE + i] for i in range(6)])
-  assert actual == [255] * 6
+            [writes[ledd.AW21024_RGB_BASE + i] for i in range(12)])
+  assert actual == [255] * 12
+  if not kernel_leds:
+    assert writes[ledd.AW21024_UPDATE] == 0
 
 
 def test_offroad_fault_is_red_and_engaged_fault_blinks(monkeypatch):
@@ -487,29 +488,29 @@ def test_pending_setup_is_solid_magenta_with_fault_priority(monkeypatch):
   assert ledd.led_state(sm, setup_complete=False) == ledd.RED
 
 
-def test_aw9523_initialization_keeps_ir_off(monkeypatch):
+def test_aw21024_initialization_preserves_ir_registers(monkeypatch):
   board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0)
   writes = []
-  bus = SimpleNamespace(read_byte_data=lambda addr, register: 0x23)
+  bus = SimpleNamespace(read_byte_data=lambda addr, register: 0x18)
   def connect():
     board.bus = bus
     return bus
   monkeypatch.setattr(board, 'connect', connect)
   monkeypatch.setattr(board, 'write', lambda register, value: writes.append((register, value)))
   board.set(ledd.BLUE)
-  assert writes[:2] == [(4, 255), (5, 255)]
-  assert writes[2:18] == [(register, 0) for register in range(0x20, 0x30)]
-  assert writes[18:21] == [(0x11, 2), (0x12, 0), (0x13, 0)]
-  assert writes[21:] == [(0x20 + i, v) for i, v in enumerate([0, 0, 180, 0, 0, 180])]
-  assert not any(value for register, value in writes if 0x26 <= register <= 0x2f)
+  assert writes[:24] == [pair for i in range(12) for pair in ((13 + i, 0), (0x56 + i, 255))]
+  assert writes[24:27] == [(0x49, 0), (0x6e, 255), (0, 1)]
+  assert writes[27:-1] == [(13 + i, v) for i, v in enumerate([0, 0, 180] * 4)]
+  assert writes[-1] == (0x49, 0)
+  assert not any(1 <= register <= 12 for register, _ in writes)
 
 
-def test_aw9523_rejects_wrong_chip_before_writes(monkeypatch):
+def test_aw21024_rejects_wrong_chip_before_writes(monkeypatch):
   board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0)
   board.bus = SimpleNamespace(read_byte_data=lambda addr, register: 0)
   monkeypatch.setattr(board, 'connect', lambda: board.bus)
   writes = []
   monkeypatch.setattr(board, 'write', lambda *args: writes.append(args))
-  with pytest.raises(OSError, match='AW9523'):
+  with pytest.raises(OSError, match='AW21024'):
     board.init()
   assert not writes
