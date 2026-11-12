@@ -5,6 +5,7 @@ import subprocess
 import time
 import unittest
 import numpy as np
+from pathlib import Path
 from collections import namedtuple, defaultdict
 
 from openpilot.common.test import OpenpilotTestCase
@@ -87,6 +88,10 @@ class TestSensord(OpenpilotTestCase):
   def test_all_sensors_present(self):
     missing = [config.service for config in SENSOR_CONFIGS if config.service not in self.events]
     assert len(missing) == 0, f"missing sensors: {missing}"
+
+  def test_gpio_irq_affinity(self):
+    affinity = Path(f"/proc/irq/{self.sensord_irq}/smp_affinity_list").read_text().strip()
+    assert affinity == "2", f"sensor IRQ is assigned to CPUs {affinity}, expected CPU 2"
 
   def test_lsm6ds3_timing(self, subtests):
     # verify measurements are sampled and published at 104Hz
