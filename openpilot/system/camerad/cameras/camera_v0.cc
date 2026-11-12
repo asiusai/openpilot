@@ -161,7 +161,7 @@ static const std::vector<i2c_random_wr_payload> &os04_default_init_regs(bool dri
     std::vector<i2c_random_wr_payload> result(std::begin(init_array_os04c10), std::end(init_array_os04c10));
     result.insert(result.end(), {
       {0x3002, 0x21}, {0x3663, 0x26}, {0x368a, 0x00}, {0x3822, 0x14},
-      {0x3823, 0x08}, {0x3844, 0x08}, {0x382b, 0x00},
+      {0x3823, 0x08}, {0x3844, 0x08}, {0x382b, 0x00}, {0x3832, 0x00},
       // Match the Asius module orientation and Bayer crop used by the road cameras.
       // 0x3716 must match 0x3820's vertical orientation, as in os04c10_mirror_flip.
       {0x3716, 0x24},
@@ -1013,11 +1013,12 @@ void camerad_thread() {
   while (!do_exit) {
     for (auto &cam : cams) {
       const uint64_t now = nanos_since_boot();
-      if (!cam->camera.enabled || now - cam->last_frame_ns >= camera_reconnect_timeout_ns) {
+      if (now - cam->last_frame_ns >= camera_reconnect_timeout_ns) {
         LOGE("cam %d: no frames for 30 seconds; restarting camerad to re-probe hardware",
              cam->camera.cc.camera_num);
         return;
       }
+      if (!cam->camera.enabled) continue;
 
       uint64_t timestamp;
       int buf_idx = cam->camera.dequeue_frame(&timestamp);

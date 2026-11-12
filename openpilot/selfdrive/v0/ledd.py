@@ -17,7 +17,7 @@ STARTUP_GRACE = 30.
 OFFROAD_SLEEP_TIMEOUT = 30.
 RUNTIME_HZ = 60.
 STARTED_AT = time.monotonic()
-CAM_LED_ADDR = 0x5b
+CAM_LED_ADDR = 0x30
 CAM_LED_BUSES = (16, 18, 20)
 CAM_LED_STATUS_CAMERAS = (2, 3)
 CAM_LED_RETRY_INTERVAL = 5.
@@ -34,12 +34,11 @@ CAM_LED_CHANNELS = (
   ("red", 0), ("green", 0), ("blue", 0),
   ("red", 1), ("green", 1), ("blue", 1),
   ("red", 2), ("green", 2), ("blue", 2),
+  ("red", 3), ("green", 3), ("blue", 3),
 )
 
-AW9523_DIM_BASE = 0x20
-AW9523_GLOBAL_CONTROL = 0x11
-AW9523_HALF_CURRENT = 0x02  # 18.5 mA nominal full scale per output.
-AW9523_RGB_INDICES = (0, 1, 2, 6, 7, 8)
+AW21024_RGB_BASE = 0x0d  # BR12: physical OUT13, first RGB red output.
+AW21024_UPDATE = 0x49
 
 Ratekeeper: Any = None
 log: Any = None
@@ -123,7 +122,7 @@ class CameraLedBoard:
   def channel_paths(self) -> list[Path]:
     return [
       CAM_LED_SYSFS_ROOT / f"asius:cam{self.camera_num}:{color}:{package}"
-      for color, package in (CAM_LED_CHANNELS[i] for i in AW9523_RGB_INDICES)
+      for color, package in CAM_LED_CHANNELS
     ]
 
   def kernel_leds_available(self) -> bool:
@@ -159,16 +158,15 @@ class CameraLedBoard:
         if trigger.exists():
           trigger.write_text("none")
     else:
-      if self.bus.read_byte_data(CAM_LED_ADDR, 0x10) != 0x23:
-        raise OSError("AW9523 camera LED controller not detected")
-      # Joined IR outputs must never be driven low in GPIO mode.
-      for register in (0x04, 0x05):
-        self.write(register, 0xff)
-      for register in range(AW9523_DIM_BASE, AW9523_DIM_BASE + 16):
-        self.write(register, 0)
-      self.write(AW9523_GLOBAL_CONTROL, AW9523_HALF_CURRENT)
-      for register in (0x12, 0x13):
-        self.write(register, 0)
+      if self.bus.read_byte_data(CAM_LED_ADDR, 0x7f) != 0x18:
+        raise OSError("AW21024 camera LED controller not detected")
+      # Preserve IR state; initialize only the twelve RGB outputs.
+      for channel in range(12):
+        self.write(AW21024_RGB_BASE + channel, 0)
+        self.write(0x4a + 12 + channel, 255)
+      self.write(AW21024_UPDATE, 0)
+      self.write(0x6e, 255)  # RSET sets nominal full scale to 18.52 mA.
+      self.write(0x00, 1)
     self.initialized = True
 
   def set_channels(self, channels: list[int]) -> None:
@@ -176,27 +174,21 @@ class CameraLedBoard:
       raise ValueError(f"expected {len(CAM_LED_CHANNELS)} LED channels, got {len(channels)}")
     if any(value < 0 or value > 255 for value in channels):
       raise ValueError("LED channel brightness must be between 0 and 255")
-    # The middle RGB package is unused, including for direct channel writes.
-    channels = channels[:3] + [0, 0, 0] + channels[6:]
     if not self.initialized:
       self.init()
 
-    rgb = [channels[i] for i in AW9523_RGB_INDICES]
+    rgb = channels
     if self.kernel_leds:
       for path, value in zip(self.channel_paths, rgb, strict=True):
         (path / "brightness").write_text(str(value))
       return
 
     for channel, value in enumerate(rgb):
-      self.write(AW9523_DIM_BASE + channel, value)
+      self.write(AW21024_RGB_BASE + channel, value)
+    self.write(AW21024_UPDATE, 0)
 
   def set(self, state: LedState) -> None:
-    # Only the outer two LEDs in each window are used.
-    self.set_channels([
-      state.red, state.green, state.blue,
-      0, 0, 0,
-      state.red, state.green, state.blue,
-    ])
+    self.set_channels([state.red, state.green, state.blue] * 4)
 
 
 class CameraLeds:
@@ -424,7 +416,7 @@ def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[in
   else:
     state = BLUE if int(now * 2) % 2 == 0 else OFF
   state = max_brightness(state, brightness)
-  return camera_channels([[state.red, state.green, state.blue]] * 6)
+  return camera_channels([[state.red, state.green, state.blue]] * 8)
 
 
 class OffroadLedSleep:
@@ -479,7 +471,7 @@ def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool
   if state in (RED, DM_WARNING, OFF):
     state = max_brightness(state, brightness)
     rgb = [state.red, state.green, state.blue]
-    return camera_channels([rgb] * 6)
+    return camera_channels([rgb] * 8)
   if state == ORANGE:
     return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
   # Continue the kernel fade for one cycle while userspace starts. Driving
@@ -507,7 +499,7 @@ def live_led_channels(sm, request: dict) -> dict[int, list[int]] | None:
     if type(brightness) is not int or not 0 <= brightness <= MAX_AUTO_BRIGHTNESS or len(color) != 7 or color[0] != '#':
       return None
     rgb = [round(int(color[i:i+2], 16) * brightness / 255) for i in (1, 3, 5)]
-    return camera_channels([rgb] * 6)
+    return camera_channels([rgb] * 8)
   except (KeyError, TypeError, ValueError):
     return None
 

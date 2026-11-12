@@ -7,27 +7,27 @@ from openpilot.cereal import log
 
 
 @pytest.mark.parametrize(('percent', 'road', 'wide'), [
-  (0, [0] * 9, [0, 0, 0, 0, 0, 0, 127, 16, 0]),
-  (25, [0] * 9, [0, 0, 0, 0, 0, 0, 127, 16, 0]),
-  (50, [0] * 9, [127, 16, 0, 0, 0, 0, 127, 16, 0]),
-  (75, [0, 0, 0, 0, 0, 0, 127, 16, 0], [127, 16, 0, 0, 0, 0, 127, 16, 0]),
-  (100, [127, 16, 0, 0, 0, 0, 127, 16, 0], [127, 16, 0, 0, 0, 0, 127, 16, 0]),
+  (0, [0] * 12, [0] * 9 + [127, 16, 0]),
+  (25, [0] * 12, [0] * 6 + [127, 16, 0] * 2),
+  (50, [0] * 12, [127, 16, 0] * 4),
+  (75, [0] * 6 + [127, 16, 0] * 2, [127, 16, 0] * 4),
+  (100, [127, 16, 0] * 4, [127, 16, 0] * 4),
 ])
 def test_calibration_fills_in_physical_order(percent, road, wide):
-  assert calibration_channels(percent, 255) == {1: [0] * 9, 2: road, 3: wide}
+  assert calibration_channels(percent, 255) == {1: [0] * 12, 2: road, 3: wide}
 
 
 def test_calibration_partial_progress_and_zero_brightness():
   assert calibration_channels(12.5, 255)[3][-3:] == [127, 16, 0]
-  assert calibration_channels(37.5, 255)[3][:3] == [64, 8, 0]
+  assert calibration_channels(43.75, 255)[3][:3] == [64, 8, 0]
   assert calibration_channels(0, 26)[3][-3:] == [26, 3, 0]
-  assert calibration_channels(0, 0) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
-  assert calibration_channels(100, 0) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
+  assert calibration_channels(0, 0) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
+  assert calibration_channels(100, 0) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
 
 
-def test_startup_breathes_pure_blue_together_with_centers_off():
-  assert startup_levels(0.) == [1. / 6.] * 6
-  assert startup_levels(1.2) == [1.] * 6
+def test_startup_breathes_pure_blue_on_all_eight_leds():
+  assert startup_levels(0.) == [1. / 6.] * 8
+  assert startup_levels(1.2) == [1.] * 8
   rising = [startup_levels(frame / 60.)[0] for frame in range(73)]
   falling = [startup_levels(frame / 60.)[0] for frame in range(72, 181)]
   assert rising == sorted(rising)
@@ -38,15 +38,14 @@ def test_startup_breathes_pure_blue_together_with_centers_off():
     channels = startup_channels(elapsed)
     assert len(set(startup_levels(elapsed))) == 1
     assert channels == startup_channels(elapsed + 3.)
-    assert channels[1] == [0] * 9
+    assert channels[1] == [0] * 12
     assert channels[2] == channels[3]
-    assert channels[2][:3] == channels[2][6:]
+    assert channels[2] == channels[2][:3] * 4
     assert 1 <= channels[2][2] <= 6
-    assert channels[2][3:6] == [0, 0, 0]
     assert channels[2][0:2] == [0, 0]
   assert startup_channels(0.)[2][2] == 1
   assert startup_channels(1.2)[2][2] == 6
-  assert startup_channels(1.2, 0) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
+  assert startup_channels(1.2, 0) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
 
 
 @pytest.mark.parametrize('percent', [0, 25, 100])
@@ -73,9 +72,9 @@ def test_stale_calibration_and_safety_alerts_do_not_render_progress(monkeypatch)
   sm['selfdriveState'].active = True
   sm['selfdriveState'].alertSound = 'warningImmediate'
   assert ledd.automatic_led_channels(sm, 255, 100.) == {
-    1: [0] * 9, 2: [127, 0, 0, 0, 0, 0, 127, 0, 0], 3: [127, 0, 0, 0, 0, 0, 127, 0, 0],
+    1: [0] * 12, 2: [127, 0, 0] * 4, 3: [127, 0, 0] * 4,
   }
-  assert ledd.automatic_led_channels(sm, 255, 100.5) == {1: [0] * 9, 2: [0] * 9, 3: [0] * 9}
+  assert ledd.automatic_led_channels(sm, 255, 100.5) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
   assert ledd.led_state(sm, 100.) == ledd.RED
 
 
