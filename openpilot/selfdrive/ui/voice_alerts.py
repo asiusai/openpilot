@@ -18,6 +18,7 @@ PROCESS_VOICES = {"modeld": "model_error", "camerad": "camera_error"}
 SAMPLE_RATE = 48000
 RETRIGGER_SECONDS = 30.
 SPEECH_GAP_SECONDS = 2.
+CHESTNUT_STARTUP_SECONDS = 30.
 
 
 def alert_voice(state):
@@ -42,6 +43,7 @@ class VoiceAlerts:
     self.params = params
     self.enabled = False
     self.next_poll = 0.
+    self.started_at = None
     self.offroad = []
     self.loaded = {}
     self.load_attempted = False
@@ -72,9 +74,14 @@ class VoiceAlerts:
         cloudlog.exception("Cannot load voice alert %s", key)
 
   def update(self, state, onroad, critical, now):
+    if self.started_at is None:
+      self.started_at = now
     if now >= self.next_poll:
       self.enabled = self.params.get_bool("VoiceAlertsEnabled")
-      self.offroad = [key for param, key in OFFROAD_VOICES.items() if self.params.get(param)] if self.enabled and not onroad else []
+      self.offroad = [key for param, key in OFFROAD_VOICES.items()
+                      if self.params.get(param) and not (
+                        param.startswith('Offroad_Chestnut') and param != 'Offroad_ChestnutOverheated' and
+                        now - self.started_at < CHESTNUT_STARTUP_SECONDS)] if self.enabled and not onroad else []
       self.next_poll = now + 1.
       if self.enabled and not self.load_attempted:
         self.load()

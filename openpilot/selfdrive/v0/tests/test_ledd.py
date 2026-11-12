@@ -150,12 +150,56 @@ def test_red_immediately_when_started_without_selfdrive_state():
   assert ledd.led_state(sm) == ledd.RED
 
 
+def test_process_start_wait_on_each_ignition_cycle_is_bounded(monkeypatch):
+  monkeypatch.setattr(ledd, 'STARTED_AT', 0.)
+  monkeypatch.setattr(ledd.time, 'monotonic', lambda: 100.)
+  sm = healthy_sm()
+  sm['deviceState'].startedMonoTime = int(95e9)
+  sm['managerState'].processes = [SimpleNamespace(name='modeld', shouldBeRunning=True, running=False)]
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name='selfdriveInitializing')])
+  assert ledd.led_state(sm) == ledd.BLUE
+  sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.uncalibrated
+  assert ledd.led_state(sm) == ledd.ORANGE
+  sm.set('onroadEvents', [])
+  sm.recv_time = {'selfdriveState': 96.}
+  assert ledd.led_state(sm) == ledd.RED
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name='selfdriveInitializing')])
+  monkeypatch.setattr(ledd.time, 'monotonic', lambda: 125.)
+  assert ledd.led_state(sm) == ledd.RED
+
+
 def test_missing_selfdrive_state_is_ignored_when_offroad():
   sm = healthy_sm()
   sm.seen['selfdriveState'] = False
   sm.alive['selfdriveState'] = False
   sm['deviceState'].started = False
   assert ledd.led_state(sm) == ledd.BLUE
+
+
+def test_initial_driving_state_wait_preserves_calibration_and_faults(monkeypatch):
+  monkeypatch.setattr(ledd.time, 'monotonic', lambda: 100.)
+  sm = healthy_sm()
+  sm['deviceState'].startedMonoTime = int(95e9)
+  sm['extrinsicsCalibration'].calStatus = log.ExtrinsicsCalibration.Status.uncalibrated
+  sm.seen['selfdriveState'] = False
+  sm.alive['selfdriveState'] = False
+  assert ledd.led_state(sm) == ledd.ORANGE
+  sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.overheated
+  assert ledd.led_state(sm) == ledd.RED
+  sm['deviceState'].thermalStatus = log.DeviceState.ThermalStatus.ok
+  sm.set('onroadEvents', [log.OnroadEvent.new_message(name='cameraMalfunction')])
+  assert ledd.led_state(sm) == ledd.RED
+  sm.set('onroadEvents', [])
+  # A stale message from the preceding ignition cycle is still an initial wait.
+  sm.seen['selfdriveState'] = True
+  sm.recv_time = {'selfdriveState': 90.}
+  assert ledd.led_state(sm) == ledd.ORANGE
+  # Loss after a message in this cycle remains an immediate fault.
+  sm.recv_time['selfdriveState'] = 96.
+  assert ledd.led_state(sm) == ledd.RED
+  sm.seen['selfdriveState'] = False
+  monkeypatch.setattr(ledd.time, 'monotonic', lambda: 125.)
+  assert ledd.led_state(sm) == ledd.RED
 
 
 @pytest.mark.parametrize('event', sorted(ledd.SYSTEM_FAULT_EVENTS))
@@ -375,13 +419,13 @@ def test_pairing_confirmation_uses_synchronized_amber_double_pulse(monkeypatch):
 
 def test_camera_brightness_uses_wide_road_exposure_stops():
   sm = FakeSubMaster()
-  assert ledd.camera_led_brightness(sm) == 6
+  assert ledd.camera_led_brightness(sm) == 5
 
   sm.set('narrowRoadCameraState', SimpleNamespace(exposureValPercent=100.))
-  assert ledd.camera_led_brightness(sm) == 6
+  assert ledd.camera_led_brightness(sm) == 5
 
   sm.set('wideRoadCameraState', SimpleNamespace(exposureValPercent=100.))
-  assert ledd.camera_led_brightness(sm) == 6
+  assert ledd.camera_led_brightness(sm) == 5
 
   sm['wideRoadCameraState'].exposureValPercent = 0.
   assert ledd.camera_led_brightness(sm) == 127
@@ -389,22 +433,22 @@ def test_camera_brightness_uses_wide_road_exposure_stops():
   # The reported dark scene was 0.96749%, previously mapped to 124/255.
   for exposure in (.5, .96749, 1., 100.):
     sm['wideRoadCameraState'].exposureValPercent = exposure
-    assert ledd.camera_led_brightness(sm) == 6
+    assert ledd.camera_led_brightness(sm) == 5
   sm['wideRoadCameraState'].exposureValPercent = .1
-  assert 6 < ledd.camera_led_brightness(sm) < 127
+  assert 5 < ledd.camera_led_brightness(sm) < 127
   sm['wideRoadCameraState'].exposureValPercent = -.1
-  assert ledd.camera_led_brightness(sm) == 6
+  assert ledd.camera_led_brightness(sm) == 5
 
   values = []
   for exposure in [i / 1000 for i in range(501)]:
     sm['wideRoadCameraState'].exposureValPercent = exposure
     values.append(ledd.camera_led_brightness(sm))
   assert values == sorted(values, reverse=True)
-  assert all(6 <= value <= 127 for value in values)
+  assert all(5 <= value <= 127 for value in values)
   sm['wideRoadCameraState'].exposureValPercent = float('nan')
-  assert ledd.camera_led_brightness(sm) == 6
+  assert ledd.camera_led_brightness(sm) == 5
   sm.valid['wideRoadCameraState'] = False
-  assert ledd.camera_led_brightness(sm) == 6
+  assert ledd.camera_led_brightness(sm) == 5
 
 
 def test_runtime_brightness_reaches_requested_peak():
@@ -426,7 +470,8 @@ def test_status_colors_use_all_four_rgb_packages(monkeypatch):
 @pytest.mark.parametrize('kernel_leds', [False, True])
 def test_direct_channel_writes_reach_all_rgb_outputs(monkeypatch, tmp_path, kernel_leds):
   monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
-  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0, initialized=True, kernel_leds=kernel_leds)
+  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0, initialized=True, kernel_leds=kernel_leds,
+                             channel_maxima=(65535,) * 12)
   writes = {}
   monkeypatch.setattr(board, 'write', lambda register, value: writes.update({register: value}))
   if kernel_leds:
@@ -436,7 +481,7 @@ def test_direct_channel_writes_reach_all_rgb_outputs(monkeypatch, tmp_path, kern
   board.set_channels([255] * 12)
   actual = ([int((path / 'brightness').read_text()) for path in board.channel_paths] if kernel_leds else
             [writes[ledd.AW21024_RGB_BASE + i] for i in range(12)])
-  assert actual == [255] * 12
+  assert actual == [65535 if kernel_leds else 255] * 12
   if not kernel_leds:
     assert writes[ledd.AW21024_UPDATE] == 0
 
@@ -500,9 +545,47 @@ def test_aw21024_initialization_preserves_ir_registers(monkeypatch):
   board.set(ledd.BLUE)
   assert writes[:24] == [pair for i in range(12) for pair in ((13 + i, 0), (0x56 + i, 255))]
   assert writes[24:27] == [(0x49, 0), (0x6e, 255), (0, 1)]
-  assert writes[27:-1] == [(13 + i, v) for i, v in enumerate([0, 0, 180] * 4)]
+  registers = dict(writes)
+  assert [registers[13 + i] for i in range(12)] == [0, 0, 255] * 4
+  assert [registers[0x56 + i] for i in range(12)] == [6, 6, 180] * 4
   assert writes[-1] == (0x49, 0)
   assert not any(1 <= register <= 12 for register, _ in writes)
+
+
+@pytest.mark.parametrize('kernel_leds', [False, True])
+def test_dim_calibration_keeps_green_and_breath_has_fine_steps(monkeypatch, tmp_path, kernel_leds):
+  from openpilot.selfdrive.v0.led_patterns import calibration_channels, startup_channels
+  monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
+  board = ledd.CameraLedBoard('test', 3, 0, initialized=True, kernel_leds=kernel_leds, channel_maxima=(65535,) * 12)
+  writes = {}
+  monkeypatch.setattr(board, 'write', lambda register, value: writes.update({register: value}))
+  for path in board.channel_paths:
+    path.mkdir()
+    (path / 'brightness').write_text('0')
+  for percent in (12.501, 12.6, 13, 14, 15, 18, 20):
+    board.set_channels(calibration_channels(percent, 5)[3])
+    # The second LED must retain green even at the beginning of its fade.
+    values = ([int((p / 'brightness').read_text()) for p in board.channel_paths] if kernel_leds else
+              [writes[13 + i] for i in range(12)])
+    assert values[6] > 0 and values[7] > 0 and values[8] == 0
+  steps = set()
+  for frame in range(180):
+    board.set_channels(startup_channels(frame / 60)[3])
+    steps.add(int((board.channel_paths[2] / 'brightness').read_text()) if kernel_leds else writes[15])
+  assert len(steps) > 100
+  board.set_channels([0] * 12)
+  assert (int((board.channel_paths[2] / 'brightness').read_text()) if kernel_leds else writes[15]) == 0
+
+
+def test_pwm_changes_do_not_rewrite_current_scale(monkeypatch):
+  board = ledd.CameraLedBoard('test', 2, 0, initialized=True)
+  writes = []
+  monkeypatch.setattr(board, 'write', lambda *args: writes.append(args))
+  board.set_channels([0, 0, 1] * 4)
+  writes.clear()
+  board.set_channels([0, 0, 1.1] * 4)
+  assert all(register not in range(0x56, 0x62) for register, _ in writes)
+  assert len(writes) == 13
 
 
 def test_aw21024_rejects_wrong_chip_before_writes(monkeypatch):

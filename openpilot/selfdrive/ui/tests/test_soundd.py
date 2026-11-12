@@ -43,10 +43,8 @@ class TestSoundd(OpenpilotTestCase):
 
     device.return_value = 'v0'
     asius = soundd.Soundd()
-    louder = [asius.calculate_volume(db) for db in levels]
-    np.testing.assert_allclose(louder, np.minimum(2 * np.array(original), 1.))
-    assert asius.current_volume == louder[0]
-    assert all(a <= b for a, b in zip(louder, louder[1:], strict=False))
+    np.testing.assert_array_equal([asius.calculate_volume(db) for db in levels], original)
+    assert asius.current_volume == comma.current_volume
 
   def test_v0_sound_headroom(self, mocker):
     device = mocker.patch.object(soundd.HARDWARE, 'get_device_type', return_value='mici')
@@ -57,10 +55,8 @@ class TestSoundd(OpenpilotTestCase):
       assert np.max(np.abs(samples)) <= 1.
       assert samples.shape == comma.loaded_sounds[alert].shape
       assert samples.dtype == np.float32
-      assert np.linalg.norm(samples) >= np.linalg.norm(comma.loaded_sounds[alert])
+      np.testing.assert_array_equal(samples, comma.loaded_sounds[alert])
       assert np.all(samples[comma.loaded_sounds[alert] == 0] == 0)
-    for alert in (AudibleAlert.engage, AudibleAlert.disengage, AudibleAlert.prompt):
-      assert np.linalg.norm(asius.loaded_sounds[alert]) > 2.5 * np.linalg.norm(comma.loaded_sounds[alert])
     for alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate, soundd.CRITICAL_MAX):
       np.testing.assert_array_equal(asius.loaded_sounds[alert], comma.loaded_sounds[alert])
 
