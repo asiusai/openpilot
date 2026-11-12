@@ -74,7 +74,7 @@ class Soundd:
 
     self.current_alert = AudibleAlert.none
     self.current_sound = AudibleAlert.none
-    self.current_volume = self.calculate_volume(AMBIENT_DB) if HARDWARE.get_device_type() == "v0" else MIN_VOLUME
+    self.current_volume = MIN_VOLUME
     self.current_sound_frame = 0
 
     self.ramp_start_volume = MIN_VOLUME
@@ -99,10 +99,6 @@ class Soundd:
 
         length = wavefile.getnframes()
         self.loaded_sounds[sound] = np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
-
-      if HARDWARE.get_device_type() == "v0" and sound not in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate, CRITICAL_MAX):
-        # Raise sustained chime loudness with soft limiting; leave critical sirens unchanged.
-        self.loaded_sounds[sound] = 0.98 * np.tanh(6 * self.loaded_sounds[sound])
 
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
@@ -131,7 +127,7 @@ class Soundd:
           break
 
     critical = critical or self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
-    voice_volume = MAX_VOLUME if HARDWARE.get_device_type() == "v0" else self.current_volume
+    voice_volume = self.current_volume
     mixed = self.voice.mix(ret * self.current_volume, voice_volume, critical)
     return self.pairing_speech.mix(mixed, voice_volume, critical)
 
@@ -176,8 +172,7 @@ class Soundd:
 
   def calculate_volume(self, weighted_db):
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
-    volume = math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
-    return min(2 * volume, MAX_VOLUME) if HARDWARE.get_device_type() == "v0" else volume
+    return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
 
   @retry(attempts=10, delay=3)
   def get_stream(self, sd):

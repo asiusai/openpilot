@@ -95,6 +95,7 @@ def test_disable_and_critical_stop_speech(speech):
 
 
 def test_offroad_alerts_and_no_stale_queue(speech):
+  speech.update(None, False, False, 60.)
   speech.params.put("Offroad_ChestnutNotDetected", {"text": "missing"}, block=True)
   speech.update(None, False, False, 100.)
   assert "chestnut_error" in speech.last_played
@@ -116,6 +117,33 @@ def test_missing_clip_does_not_stop_standard_audio(speech, tmp_path, monkeypatch
   assert not speech.playing
   alert = np.linspace(-1, 1, 100, dtype=np.float32)
   np.testing.assert_array_equal(speech.mix(alert, 1., False), alert)
+
+
+@pytest.mark.parametrize('param', ['Offroad_ChestnutNotDetected', 'Offroad_ChestnutUsbSlow',
+                                  'Offroad_ChestnutPcieUnavailable', 'Offroad_ChestnutUpdateFailed'])
+def test_chestnut_startup_transient_is_not_spoken_but_persistent_fault_is(speech, param):
+  speech.params.put(param, {'text': 'initializing'}, block=True)
+  speech.update(None, False, False, 100.)
+  assert not speech.playing
+  speech.params.remove(param)
+  speech.update(None, False, False, 131.)
+  assert not speech.playing and not speech.last_played
+  speech.params.put(param, {'text': 'failed'}, block=True)
+  speech.update(None, False, False, 132.)
+  assert speech.playing and 'chestnut_error' in speech.last_played
+
+
+def test_chestnut_startup_timeout_and_overheat(speech):
+  speech.params.put('Offroad_ChestnutNotDetected', {'text': 'missing'}, block=True)
+  speech.update(None, False, False, 100.)
+  speech.update(None, False, False, 129.)
+  assert not speech.playing
+  speech.update(None, False, False, 130.)
+  assert speech.playing
+  fresh = VoiceAlerts(speech.params)
+  speech.params.put('Offroad_ChestnutOverheated', {'text': 'hot'}, block=True)
+  fresh.update(None, False, False, 100.)
+  assert fresh.playing
 
 
 @pytest.mark.parametrize("event,size,event_type,expected", [
@@ -178,6 +206,7 @@ def test_update_and_internet_errors_do_not_trigger_speech(speech):
 
 
 def test_grouped_chestnut_faults_do_not_repeat(speech):
+  speech.update(None, False, False, 60.)
   speech.params.put("Offroad_ChestnutNotDetected", {"text": "missing"}, block=True)
   speech.update(None, False, False, 100.)
   finish(speech)
@@ -204,7 +233,7 @@ def test_mixing_headroom_and_siren_priority(speech):
   assert not speech.playing
 
 
-@pytest.mark.parametrize("device,expected", [("v0", .5), ("mici", .05)])
+@pytest.mark.parametrize("device,expected", [("v0", .05), ("mici", .05)])
 def test_voice_volume_preserves_comma_volume(device, expected, tmp_path, monkeypatch):
   params = Params(str(tmp_path))
   monkeypatch.setattr(soundd, "Params", lambda: params)
