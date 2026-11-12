@@ -1,4 +1,5 @@
 import subprocess
+import shutil
 from pathlib import Path
 
 
@@ -6,13 +7,16 @@ def make_video(path, seconds, codec='libx264', format_name=None):
   # Remux committed synthetic frames; device tests need no software encoder.
   if seconds not in (1, 2, 3):
     raise ValueError('Video fixtures contain three seconds at 20 fps')
-  fixture = Path(__file__).parent / 'fixtures' / {'libx264': 'h264.mp4', 'libx265': 'hevc.mp4'}[codec]
-  command = ['ffmpeg', '-v', 'error', '-i', str(fixture), '-map', '0:v:0', '-c:v', 'copy', '-frames:v', str(seconds * 20)]
+  name = {'libx264': 'h264', 'libx265': 'hevc'}[codec]
+  fixtures = Path(__file__).parent / 'fixtures'
   if format_name:
-    command += ['-f', format_name]
-  else:
-    command += ['-movflags', '+frag_keyframe+empty_moov+default_base_moof']
-  subprocess.run([*command, str(path)], check=True, stderr=subprocess.PIPE)
+    if format_name != name or seconds != 1:
+      raise ValueError('Raw fixtures contain one second in their native codec')
+    shutil.copyfile(fixtures / f'{name}.{name}', path)
+    return
+  command = ['ffmpeg', '-v', 'error', '-i', str(fixtures / f'{name}.mp4'), '-map', '0:v:0', '-c:v', 'copy',
+             '-frames:v', str(seconds * 20), '-movflags', '+frag_keyframe+empty_moov+default_base_moof']
+  subprocess.run([*command, str(path)], check=True)
 
 
 def decrypt_recording(path, key):
