@@ -713,7 +713,7 @@ requires-dist = [
     { name = "comma-deps-zstd" },
     { name = "coverage", marker = "extra == 'testing'" },
     { name = "cryptography", specifier = "==50.0.2" },
-    { name = "cython" },
+    { name = "cython", specifier = "==3.3.1" },
     { name = "dbus-fast", specifier = "==5.0.22" },
     { name = "hf-xet", marker = "extra == 'tools'", specifier = "==1.7.0" },
     { name = "inputs" },
