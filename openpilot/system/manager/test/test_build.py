@@ -21,6 +21,7 @@ def test_build_failure_leds(monkeypatch, tmp_path, asius, results):
     for path in board.channel_paths:
       path.mkdir()
       (path / 'brightness').write_text('17')
+      (path / 'max_brightness').write_text('65535')
       (path / 'trigger').write_text('asius-startup')
 
   attempts = []
@@ -43,7 +44,7 @@ def test_build_failure_leds(monkeypatch, tmp_path, asius, results):
     for channel, path in enumerate(board.channel_paths):
       if asius and results[-1]:
         # Each AW21024 board exposes four RGB LEDs. The driver board stays off.
-        expected = ledd.BOOT_BRIGHTNESS if board.camera_num in (2, 3) and channel % 3 == 0 else 0
+        expected = ledd.BOOT_BRIGHTNESS * 257 if board.camera_num in (2, 3) and channel % 3 == 0 else 0
         assert (path / 'trigger').read_text() == 'none'
       else:
         expected = 17

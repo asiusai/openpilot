@@ -3,7 +3,7 @@ import math
 import signal
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from openpilot.selfdrive.v0.buttond import ButtonAction, DeviceButtons
@@ -39,6 +39,13 @@ CAM_LED_CHANNELS = (
 
 AW21024_RGB_BASE = 0x0d  # BR12: physical OUT13, first RGB red output.
 AW21024_UPDATE = 0x49
+
+
+def rgb_registers(value: float) -> tuple[int, int]:
+  """Use low RGB current and the full PWM range for fractional brightness."""
+  current = max(6, math.ceil(value))
+  pwm = max(1, round(value * 255 / current)) if value else 0
+  return current, pwm
 
 Ratekeeper: Any = None
 log: Any = None
@@ -117,6 +124,8 @@ class CameraLedBoard:
   kernel_leds: bool = False
   initialized: bool = False
   next_retry: float = 0.
+  channel_maxima: tuple[int, ...] = ()
+  color_scales: list[int] = field(default_factory=lambda: [255] * 12)
 
   @property
   def channel_paths(self) -> list[Path]:
@@ -153,6 +162,7 @@ class CameraLedBoard:
   def init(self) -> None:
     self.connect()
     if self.kernel_leds:
+      self.channel_maxima = tuple(int((path / "max_brightness").read_text()) for path in self.channel_paths)
       for path in self.channel_paths:
         trigger = path / "trigger"
         if trigger.exists():
@@ -167,24 +177,31 @@ class CameraLedBoard:
       self.write(AW21024_UPDATE, 0)
       self.write(0x6e, 255)  # RSET sets nominal full scale to 18.52 mA.
       self.write(0x00, 1)
+      self.color_scales = [255] * 12
     self.initialized = True
 
-  def set_channels(self, channels: list[int]) -> None:
+  def set_channels(self, channels: list[float]) -> None:
     if len(channels) != len(CAM_LED_CHANNELS):
       raise ValueError(f"expected {len(CAM_LED_CHANNELS)} LED channels, got {len(channels)}")
-    if any(value < 0 or value > 255 for value in channels):
+    if any(not math.isfinite(value) or value < 0 or value > 255 for value in channels):
       raise ValueError("LED channel brightness must be between 0 and 255")
     if not self.initialized:
       self.init()
 
     rgb = channels
     if self.kernel_leds:
-      for path, value in zip(self.channel_paths, rgb, strict=True):
-        (path / "brightness").write_text(str(value))
+      for path, value, maximum in zip(self.channel_paths, rgb, self.channel_maxima, strict=True):
+        (path / "brightness").write_text(str(max(1, round(value * maximum / 255)) if value else 0))
       return
 
     for channel, value in enumerate(rgb):
-      self.write(AW21024_RGB_BASE + channel, value)
+      current, pwm = rgb_registers(value)
+      if self.color_scales[channel] != current:
+        self.write(AW21024_RGB_BASE + channel, 0)
+        self.write(AW21024_UPDATE, 0)
+        self.write(0x4a + 12 + channel, current)
+        self.color_scales[channel] = current
+      self.write(AW21024_RGB_BASE + channel, pwm)
     self.write(AW21024_UPDATE, 0)
 
   def set(self, state: LedState) -> None:
@@ -199,7 +216,7 @@ class CameraLeds:
       CameraLedBoard("wide", camera_num=3, bus_num=CAM_LED_BUSES[2]),
     ]
     self.last_state: LedState | None = None
-    self.last_channels: dict[int, list[int]] | None = None
+    self.last_channels: dict[int, list[float]] | None = None
     self.last_sent = 0.
 
   def set(self, state: LedState, force: bool = False, brightness: int = 255) -> None:
@@ -226,7 +243,7 @@ class CameraLeds:
       self.last_channels = None
       self.last_sent = now
 
-  def set_channels(self, camera_channels: dict[int, list[int]], force: bool = False) -> None:
+  def set_channels(self, camera_channels: dict[int, list[float]], force: bool = False) -> None:
     now = time.monotonic()
     if not force and camera_channels == self.last_channels and (now - self.last_sent) < 1.0:
       return
@@ -266,6 +283,9 @@ class CameraLeds:
 
 def manager_failed(sm) -> bool:
   if time.monotonic() - STARTED_AT < STARTUP_GRACE:
+    return False
+  if (sm.seen['deviceState'] and sm.alive['deviceState'] and sm.valid['deviceState'] and
+      sm['deviceState'].started and driving_initializing(sm)):
     return False
   if not sm.seen['managerState']:
     return False
@@ -323,10 +343,24 @@ def selfdrive_state_available(sm) -> bool:
   return sm.seen['selfdriveState'] and sm.alive['selfdriveState'] and sm.valid['selfdriveState']
 
 
+def awaiting_first_selfdrive_state(sm) -> bool:
+  started_at = getattr(sm['deviceState'], 'startedMonoTime', 0) / 1e9
+  first_message_pending = not sm.seen['selfdriveState'] or getattr(sm, 'recv_time', {}).get('selfdriveState', 0.) < started_at
+  return started_at > 0 and 0 <= time.monotonic() - started_at < STARTUP_GRACE and first_message_pending
+
+
+def driving_initializing(sm) -> bool:
+  started_at = getattr(sm['deviceState'], 'startedMonoTime', 0) / 1e9
+  initializing_event = (sm.seen['onroadEvents'] and sm.alive['onroadEvents'] and sm.valid['onroadEvents'] and
+                        any(str(event.name) == 'selfdriveInitializing' for event in sm['onroadEvents']))
+  return (started_at > 0 and 0 <= time.monotonic() - started_at < STARTUP_GRACE and
+          (awaiting_first_selfdrive_state(sm) or initializing_event))
+
+
 def persistent_error(sm) -> bool:
   if (
     sm.seen['deviceState'] and sm.alive['deviceState'] and sm['deviceState'].started and
-    not selfdrive_state_available(sm)
+    not selfdrive_state_available(sm) and not awaiting_first_selfdrive_state(sm)
   ):
     return True
   if sm.seen['deviceState'] and sm.alive['deviceState'] and sm.valid['deviceState']:
@@ -403,7 +437,7 @@ def camera_led_brightness(sm) -> int:
   return round(interp(light, 0., 1., MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS))
 
 
-def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[int]] | None:
+def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[float]] | None:
   if not pairing_mode_active():
     return None
 
@@ -466,7 +500,7 @@ def led_state(sm, now: float | None = None, setup_complete: bool = True, offroad
 
 
 def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool = True,
-                           offroad_asleep: bool = False) -> dict[int, list[int]] | None:
+                           offroad_asleep: bool = False) -> dict[int, list[float]] | None:
   state = led_state(sm, now, setup_complete, offroad_asleep)
   if state in (RED, DM_WARNING, OFF):
     state = max_brightness(state, brightness)
@@ -482,7 +516,7 @@ def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool
   return None
 
 
-def live_led_channels(sm, request: dict) -> dict[int, list[int]] | None:
+def live_led_channels(sm, request: dict) -> dict[int, list[float]] | None:
   if not request or not sm.seen['pandaStates'] or not sm.alive['pandaStates'] or not sm.valid['pandaStates']:
     return None
   pandas = [p for p in sm['pandaStates'] if p.pandaType != log.PandaState.PandaType.unknown]
