@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from openpilot.common.params import Params
 from openpilot.system.asius.access_policy import IGNITION_RESTRICTED_PARAMS, check_param_write
+from openpilot.system.asius.sound import valid_volume
 
 CHUNK_BYTES = 8192
 MAX_VALUE_BYTES = 16 * 1024 * 1024
@@ -167,6 +168,8 @@ class ParameterEditor:
         raise ValueError('Value must be valid UTF-8 text.') from None
       check_param_write(name)
       # No partially received value reaches Params, even if Bluetooth disconnects.
+      if name == 'SoundVolume' and not clear and not valid_volume(value):
+        raise ValueError('SoundVolume must be an integer from 10 to 100')
       if clear:
         params.remove(name)
       else:
