@@ -79,6 +79,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "AthenadPid",
   "BluetoothdPid",
   "RelayPid",
+  "SoundVolumePreview",
 }
 LIVE_STATE_SERVICES = [
   "deviceState",
@@ -109,6 +110,7 @@ LIVE_STATE_PARAM_KEYS = [
   "LongitudinalPersonality",
   "IsLdwEnabled",
   "VoiceAlertsEnabled",
+  "SoundVolume",
   "RecordFront",
   "RecordAudio",
   "IsMetric",
@@ -149,7 +151,7 @@ BLUETOOTH_STATE_FIELDS = {
                   "freeSpacePercent",
                   "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "usbState", "uptime"),
   "peripheralState": ("pandaType", "voltage", "current"),
-  "extrinsicsCalibration": ("calStatus", "calPerc"),
+  "extrinsicsCalibration": ("calStatus", "calPerc", "rpyCalib", "height"),
   "gpsLocation": ("connected", "hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
                   "speed", "bearingDeg", "bearingAccuracyDeg", "sampleMonoTime"),
   "gpsLocationExternal": ("connected", "hasFix", "latitude", "longitude", "horizontalAccuracy", "source", "unixTimestampMillis",
@@ -287,6 +289,10 @@ def saveParams(params_to_update: dict[str, str | bool | int | float | dict | lis
         results[key] = "error: blocked"
         continue
       check_param_write(key)
+      if key == 'SoundVolume' and value is not None:
+        from openpilot.system.asius.sound import valid_volume
+        if not valid_volume(value):
+          raise ValueError('Volume must be an integer from 10 to 100.')
       if value is None:
         params.remove(key)
         results[key] = "ok: removed"
@@ -297,6 +303,16 @@ def saveParams(params_to_update: dict[str, str | bool | int | float | dict | lis
       results[key] = f"error: {e}"
 
   return results
+
+
+@dispatcher.add_method
+def previewSound() -> dict:
+  require_ignition_off()
+  if HARDWARE.get_device_type() != 'v0':
+    raise RuntimeError('Sound preview requires an Asius device.')
+  from openpilot.system.asius.sound import request_preview
+  request_preview(Params())
+  return {'queued': True}
 
 
 @dispatcher.add_method
