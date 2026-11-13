@@ -43,8 +43,25 @@ class TestSoundd(OpenpilotTestCase):
 
     device.return_value = 'v0'
     asius = soundd.Soundd()
-    np.testing.assert_array_equal([asius.calculate_volume(db) for db in levels], original)
-    assert asius.current_volume == comma.current_volume
+    np.testing.assert_array_equal([asius.calculate_volume(db) for db in levels], [.8] * len(levels))
+    assert asius.current_volume == .8
+
+  def test_v0_all_alerts_use_selected_gain(self, mocker):
+    mocker.patch.object(soundd.HARDWARE, 'get_device_type', return_value='v0')
+    for alert in soundd.sound_list:
+      if alert == soundd.CRITICAL_MAX:
+        continue  # Selected by the existing critical escalation, not an alert event.
+      daemon = soundd.Soundd()
+      daemon.update_alert(alert)
+      samples = daemon.loaded_sounds[alert]
+      np.testing.assert_array_equal(daemon.get_sound_data(len(samples)), samples * .8)
+
+  def test_v0_pairing_uses_selected_gain(self, mocker):
+    mocker.patch.object(soundd.HARDWARE, 'get_device_type', return_value='v0')
+    daemon = soundd.Soundd()
+    daemon.pairing_speech.clip = np.full(10, .5, dtype=np.float32)
+    daemon.pairing_speech.offset = 0
+    np.testing.assert_allclose(daemon.get_sound_data(10), .4)
 
   def test_v0_sound_headroom(self, mocker):
     device = mocker.patch.object(soundd.HARDWARE, 'get_device_type', return_value='mici')
