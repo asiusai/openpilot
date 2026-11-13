@@ -21,6 +21,7 @@ SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
 MAX_VOLUME = 1.0
 MIN_VOLUME = 0.1
+V0_VOLUME = 0.8
 ALERT_RAMP_TIME = 4 # seconds to ramp critical alerts to max volume
 ALERT_MAX_TIME = 8 # seconds before critical alerts switch to the max sound
 SELFDRIVE_STATE_TIMEOUT = 5 # 5 seconds
@@ -74,7 +75,7 @@ class Soundd:
 
     self.current_alert = AudibleAlert.none
     self.current_sound = AudibleAlert.none
-    self.current_volume = MIN_VOLUME
+    self.current_volume = V0_VOLUME if HARDWARE.get_device_type() == "v0" else MIN_VOLUME
     self.current_sound_frame = 0
 
     self.ramp_start_volume = MIN_VOLUME
@@ -171,6 +172,8 @@ class Soundd:
       self.selfdrive_timeout_alert = False
 
   def calculate_volume(self, weighted_db):
+    if HARDWARE.get_device_type() == "v0":
+      return V0_VOLUME
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
 

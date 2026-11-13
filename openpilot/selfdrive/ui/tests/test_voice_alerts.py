@@ -233,20 +233,20 @@ def test_mixing_headroom_and_siren_priority(speech):
   assert not speech.playing
 
 
-@pytest.mark.parametrize("device,expected", [("v0", .05), ("mici", .05)])
+@pytest.mark.parametrize("device,expected", [("v0", .4), ("mici", .05)])
 def test_voice_volume_preserves_comma_volume(device, expected, tmp_path, monkeypatch):
   params = Params(str(tmp_path))
   monkeypatch.setattr(soundd, "Params", lambda: params)
   monkeypatch.setattr(soundd.HARDWARE, "get_device_type", lambda: device)
   daemon = soundd.Soundd()
-  daemon.current_volume = .1
+  gain = daemon.current_volume
   daemon.voice.enabled = True
   daemon.voice.current = np.full(10, .5, dtype=np.float32)
   np.testing.assert_allclose(daemon.get_sound_data(10), expected)
   daemon.voice.current = np.full(10, .5, dtype=np.float32)
   daemon.voice.frame = 0
   daemon.update_alert(soundd.AudibleAlert.warningImmediate)
-  expected_siren = daemon.loaded_sounds[soundd.AudibleAlert.warningImmediate][:10] * .1
+  expected_siren = daemon.loaded_sounds[soundd.AudibleAlert.warningImmediate][:10] * gain
   np.testing.assert_array_equal(daemon.get_sound_data(10), expected_siren)
   assert not daemon.voice.playing
   # Completing the last siren loop must not mix speech into its final buffer.
@@ -255,7 +255,7 @@ def test_voice_volume_preserves_comma_volume(device, expected, tmp_path, monkeyp
   daemon.pending_stop = True
   daemon.voice.current = np.full(10, .5, dtype=np.float32)
   daemon.voice.frame = 0
-  np.testing.assert_array_equal(daemon.get_sound_data(10), samples[-10:] * .1)
+  np.testing.assert_array_equal(daemon.get_sound_data(10), samples[-10:] * gain)
   assert not daemon.voice.playing
 
 
