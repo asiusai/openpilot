@@ -14,8 +14,10 @@ def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
 
 def sound(started: bool, params: Params, CP: car.CarParams) -> bool:
   from openpilot.system.asius.pairing_confirmation import read_announcement
+  from openpilot.system.asius.sound import preview_request
   return (driverview(started, params, CP) or params.get_bool("VoiceAlertsEnabled") or
-          bool(params.get("BluetoothPairingUntil")) or read_announcement() is not None)
+          bool(params.get("BluetoothPairingUntil")) or read_announcement() is not None or
+          (ASIUS_HARDWARE and preview_request(params) is not None))
 
 def notcar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and CP.notCar

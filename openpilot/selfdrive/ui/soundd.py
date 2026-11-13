@@ -1,4 +1,5 @@
 import math
+import threading
 import numpy as np
 import time
 import wave
@@ -16,12 +17,12 @@ from openpilot.common.hardware import HARDWARE
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.voice_alerts import VoiceAlerts
 from openpilot.selfdrive.ui.pairing_speech import PairingSpeech
+from openpilot.system.asius.sound import volume_gain, preview_request
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
 MAX_VOLUME = 1.0
 MIN_VOLUME = 0.1
-V0_VOLUME = 0.8
 ALERT_RAMP_TIME = 4 # seconds to ramp critical alerts to max volume
 ALERT_MAX_TIME = 8 # seconds before critical alerts switch to the max sound
 SELFDRIVE_STATE_TIMEOUT = 5 # 5 seconds
@@ -69,13 +70,18 @@ def check_selfdrive_timeout_alert(sm):
 class Soundd:
   def __init__(self):
     self.load_sounds()
-    self.voice = VoiceAlerts(Params())
+    self.params = Params()
+    self.voice = VoiceAlerts(self.params)
     self.pairing_speech = PairingSpeech()
     self.voice_critical = False
 
     self.current_alert = AudibleAlert.none
     self.current_sound = AudibleAlert.none
-    self.current_volume = V0_VOLUME if HARDWARE.get_device_type() == "v0" else MIN_VOLUME
+    self.current_volume = volume_gain(self.params) if HARDWARE.get_device_type() == "v0" else MIN_VOLUME
+    self.preview_frame = None
+    self.preview_id = None
+    self.preview_lock = threading.Lock()
+    self.preview_volume = self.current_volume
     self.current_sound_frame = 0
 
     self.ramp_start_volume = MIN_VOLUME
@@ -128,9 +134,42 @@ class Soundd:
           break
 
     critical = critical or self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
+    busy = critical or self.current_alert != AudibleAlert.none or self.voice.playing or self.pairing_speech.playing
     voice_volume = self.current_volume
     mixed = self.voice.mix(ret * self.current_volume, voice_volume, critical)
-    return self.pairing_speech.mix(mixed, voice_volume, critical)
+    mixed = self.pairing_speech.mix(mixed, voice_volume, critical)
+    with self.preview_lock:
+      if busy:
+        self.preview_frame = None
+      if self.preview_frame is not None:
+        samples = self.loaded_sounds[AudibleAlert.engage]
+        start = self.preview_frame
+        count = min(frames, len(samples) - start)
+        mixed[:count] = samples[start:start + count] * self.preview_volume
+        self.preview_frame = start + count if start + count < len(samples) else None
+    return mixed
+
+  def update_preview(self, sm, now):
+    if HARDWARE.get_device_type() != 'v0':
+      return
+    fresh = (sm.all_checks(['deviceState', 'pandaStates']) and
+             all(0 <= now - sm.logMonoTime[service] / 1e9 < 1 for service in ('deviceState', 'pandaStates')) and
+             len(sm['pandaStates']) > 0)
+    safe = (fresh and not sm['deviceState'].started and
+            all(p.pandaType != log.PandaState.PandaType.unknown and not p.ignitionLine and
+                not p.ignitionCan and not p.controlsAllowed for p in sm['pandaStates']))
+    request = preview_request(self.params, now)
+    with self.preview_lock:
+      if not safe or request is None:
+        self.preview_frame = None
+        if fresh and not safe and request is not None:
+          self.preview_id = request['id']
+        return
+      if request['id'] != self.preview_id:
+        self.preview_id = request['id']
+        if not self.voice_critical and self.current_alert == AudibleAlert.none and not self.voice.playing and not self.pairing_speech.playing:
+          self.preview_volume = volume_gain(self.params)
+          self.preview_frame = 0
 
   def callback(self, data_out: np.ndarray, frames: int, time, status) -> None:
     if status:
@@ -173,7 +212,7 @@ class Soundd:
 
   def calculate_volume(self, weighted_db):
     if HARDWARE.get_device_type() == "v0":
-      return V0_VOLUME
+      return volume_gain(self.params)
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
 
@@ -189,7 +228,7 @@ class Soundd:
     import sounddevice as sd
     micd.patch_sounddevice(sd)
 
-    sm = messaging.SubMaster(['selfdriveState', 'soundPressure', 'deviceState'])
+    sm = messaging.SubMaster(['selfdriveState', 'soundPressure', 'deviceState', 'pandaStates'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
@@ -201,8 +240,9 @@ class Soundd:
         # freeze volume during alerts to avoid mic feedback increasing volume
         if sm.updated['soundPressure']:
           self.spl_filter_weighted.update(sm["soundPressure"].soundPressureWeightedDb)
-          if self.current_alert == AudibleAlert.none and not self.voice.playing and not self.pairing_speech.playing:
-            self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
+        if ((sm.updated['soundPressure'] or HARDWARE.get_device_type() == 'v0') and
+            self.current_alert == AudibleAlert.none and not self.voice.playing and not self.pairing_speech.playing):
+          self.current_volume = self.calculate_volume(float(self.spl_filter_weighted.x))
 
         self.get_audible_alert(sm)
         now = time.monotonic()
@@ -212,6 +252,7 @@ class Soundd:
                                (onroad and state is not None and state.alertStatus == log.SelfdriveState.AlertStatus.critical))
         self.voice.update(state, onroad, self.voice_critical, now)
         self.pairing_speech.update(onroad, self.voice_critical, now)
+        self.update_preview(sm, now)
 
         if self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
           elapsed = time.monotonic() - self.ramp_start_time

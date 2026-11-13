@@ -11,6 +11,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AlwaysOnDM", {PERSISTENT, BOOL}},
     {"AlwaysOnDMLock", {PERSISTENT, BOOL}},
     {"VoiceAlertsEnabled", {PERSISTENT, BOOL, "0"}},
+    {"SoundVolume", {PERSISTENT, INT, "80"}},
+    {"SoundVolumePreview", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"ApiCache_FirehoseStats", {PERSISTENT, JSON}},
     {"AssistNowToken", {PERSISTENT, STRING}},
     {"AthenadPid", {PERSISTENT, INT}},

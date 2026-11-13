@@ -42,7 +42,35 @@ def test_rpc_validates_name_parameter_and_preserves_nested_json(tmp_path, monkey
 def test_version_includes_stable_fork_identity(monkeypatch):
   monkeypatch.setattr(methods.upstream_athena, 'getVersion', lambda: {'version': 'test', 'remote': 'custom', 'branch': 'test', 'commit': 'abc'})
   assert methods.getVersion() == {'version': 'test', 'remote': 'custom', 'branch': 'test', 'commit': 'abc', 'fork': methods.FORK,
-                                  'termsVersion': methods.terms_version, 'trainingVersion': methods.training_version}
+                                   'termsVersion': methods.terms_version, 'trainingVersion': methods.training_version}
+
+
+@pytest.mark.parametrize('transport', ['web', 'bluetooth'])
+@pytest.mark.parametrize('ignition', [False, True, None])
+def test_sound_preview_checks_ignition_on_each_transport(tmp_path, monkeypatch, transport, ignition):
+  from openpilot.system.asius import access_policy
+  params = Params(str(tmp_path))
+  monkeypatch.setattr(methods, 'Params', lambda: params)
+  monkeypatch.setattr(methods.HARDWARE, 'get_device_type', lambda: 'v0')
+  monkeypatch.setattr(access_policy, 'ignition_state', lambda: ignition)
+  request = {'jsonrpc': '2.0', 'method': 'previewSound', 'params': {}, 'id': 1}
+  if transport == 'bluetooth':
+    from openpilot.system.asius.bluetoothd import BlePeerEngine
+    engine = BlePeerEngine.__new__(BlePeerEngine)
+    engine.rpc_active = 0
+    engine.send_body = AsyncMock()
+    engine.peer_devices = {'test': '/test'}
+    engine.sessions = {'/test': Mock(session_id=lambda _peer: 'test-session')}
+    asyncio.run(engine.handle_rpc('test', request))
+    response = engine.send_body.call_args.args[1]
+  else:
+    response = json.loads(methods.handle(request, methods.dispatcher_for_peer('test')))
+  if ignition is False:
+    assert response['result'] == {'queued': True}
+    assert params.get('SoundVolumePreview')['id']
+  else:
+    assert 'error' in response
+    assert params.get('SoundVolumePreview') is None
 
 
 def test_get_all_params_serializes_current_api_without_protected_values(tmp_path, monkeypatch):

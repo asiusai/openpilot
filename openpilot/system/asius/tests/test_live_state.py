@@ -44,7 +44,7 @@ def device(monkeypatch):
                     "usbState": {"connected": True, "devices": [{"product": "test"}] * 100}},
     "carState": {"vEgo": 20.0, "vEgoCluster": 20.5, "vCruiseCluster": 90.0, "gearShifter": "drive", "canValid": True, "extra": "unused" * 1000},
     "gpsLocation": {"hasFix": True, "latitude": 59.4, "longitude": 24.7, "horizontalAccuracy": 3, "source": "android", "unixTimestampMillis": 1800000000000},
-    "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3]},
+    "extrinsicsCalibration": {"calStatus": "uncalibrated", "calPerc": 42, "rpyCalib": [0.1, 0.2, 0.3], "height": [1.2]},
     "selfdriveState": {"alertText1": "Take control", "alertText2": "Camera error", "alertStatus": "critical",
                        "alertSize": "full", "alertType": "cameraMalfunction/softDisable"},
     "driverMonitoringState": {"activePolicy": "vision", "isRHD": False, "alertLevel": "three",
@@ -87,6 +87,8 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   assert snapshot['params']['VoiceAlertsEnabled'] is True
   assert snapshot['software']['UpdaterProgress'] == 25
   assert snapshot['services']['extrinsicsCalibration']['calPerc'] == 42
+  assert snapshot['services']['extrinsicsCalibration']['rpyCalib'] == [0.1, 0.2, 0.3]
+  assert snapshot['services']['extrinsicsCalibration']['height'] == [1.2]
   assert snapshot['services']['selfdriveState']['alertText1'] == 'Take control'
   assert snapshot['services']['selfdriveState']['alertType'] == 'cameraMalfunction/softDisable'
   assert snapshot['services']['gpsLocation']['horizontalAccuracy'] == 3
