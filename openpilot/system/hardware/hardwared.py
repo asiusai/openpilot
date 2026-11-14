@@ -41,6 +41,11 @@ DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect 
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
 
+
+def should_power_save(ignition: bool, screen_brightness: float, driver_view: bool, live_stream: bool) -> bool:
+  return not (ignition or driver_view or live_stream) and screen_brightness < 1e-3
+
+
 class Chestnut:
   # flash before going onroad, modeld ignores chestnut until the product string matches
   MAX_ATTEMPTS = 3
@@ -410,7 +415,8 @@ def hardware_thread(end_event, hw_queue) -> None:
       except Exception:
         pass
 
-    should_pwrsave = not onroad_conditions["ignition"] and msg.deviceState.screenBrightnessPercent < 1e-3
+    should_pwrsave = should_power_save(onroad_conditions["ignition"], msg.deviceState.screenBrightnessPercent,
+                                      not startup_conditions["not_driver_view"], params.get_bool("IsLiveStreaming"))
     if should_pwrsave != pwrsave or (count == 0):
       HARDWARE.set_power_save(should_pwrsave)
     pwrsave = should_pwrsave

@@ -9,8 +9,12 @@ from openpilot.system.manager.process import PythonProcess, NativeProcess, Daemo
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
+def offroad_camera_ready() -> bool:
+  # hardwared restores these CPUs asynchronously when a headless preview starts.
+  return not ASIUS_HARDWARE or {6, 7}.issubset(os.sched_getaffinity(0))
+
 def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return started or params.get_bool("IsDriverViewEnabled")
+  return started or (params.get_bool("IsDriverViewEnabled") and offroad_camera_ready())
 
 def sound(started: bool, params: Params, CP: car.CarParams) -> bool:
   from openpilot.system.asius.pairing_confirmation import read_announcement
@@ -69,7 +73,7 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return params.get_bool("IsLiveStreaming")
+  return params.get_bool("IsLiveStreaming") and (started or offroad_camera_ready())
 
 def asius_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not PC and params.get_bool("CloudUploadEnabled")
