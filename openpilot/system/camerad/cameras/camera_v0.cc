@@ -773,7 +773,7 @@ void OneCamera::queue_frame(int index) {
 
 int OneCamera::dequeue_frame(uint64_t *timestamp) {
   struct pollfd pfd = {video_fd, POLLIN, 0};
-  int ret = poll(&pfd, 1, 20);
+  int ret = poll(&pfd, 1, 0);
   if (ret == 0) return -ETIMEDOUT;
   if (ret < 0) return -errno;
   if (!(pfd.revents & POLLIN)) return -EIO;
@@ -1010,15 +1010,27 @@ void camerad_thread() {
   const uint64_t streaming_started_ns = nanos_since_boot();
   for (auto &cam : cams) cam->last_frame_ns = streaming_started_ns;
 
+  std::vector<pollfd> poll_fds;
+  for (const auto &cam : cams) {
+    poll_fds.push_back({cam->camera.enabled ? cam->camera.video_fd : -1, POLLIN, 0});
+  }
+
   while (!do_exit) {
-    for (auto &cam : cams) {
+    // Wait for whichever camera finishes first, without delaying ready frames
+    // while another camera is still reading out its sensor.
+    if (poll(poll_fds.data(), poll_fds.size(), 20) < 0) {
+      if (errno != EINTR) LOGE("camera poll failed: %d (%s)", errno, strerror(errno));
+      continue;
+    }
+    for (size_t i = 0; i < cams.size(); i++) {
+      auto &cam = cams[i];
       const uint64_t now = nanos_since_boot();
       if (now - cam->last_frame_ns >= camera_reconnect_timeout_ns) {
         LOGE("cam %d: no frames for 30 seconds; restarting camerad to re-probe hardware",
              cam->camera.cc.camera_num);
         return;
       }
-      if (!cam->camera.enabled) continue;
+      if (!cam->camera.enabled || !(poll_fds[i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL))) continue;
 
       uint64_t timestamp;
       int buf_idx = cam->camera.dequeue_frame(&timestamp);
