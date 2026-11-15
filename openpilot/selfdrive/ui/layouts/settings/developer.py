@@ -1,4 +1,5 @@
 from openpilot.common.params import Params
+from openpilot.system.hardware import ASIUS_HARDWARE
 from openpilot.selfdrive.ui.widgets.ssh_key import ssh_key_item
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.widgets import Widget
@@ -51,6 +52,14 @@ class DeveloperLayout(Widget):
       callback=self._on_enable_ssh,
     )
     self._ssh_keys = ssh_key_item(lambda: tr("SSH Keys"), description=lambda: tr(DESCRIPTIONS["ssh_key"]))
+    self._physical_password_toggle = toggle_item(
+      lambda: tr("Default USB/UART Passwords"),
+      description=lambda: tr("Allow password login over USB and UART. SSH keys remain available."),
+      initial_state=self._params.get("PhysicalPasswordLogin", return_default=True),
+      callback=self._on_physical_password_login,
+      enabled=ui_state.is_offroad,
+    )
+    self._physical_password_toggle.set_visible(ASIUS_HARDWARE)
 
     self._joystick_toggle = toggle_item(
       lambda: tr("Joystick Debug Mode"),
@@ -94,6 +103,7 @@ class DeveloperLayout(Widget):
       self._adb_toggle,
       self._ssh_toggle,
       self._ssh_keys,
+      self._physical_password_toggle,
       self._joystick_toggle,
       self._long_maneuver_toggle,
       self._lat_maneuver_toggle,
@@ -114,6 +124,7 @@ class DeveloperLayout(Widget):
 
   def _update_toggles(self):
     ui_state.update_params()
+    self._physical_password_toggle.action_item.set_state(self._params.get("PhysicalPasswordLogin", return_default=True))
 
     # Hide non-release toggles on release builds
     # TODO: we can do an onroad cycle, but alpha long toggle requires a deinit function to re-enable radar and not fault
@@ -160,6 +171,14 @@ class DeveloperLayout(Widget):
 
   def _on_enable_ssh(self, state: bool):
     self._params.put_bool("SshEnabled", state, block=True)
+
+  def _on_physical_password_login(self, state: bool):
+    from openpilot.system.asius.access_policy import require_ignition_off
+    try:
+      require_ignition_off()
+      self._params.put_bool("PhysicalPasswordLogin", state, block=True)
+    except PermissionError:
+      self._physical_password_toggle.action_item.set_state(self._params.get("PhysicalPasswordLogin", return_default=True))
 
   def _on_joystick_debug_mode(self, state: bool):
     self._params.put_bool("JoystickDebugMode", state, block=True)
