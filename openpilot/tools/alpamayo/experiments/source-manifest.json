@@ -1,0 +1,537 @@
+{
+  "baseline_repository": "https://github.com/commaai/openpilot",
+  "baseline_revision": "fe68e1d0595d48ffd0d058404181d873250e4ae4",
+  "experiment_sources_before_publication_adjustments": [
+    {
+      "name": "batched-vision.py",
+      "original_sha256": "868977217720d0a5c607e179a1e14a810d189bd4c4800c8178f86a5bc1674804"
+    },
+    {
+      "name": "benchmark-fast.py",
+      "original_sha256": "0c0229250c63f5d5b3760685325922ac6302d2e698878e6ef347e246b601eb93"
+    },
+    {
+      "name": "benchmark-pipeline.py",
+      "original_sha256": "cb1f6955b2e180b1cd08674cd6a427f26e23ac00a96aa4a9938c407344c9f94d"
+    },
+    {
+      "name": "benchmark-vendor-gemm.py",
+      "original_sha256": "689eca97b05e15f324ceea24e5205e7eb8110a0fbcbcb83b40e22d500d77ec61"
+    },
+    {
+      "name": "bf16-linear.py",
+      "original_sha256": "a04f6469392744d2498d36eac45a92eff142bafffb2275a95ca6801ec0cd9d69"
+    },
+    {
+      "name": "block-decode.py",
+      "original_sha256": "b6126b86146e59d95f3ca9b04dbfbe5df07e92304d77adc3052082f2d8085cb2"
+    },
+    {
+      "name": "camera-warp.py",
+      "original_sha256": "6a07a54c3222608e1770df1f2ebef21acf50f38df353a27a424cce22de78ee45"
+    },
+    {
+      "name": "camera_budgets.py",
+      "original_sha256": "26f816c0d8bbe96e500c09beb5628cd34fb922181e03d95366b5bde122a432b3"
+    },
+    {
+      "name": "check-attention-layout.py",
+      "original_sha256": "aec758c964006afd734266af018355c6d126016335776660e048c2891e0cd74c"
+    },
+    {
+      "name": "check-batched-vision.py",
+      "original_sha256": "bcbb18fa99ca84b6416c2f943cef4fa06b8d46ecac181c967ba57d74ba88d046"
+    },
+    {
+      "name": "check-bf16-linear.py",
+      "original_sha256": "9230d93e187874e21a2f7246c8e1ff90bc6a1c22d724f4c84b45248ebc5fe984"
+    },
+    {
+      "name": "check-compact-inputs.py",
+      "original_sha256": "0a832aa0cc9226601b74f3ab008a1fdba66f52dc1ef36986dd59ee32fb8639a3"
+    },
+    {
+      "name": "check-draft-attention.py",
+      "original_sha256": "0d3b9c7cdafce60c5ee3e537cd3cb96ac425d613522aca0fa61f1d45247cfe1d"
+    },
+    {
+      "name": "check-draft-tiles.py",
+      "original_sha256": "338e2fb1861e1543e5383fa2416bf6b6b2f61f2cb8d7cc2dda6eca2b303e3cbb"
+    },
+    {
+      "name": "check-expert-kernels.py",
+      "original_sha256": "391f30abf4e00c1b88c73a6ae6c3cbd00255f02972a2565e50a866e54b0ffc9c"
+    },
+    {
+      "name": "check-fast-inputs.py",
+      "original_sha256": "6288eadc77996bbabcf21069f3b3427a94cda1aa952afe0d369cfa7951ab66cc"
+    },
+    {
+      "name": "check-fast-quantize.py",
+      "original_sha256": "6b8ce45aa9b88d716457012448b41a3ceb8eba958972daf609222296386b7345"
+    },
+    {
+      "name": "check-fp8-attention.py",
+      "original_sha256": "fe57d0a91b726aa30540761cc1645ff7dbbd04492d1aaa27f55830dc06def028"
+    },
+    {
+      "name": "check-fused-norm.py",
+      "original_sha256": "06d453ffb7cb9b7c4d6cf953e58ff5b4b6f3fcb0643fa54e452f5ece1718586f"
+    },
+    {
+      "name": "check-fused-qkv.py",
+      "original_sha256": "5eb4d1af6fabf19a81e405148ad7a10c0a9ef035ba52522708bd185c5e34cae2"
+    },
+    {
+      "name": "check-gemm-groups.py",
+      "original_sha256": "bebd7aad1536231b83d76b95c17b10ab11b82bd32fee0f24d1787aebd7995cbc"
+    },
+    {
+      "name": "check-gemm-tiles.py",
+      "original_sha256": "8b11d599039fa2d354bbd1233715f514e6c080268f6221e52f306fe98be95c68"
+    },
+    {
+      "name": "check-gpu-clocks.py",
+      "original_sha256": "df497931dc5ea0a6ee7fac9225cab21048ccf0b9790bd0da617e8bd0e5cbc6e0"
+    },
+    {
+      "name": "check-image-gemm.py",
+      "original_sha256": "431dd1748a7630287b159d28c5b43b1d69d2ad70fd5d95a78a64a06c64b412b6"
+    },
+    {
+      "name": "check-independent-graph.py",
+      "original_sha256": "66c717a6c1095637b2e45a6ce8c8abd5dab0a281b98129e1629e086ecf871a2c"
+    },
+    {
+      "name": "check-lds-gemm.py",
+      "original_sha256": "1fa970e124b7ad881da70eef9a12b92cd5fe3c02ebe53d7c9516495041cd21ea"
+    },
+    {
+      "name": "check-lds-scaled.py",
+      "original_sha256": "2cb86d0ac91b5976aa9fa6bbbb5b72a3dff7007faa801147429c38e9f3255b54"
+    },
+    {
+      "name": "check-nvidia-inputs.py",
+      "original_sha256": "f011b60841b88adb1eca726c26df4b0a289bafe074ccc695afe3e94dd3239d32"
+    },
+    {
+      "name": "check-online-attention.py",
+      "original_sha256": "39472c8c47c7cc6f0f75c1ec9b1d5f1fd72b8c6b737cb8e7e77bd57972f82e42"
+    },
+    {
+      "name": "check-online-expert.py",
+      "original_sha256": "5d84ee9f3150d7452992eb4c11ba5228ab8413f8fe5a739805c25b039c025527"
+    },
+    {
+      "name": "check-packed-prefill.py",
+      "original_sha256": "e357bc1d787c381973b620393ac49c14a241aeb2d28ee55e892baa573e6f2c4c"
+    },
+    {
+      "name": "check-parallel-queues.py",
+      "original_sha256": "f24968848a8dc7e545a007d18a2b33150c438e095bb8c52f54c8d63385eaf6f7"
+    },
+    {
+      "name": "check-pipelined-inputs.py",
+      "original_sha256": "36c3464de9f5723497b415f94daae3ad57f71954e6138c125a64788918c3fa59"
+    },
+    {
+      "name": "check-prefill-kernels.py",
+      "original_sha256": "f094d339503bcd039e5d81fbf049e1de096cb1ab3954d6a60a2e21cbdfb0fadb"
+    },
+    {
+      "name": "check-projector.py",
+      "original_sha256": "dc42785f36aa0931e8183e26d8276d9590061a5edb97ef05415652777656d6d4"
+    },
+    {
+      "name": "check-quantize-packed.py",
+      "original_sha256": "d3e5a0b4ca50d02e0fec038ce2d621feb35784b2d2880aa7afeedb5a397e82fc"
+    },
+    {
+      "name": "check-quantize-reduction.py",
+      "original_sha256": "0020658aae4cfe86e3814c61e842f59838be188a4d2fed7fb89a1c1d0dc55480"
+    },
+    {
+      "name": "check-resize-batch.py",
+      "original_sha256": "8f1047e4bf921ebc28972504d575fa5a991a68ad99a40ba3efb0001f28aa5ac0"
+    },
+    {
+      "name": "check-resize-cache.py",
+      "original_sha256": "e420347f0bf7270f9618e44a537d56a208d9fd325d0c00704cf39ea85057f0d4"
+    },
+    {
+      "name": "check-row-quantize.py",
+      "original_sha256": "ca739f4dac31e4dd90cf4c16a45d29fcb84e6c594b391d12f4cc91d5acc17ff9"
+    },
+    {
+      "name": "check-row-scale-gemm.py",
+      "original_sha256": "afb084816ab727292429efc78377c2141a028eab7ec3e185ae2537b23e6302ec"
+    },
+    {
+      "name": "check-selective-pixels.py",
+      "original_sha256": "381fcbb37f5afdb4feddba2c93f474a33bbc3887e181f692f7677fa185027062"
+    },
+    {
+      "name": "check-shared-vector-gemm.py",
+      "original_sha256": "c00fac7c8caefe4c053b45c691e04d8efb3aa1a61690d4763398ff5a5c37bd9c"
+    },
+    {
+      "name": "check-split-attention.py",
+      "original_sha256": "2ee4fe4fe2139497bb34d1d898b2566a8196619570171a3d457ed42857c35abb"
+    },
+    {
+      "name": "check-triton-attention.py",
+      "original_sha256": "fc53902ae9ab3ab9cad85ba742e59b2807f266fdfb47407810d12cc0d23cad02"
+    },
+    {
+      "name": "check-triton-gemm.py",
+      "original_sha256": "0ec55eceb5c1a1135aee0140be1a6c6d256f2d760dd7c2e7a1ba374a095c33d5"
+    },
+    {
+      "name": "check-usb-readback.py",
+      "original_sha256": "f1fe402ab1da70b8cc6059f5b692fb7a6391923514ea541616cc70bc82a9826d"
+    },
+    {
+      "name": "check-vector-gemm.py",
+      "original_sha256": "18fc8b1e4482ad156f6a890300e10bf2d0c85fc5205b847ecf6fb6f764805ea0"
+    },
+    {
+      "name": "check-vendor-gemm.py",
+      "original_sha256": "a59a19f46612425ef65b05db6e36f39361777e656ddc4dcb4893f9c9d9ed623a"
+    },
+    {
+      "name": "check-vision-gemm.py",
+      "original_sha256": "bbd35624cee18f47c0e5a924a051ad643bba8495dd6285e2eb87028fbf159fd2"
+    },
+    {
+      "name": "check-vision-primitives.py",
+      "original_sha256": "af0798518b3a28e0d1caf3f337c97d88a6e505cf982b2bc852533fdc721477b1"
+    },
+    {
+      "name": "check-wgp-compiler.py",
+      "original_sha256": "c5e65b4dd9fc1370e3627a7bae95ca23fa2e78a2fb256859c5118551e2c5dee3"
+    },
+    {
+      "name": "compact-inputs.py",
+      "original_sha256": "aab35dac872397016a3d697e881d926e50cc05ad270554d77fdc65bf3e162ff1"
+    },
+    {
+      "name": "compare-nvidia.py",
+      "original_sha256": "2f7b881665f6ec4f5d8b5a19f2753a435f7cbe25793712aec6b6e5bc1a504ef8"
+    },
+    {
+      "name": "compare-pipeline.py",
+      "original_sha256": "9e3dd8c96626718b84042efe3e2e205377f87302e9fca5c9f295879a17891271"
+    },
+    {
+      "name": "compare-references.py",
+      "original_sha256": "d38998268eb2bbcfb58c606434c4f4f803bc8fb591c29354f88d9b50875d5e09"
+    },
+    {
+      "name": "compile-lds-reference.py",
+      "original_sha256": "e407ea4c1ef9a1c1c751af56ccebc87bf9e7ec65862f311f67d836501e93775c"
+    },
+    {
+      "name": "deploy.sh",
+      "original_sha256": "e64d06c2df00993558c03846f315b58be52caf59de2caa3c50a0ebbadbd8c4b1"
+    },
+    {
+      "name": "draft-decode.py",
+      "original_sha256": "6862b963a770a69a4dd36e2e97fd8e33a4d8368c8a6cc165d967776e97f4df7e"
+    },
+    {
+      "name": "expert-kernels.py",
+      "original_sha256": "4676128ef21bd42f851311b3b5dba0563ab6cd1e54d367a3bca2e377f5a53b8b"
+    },
+    {
+      "name": "export-nvidia.py",
+      "original_sha256": "af67c8459b387ce0e8aa7980d9093065e4b0022b343b3f00d1f3bc2a6550679f"
+    },
+    {
+      "name": "fast-inputs.py",
+      "original_sha256": "22a19d9e68975a24c9c8d3cd031fe95a45d6cfcd842c9698059cc017529a0305"
+    },
+    {
+      "name": "fast-quantize.py",
+      "original_sha256": "6ba8f4c940152ab6a2c8e991ce9f00fb0028b7a61cfddd9090274d4d23b4708b"
+    },
+    {
+      "name": "fp8-attention.py",
+      "original_sha256": "1fceeed30e3c1498f819a3a0ddfabd75079173fd43df66f9dd6f3242877af575"
+    },
+    {
+      "name": "fused-norm.py",
+      "original_sha256": "4271693fc1f3210f160eac0a4ddb69dad168612c712d4f77a755ef2eda178b7c"
+    },
+    {
+      "name": "fused-qkv.py",
+      "original_sha256": "9c68b60f14bdcb4cac9ab58843d21353b515fa9522a835adcd32a0706878c0b6"
+    },
+    {
+      "name": "gpu-metrics.py",
+      "original_sha256": "44b2c7558cf4d4ba6772706b6de23525cb29d03505012c2f4695012ca4091f09"
+    },
+    {
+      "name": "hip-compiler.py",
+      "original_sha256": "abe081420ec3df10467999b30ee619883f5b90d55031924ff784d4949291e028"
+    },
+    {
+      "name": "image-gemm.py",
+      "original_sha256": "3c8ea4e01bb3e6e61021ebd98ffcffe815ec420150f9eedbfb1a6cd134c2617b"
+    },
+    {
+      "name": "lds-gemm.py",
+      "original_sha256": "14fdb873ae11b45c36e9c676001b35e4fda75ca50300a53d5713f35e03ab2819"
+    },
+    {
+      "name": "lookup-decode.py",
+      "original_sha256": "d4c1963134b55d6b2e96efa61c3dbf011aa7857e1225d5cee2974fd50493b3be"
+    },
+    {
+      "name": "nvidia-reference.py",
+      "original_sha256": "690efc7253eba6362357ede6851644c909a9fd5b24346cd799226c383abca126"
+    },
+    {
+      "name": "online-attention.py",
+      "original_sha256": "bd74aa495f4f9f9142c5bb8f85854dda85724ff19b81cc97a59cc7d625587d35"
+    },
+    {
+      "name": "parallel-queues.py",
+      "original_sha256": "0af37185d914be61c7fc341c0d1ce805c4ad36437a2dd8cb36c27e02b7ee4940"
+    },
+    {
+      "name": "prefill-kernels.py",
+      "original_sha256": "4a0aba5ebb56d72d8843432fccd27263b789e8108f6367cdd83f194a0d726d5a"
+    },
+    {
+      "name": "preflight.py",
+      "original_sha256": "82a6dec47647db40eb7b205850ffc53880d8783494d34db795eb04641aa0f164"
+    },
+    {
+      "name": "prepare-bundle.py",
+      "original_sha256": "7719af78389038749e4bdeb29bbcc4d8bbce56b6b09f9b28a6c84ac8f2a57e60"
+    },
+    {
+      "name": "prepare-fp8.py",
+      "original_sha256": "5f78ce83cb8106f15c6bb6ab0dc9f64f6d5d5790de337c9ebaaa03b6725dde20"
+    },
+    {
+      "name": "profile-kernels.py",
+      "original_sha256": "0631a76453e68f31188bc9febeb4d15d6de12c27bab16e1e376880034bde4d87"
+    },
+    {
+      "name": "profile-layer.py",
+      "original_sha256": "9785fcea07dd775714385826af7b5907ecb5c67f27eef7276b95190903803251"
+    },
+    {
+      "name": "profile-restored-vision.py",
+      "original_sha256": "a4c5d79159abdf4dd71c446efba1fb37a31faacb510816bfeadb36ff820edf44"
+    },
+    {
+      "name": "projector-kernels.py",
+      "original_sha256": "9eab69813186134e94b3f5b7e59eb35325eb19ccaad1b941343f97882ce958e7"
+    },
+    {
+      "name": "quantize-packed.py",
+      "original_sha256": "ffb0d52e0fd7b759d4b57a90626fb9772db8b9211db8dc984ec9937b4a41594e"
+    },
+    {
+      "name": "quantize-reduction.py",
+      "original_sha256": "ac4788c95e46342660d51dc273e7c4eb4fec93640f31bd05ca6aeb5c6aaf276b"
+    },
+    {
+      "name": "reduced-vocab.py",
+      "original_sha256": "d93855ecfd340da202406f75a6a1d6e1f31c46a04fd3e317333c77915b3b7db0"
+    },
+    {
+      "name": "restore-precision.py",
+      "original_sha256": "bb2cfd18251327ca8c39ba7bacb354e54cd40d839834d1a94d46a7bf71d4e9b0"
+    },
+    {
+      "name": "row-quantize.py",
+      "original_sha256": "13840d376ffb734f10d9f219c61417a5aa96d7e5f3845eafe4ba69279ba55c23"
+    },
+    {
+      "name": "run-parked.sh",
+      "original_sha256": "ab7857faec7f2421070db61c4e4551290e0d94d4ec8a4e63beb35b6089094ec8"
+    },
+    {
+      "name": "run-shadow.py",
+      "original_sha256": "6a569b9306930e13c06faad246a6f356196b3f58b11cf66bd22c45baaffcf88a"
+    },
+    {
+      "name": "shadow-capture.py",
+      "original_sha256": "5e7e558198ce7b46d40929ba81827c00060771118ec8220c23d51dca6377b696"
+    },
+    {
+      "name": "shadow-worker.py",
+      "original_sha256": "d1347a5f06afc181e6e38f68ef53ac0a02649595bbb3f230cb751e89e863c441"
+    },
+    {
+      "name": "shared-vector-gemm.py",
+      "original_sha256": "c51d9d1d23b452abfbebd544605689f6bde428fd74ed34c3c3b76a599a8a1e26"
+    },
+    {
+      "name": "split-attention.py",
+      "original_sha256": "60c3737f9a0082c563169f1ee828b1d9cf73a2576725f21341a1ef26e57ea229"
+    },
+    {
+      "name": "summarize.py",
+      "original_sha256": "5d21a49c8883d5411ba02bcc030186fe6b49c854b94ff0abbc3a5c1de6f3d1e3"
+    },
+    {
+      "name": "test_shadow.py",
+      "original_sha256": "19475f02c9567c3f60ea3be939d32b071ea35e4230f57e07d8b0b317d2fc6350"
+    },
+    {
+      "name": "tiled-gemm.py",
+      "original_sha256": "52ca20491721d395a0eb3ca75b459c8bbb7e299647511e16751d6282a2bf2f53"
+    },
+    {
+      "name": "triton-attention.py",
+      "original_sha256": "271ac122406a59ab67637dea1e6893d15827835bc70693e7ac3b8cf6c7c79fc6"
+    },
+    {
+      "name": "triton-gemm.py",
+      "original_sha256": "c2e8f561730206391f6608deb5c7c5b0e747dda897e79bb057e175010383660a"
+    },
+    {
+      "name": "tune-online-attention.py",
+      "original_sha256": "3981be78a4990df924df4eb203d1559e1630ef7ed89d8eae8995cb5d0ba0456b"
+    },
+    {
+      "name": "usb-readback.py",
+      "original_sha256": "d54ef379a42044d889b84b2933fc53bf0a52badca9fd4f1b0302250d91199550"
+    },
+    {
+      "name": "vector-gemm.py",
+      "original_sha256": "703c825888ff3a0f09ecc6ebdf87f9369a8822fee5fef7c1ca478b155142fe1d"
+    },
+    {
+      "name": "vendor-gemm.py",
+      "original_sha256": "aed3ad5bd725e6b7755c8f5860f1c5e2c61181d241445fad36512f76268e7450"
+    },
+    {
+      "name": "vision-cache.py",
+      "original_sha256": "a3f453f478e21cfc175a44a8ec16d8f7f99603565f8112caf6c9c4b13256be75"
+    },
+    {
+      "name": "wgp_compiler.py",
+      "original_sha256": "ccd7427848f13a8032e8af3c305fc8b2db3150242b3ff67a63f25acd52da8890"
+    }
+  ],
+  "publication_adjustments": [
+    "Device identities and SSH destinations require explicit configuration.",
+    "Relocated the existing CPU shadow-test source path.",
+    "Added the selected replay launcher, aggregate evidence, and public documentation.",
+    "Imported NVIDIA CoC vocabulary with its Apache 2.0 license."
+  ],
+  "published_source_sha256": {
+    "batched-vision.py": "868977217720d0a5c607e179a1e14a810d189bd4c4800c8178f86a5bc1674804",
+    "benchmark-fast.py": "0c0229250c63f5d5b3760685325922ac6302d2e698878e6ef347e246b601eb93",
+    "benchmark-pipeline.py": "cb1f6955b2e180b1cd08674cd6a427f26e23ac00a96aa4a9938c407344c9f94d",
+    "benchmark-vendor-gemm.py": "8be07e50ffd017d461cf4ff890b0d5585a035e94e2caf210cef1a71d8e3f7bc8",
+    "bf16-linear.py": "a04f6469392744d2498d36eac45a92eff142bafffb2275a95ca6801ec0cd9d69",
+    "block-decode.py": "b6126b86146e59d95f3ca9b04dbfbe5df07e92304d77adc3052082f2d8085cb2",
+    "camera-warp.py": "6a07a54c3222608e1770df1f2ebef21acf50f38df353a27a424cce22de78ee45",
+    "camera_budgets.py": "26f816c0d8bbe96e500c09beb5628cd34fb922181e03d95366b5bde122a432b3",
+    "check-attention-layout.py": "aec758c964006afd734266af018355c6d126016335776660e048c2891e0cd74c",
+    "check-batched-vision.py": "bcbb18fa99ca84b6416c2f943cef4fa06b8d46ecac181c967ba57d74ba88d046",
+    "check-bf16-linear.py": "9230d93e187874e21a2f7246c8e1ff90bc6a1c22d724f4c84b45248ebc5fe984",
+    "check-compact-inputs.py": "0a832aa0cc9226601b74f3ab008a1fdba66f52dc1ef36986dd59ee32fb8639a3",
+    "check-draft-attention.py": "0d3b9c7cdafce60c5ee3e537cd3cb96ac425d613522aca0fa61f1d45247cfe1d",
+    "check-draft-tiles.py": "338e2fb1861e1543e5383fa2416bf6b6b2f61f2cb8d7cc2dda6eca2b303e3cbb",
+    "check-expert-kernels.py": "391f30abf4e00c1b88c73a6ae6c3cbd00255f02972a2565e50a866e54b0ffc9c",
+    "check-fast-inputs.py": "6288eadc77996bbabcf21069f3b3427a94cda1aa952afe0d369cfa7951ab66cc",
+    "check-fast-quantize.py": "6b8ce45aa9b88d716457012448b41a3ceb8eba958972daf609222296386b7345",
+    "check-fp8-attention.py": "fe57d0a91b726aa30540761cc1645ff7dbbd04492d1aaa27f55830dc06def028",
+    "check-fused-norm.py": "06d453ffb7cb9b7c4d6cf953e58ff5b4b6f3fcb0643fa54e452f5ece1718586f",
+    "check-fused-qkv.py": "5eb4d1af6fabf19a81e405148ad7a10c0a9ef035ba52522708bd185c5e34cae2",
+    "check-gemm-groups.py": "bebd7aad1536231b83d76b95c17b10ab11b82bd32fee0f24d1787aebd7995cbc",
+    "check-gemm-tiles.py": "8b11d599039fa2d354bbd1233715f514e6c080268f6221e52f306fe98be95c68",
+    "check-gpu-clocks.py": "df497931dc5ea0a6ee7fac9225cab21048ccf0b9790bd0da617e8bd0e5cbc6e0",
+    "check-image-gemm.py": "431dd1748a7630287b159d28c5b43b1d69d2ad70fd5d95a78a64a06c64b412b6",
+    "check-independent-graph.py": "66c717a6c1095637b2e45a6ce8c8abd5dab0a281b98129e1629e086ecf871a2c",
+    "check-lds-gemm.py": "1fa970e124b7ad881da70eef9a12b92cd5fe3c02ebe53d7c9516495041cd21ea",
+    "check-lds-scaled.py": "2cb86d0ac91b5976aa9fa6bbbb5b72a3dff7007faa801147429c38e9f3255b54",
+    "check-nvidia-inputs.py": "f011b60841b88adb1eca726c26df4b0a289bafe074ccc695afe3e94dd3239d32",
+    "check-online-attention.py": "39472c8c47c7cc6f0f75c1ec9b1d5f1fd72b8c6b737cb8e7e77bd57972f82e42",
+    "check-online-expert.py": "5d84ee9f3150d7452992eb4c11ba5228ab8413f8fe5a739805c25b039c025527",
+    "check-packed-prefill.py": "e357bc1d787c381973b620393ac49c14a241aeb2d28ee55e892baa573e6f2c4c",
+    "check-parallel-queues.py": "efb607def861351d338eb75fdd0022378e97f215a88f4ac809f2877f14c0cbeb",
+    "check-pipelined-inputs.py": "36c3464de9f5723497b415f94daae3ad57f71954e6138c125a64788918c3fa59",
+    "check-prefill-kernels.py": "f094d339503bcd039e5d81fbf049e1de096cb1ab3954d6a60a2e21cbdfb0fadb",
+    "check-projector.py": "dc42785f36aa0931e8183e26d8276d9590061a5edb97ef05415652777656d6d4",
+    "check-quantize-packed.py": "d3e5a0b4ca50d02e0fec038ce2d621feb35784b2d2880aa7afeedb5a397e82fc",
+    "check-quantize-reduction.py": "0020658aae4cfe86e3814c61e842f59838be188a4d2fed7fb89a1c1d0dc55480",
+    "check-resize-batch.py": "8f1047e4bf921ebc28972504d575fa5a991a68ad99a40ba3efb0001f28aa5ac0",
+    "check-resize-cache.py": "e420347f0bf7270f9618e44a537d56a208d9fd325d0c00704cf39ea85057f0d4",
+    "check-row-quantize.py": "ca739f4dac31e4dd90cf4c16a45d29fcb84e6c594b391d12f4cc91d5acc17ff9",
+    "check-row-scale-gemm.py": "afb084816ab727292429efc78377c2141a028eab7ec3e185ae2537b23e6302ec",
+    "check-selective-pixels.py": "381fcbb37f5afdb4feddba2c93f474a33bbc3887e181f692f7677fa185027062",
+    "check-shared-vector-gemm.py": "c00fac7c8caefe4c053b45c691e04d8efb3aa1a61690d4763398ff5a5c37bd9c",
+    "check-split-attention.py": "2ee4fe4fe2139497bb34d1d898b2566a8196619570171a3d457ed42857c35abb",
+    "check-triton-attention.py": "fc53902ae9ab3ab9cad85ba742e59b2807f266fdfb47407810d12cc0d23cad02",
+    "check-triton-gemm.py": "0ec55eceb5c1a1135aee0140be1a6c6d256f2d760dd7c2e7a1ba374a095c33d5",
+    "check-usb-readback.py": "f1fe402ab1da70b8cc6059f5b692fb7a6391923514ea541616cc70bc82a9826d",
+    "check-vector-gemm.py": "18fc8b1e4482ad156f6a890300e10bf2d0c85fc5205b847ecf6fb6f764805ea0",
+    "check-vendor-gemm.py": "bb3c65127f13461a3aeb60d3abd39dd5453a22a91437ed0b4a03b3b1a6fa4ffd",
+    "check-vision-gemm.py": "bbd35624cee18f47c0e5a924a051ad643bba8495dd6285e2eb87028fbf159fd2",
+    "check-vision-primitives.py": "af0798518b3a28e0d1caf3f337c97d88a6e505cf982b2bc852533fdc721477b1",
+    "check-wgp-compiler.py": "c5e65b4dd9fc1370e3627a7bae95ca23fa2e78a2fb256859c5118551e2c5dee3",
+    "compact-inputs.py": "aab35dac872397016a3d697e881d926e50cc05ad270554d77fdc65bf3e162ff1",
+    "compare-nvidia.py": "2f7b881665f6ec4f5d8b5a19f2753a435f7cbe25793712aec6b6e5bc1a504ef8",
+    "compare-pipeline.py": "9e3dd8c96626718b84042efe3e2e205377f87302e9fca5c9f295879a17891271",
+    "compare-references.py": "d38998268eb2bbcfb58c606434c4f4f803bc8fb591c29354f88d9b50875d5e09",
+    "compile-lds-reference.py": "e407ea4c1ef9a1c1c751af56ccebc87bf9e7ec65862f311f67d836501e93775c",
+    "deploy.sh": "cfb225e05be262c0945118e70a1a7a16e41f3c8856da092ce78e85ce6e5e2a51",
+    "draft-decode.py": "6862b963a770a69a4dd36e2e97fd8e33a4d8368c8a6cc165d967776e97f4df7e",
+    "expert-kernels.py": "4676128ef21bd42f851311b3b5dba0563ab6cd1e54d367a3bca2e377f5a53b8b",
+    "export-nvidia.py": "af67c8459b387ce0e8aa7980d9093065e4b0022b343b3f00d1f3bc2a6550679f",
+    "extract-alpamayo-hipblaslt.py": "006c5ead4d2154e01935e4a004b1c30a8055836769eb4828df5d7ca4ce35d7a6",
+    "fast-inputs.py": "22a19d9e68975a24c9c8d3cd031fe95a45d6cfcd842c9698059cc017529a0305",
+    "fast-quantize.py": "6ba8f4c940152ab6a2c8e991ce9f00fb0028b7a61cfddd9090274d4d23b4708b",
+    "fp8-attention.py": "1fceeed30e3c1498f819a3a0ddfabd75079173fd43df66f9dd6f3242877af575",
+    "fused-norm.py": "4271693fc1f3210f160eac0a4ddb69dad168612c712d4f77a755ef2eda178b7c",
+    "fused-qkv.py": "9c68b60f14bdcb4cac9ab58843d21353b515fa9522a835adcd32a0706878c0b6",
+    "gpu-metrics.py": "44b2c7558cf4d4ba6772706b6de23525cb29d03505012c2f4695012ca4091f09",
+    "hip-compiler.py": "abe081420ec3df10467999b30ee619883f5b90d55031924ff784d4949291e028",
+    "image-gemm.py": "3c8ea4e01bb3e6e61021ebd98ffcffe815ec420150f9eedbfb1a6cd134c2617b",
+    "inspect-alpamayo-vendor.py": "a58c83c46f7845444ae463f0c8815b9f01065c842fc0f64066633a2679b02350",
+    "lds-gemm.py": "14fdb873ae11b45c36e9c676001b35e4fda75ca50300a53d5713f35e03ab2819",
+    "lookup-decode.py": "d4c1963134b55d6b2e96efa61c3dbf011aa7857e1225d5cee2974fd50493b3be",
+    "nvidia-reference.py": "690efc7253eba6362357ede6851644c909a9fd5b24346cd799226c383abca126",
+    "online-attention.py": "bd74aa495f4f9f9142c5bb8f85854dda85724ff19b81cc97a59cc7d625587d35",
+    "parallel-queues.py": "0af37185d914be61c7fc341c0d1ce805c4ad36437a2dd8cb36c27e02b7ee4940",
+    "prefill-kernels.py": "4a0aba5ebb56d72d8843432fccd27263b789e8108f6367cdd83f194a0d726d5a",
+    "preflight.py": "0a35297064179f2b5ad645f24aa2221e4f6d136af6b12e3999da01d2ef27e2cd",
+    "prepare-bundle.py": "bf50330adbd1a31d45b334a7f791cab23d9bc3d3cba7fc5f26fa84a7aed6d2b4",
+    "prepare-fp8.py": "5f78ce83cb8106f15c6bb6ab0dc9f64f6d5d5790de337c9ebaaa03b6725dde20",
+    "profile-kernels.py": "0631a76453e68f31188bc9febeb4d15d6de12c27bab16e1e376880034bde4d87",
+    "profile-layer.py": "9785fcea07dd775714385826af7b5907ecb5c67f27eef7276b95190903803251",
+    "profile-restored-vision.py": "a4c5d79159abdf4dd71c446efba1fb37a31faacb510816bfeadb36ff820edf44",
+    "projector-kernels.py": "9eab69813186134e94b3f5b7e59eb35325eb19ccaad1b941343f97882ce958e7",
+    "quantize-packed.py": "ffb0d52e0fd7b759d4b57a90626fb9772db8b9211db8dc984ec9937b4a41594e",
+    "quantize-reduction.py": "ac4788c95e46342660d51dc273e7c4eb4fec93640f31bd05ca6aeb5c6aaf276b",
+    "reduced-vocab.py": "d93855ecfd340da202406f75a6a1d6e1f31c46a04fd3e317333c77915b3b7db0",
+    "replay-best.py": "32765d9b5cbae896e40f859252eea50ac179b74966be223f42536bb76af60072",
+    "restore-precision.py": "bb2cfd18251327ca8c39ba7bacb354e54cd40d839834d1a94d46a7bf71d4e9b0",
+    "row-quantize.py": "13840d376ffb734f10d9f219c61417a5aa96d7e5f3845eafe4ba69279ba55c23",
+    "run-parked.sh": "ab7857faec7f2421070db61c4e4551290e0d94d4ec8a4e63beb35b6089094ec8",
+    "run-shadow.py": "5a075ef85af4987a38cd72cb7f0b26f8d75240a6040ed3330d2bf056c667f38d",
+    "shadow-capture.py": "5e7e558198ce7b46d40929ba81827c00060771118ec8220c23d51dca6377b696",
+    "shadow-worker.py": "d1347a5f06afc181e6e38f68ef53ac0a02649595bbb3f230cb751e89e863c441",
+    "shared-vector-gemm.py": "c51d9d1d23b452abfbebd544605689f6bde428fd74ed34c3c3b76a599a8a1e26",
+    "split-attention.py": "60c3737f9a0082c563169f1ee828b1d9cf73a2576725f21341a1ef26e57ea229",
+    "summarize.py": "5d21a49c8883d5411ba02bcc030186fe6b49c854b94ff0abbc3a5c1de6f3d1e3",
+    "test_shadow.py": "8e3a6a14f4322728b9e7a9174b3ad8ee4dc80a5b80d5f870987026fc2416cdff",
+    "tiled-gemm.py": "52ca20491721d395a0eb3ca75b459c8bbb7e299647511e16751d6282a2bf2f53",
+    "triton-attention.py": "271ac122406a59ab67637dea1e6893d15827835bc70693e7ac3b8cf6c7c79fc6",
+    "triton-gemm.py": "c2e8f561730206391f6608deb5c7c5b0e747dda897e79bb057e175010383660a",
+    "tune-online-attention.py": "3981be78a4990df924df4eb203d1559e1630ef7ed89d8eae8995cb5d0ba0456b",
+    "usb-readback.py": "d54ef379a42044d889b84b2933fc53bf0a52badca9fd4f1b0302250d91199550",
+    "vector-gemm.py": "703c825888ff3a0f09ecc6ebdf87f9369a8822fee5fef7c1ca478b155142fe1d",
+    "vendor-gemm.py": "aed3ad5bd725e6b7755c8f5860f1c5e2c61181d241445fad36512f76268e7450",
+    "vision-cache.py": "a3f453f478e21cfc175a44a8ec16d8f7f99603565f8112caf6c9c4b13256be75",
+    "wgp_compiler.py": "ccd7427848f13a8032e8af3c305fc8b2db3150242b3ff67a63f25acd52da8890"
+  }
+}

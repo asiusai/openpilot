@@ -1,0 +1,82 @@
+[
+  {
+    "solution": 27955,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27955,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27955,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27955,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  }
+]

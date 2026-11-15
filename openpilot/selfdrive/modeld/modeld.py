@@ -243,7 +243,7 @@ def main(demo=False):
   cloudlog.warning("modeld init")
 
   # A cable can be a Chestnut awaiting enumeration, unless a USB host is connected.
-  CHESTNUT = chestnut_compiled() and (chestnut_present(timeout=45.) if ASIUS_HARDWARE else
+  CHESTNUT = os.environ.get("DISABLE_CHESTNUT") != "1" and chestnut_compiled() and (chestnut_present(timeout=45.) if ASIUS_HARDWARE else
                                     (chestnut_present() or (cable_connected() and not usb_host_connected())))
   if CHESTNUT:
     from tinygrad.runtime.ops_amd import AMDDevice

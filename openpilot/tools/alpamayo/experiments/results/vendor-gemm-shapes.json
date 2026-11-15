@@ -1,0 +1,237 @@
+[
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": null,
+    "median_ms": 2.2148474818095565,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 27955,
+    "median_ms": 2.4462294531986117,
+    "exact": false,
+    "differing_values": 756,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 756,
+    "fp64_original_mean_error": 0.02156186285157683,
+    "fp64_candidate_mean_error": 0.021561621752365555,
+    "fp64_candidate_better_count": 369,
+    "fp64_candidate_worse_count": 295
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 27854,
+    "median_ms": 2.0948080345988274,
+    "exact": false,
+    "differing_values": 728,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 728,
+    "fp64_original_mean_error": 0.020611620375088284,
+    "fp64_candidate_mean_error": 0.02061162708879827,
+    "fp64_candidate_better_count": 346,
+    "fp64_candidate_worse_count": 298
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": null,
+    "median_ms": 2.437122049741447,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 27955,
+    "median_ms": 2.8424893971532583,
+    "exact": false,
+    "differing_values": 653,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 653,
+    "fp64_original_mean_error": 0.05340618725757686,
+    "fp64_candidate_mean_error": 0.05340565547096054,
+    "fp64_candidate_better_count": 326,
+    "fp64_candidate_worse_count": 297
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 27854,
+    "median_ms": 2.0700565073639154,
+    "exact": false,
+    "differing_values": 671,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 671,
+    "fp64_original_mean_error": 0.04447447747303015,
+    "fp64_candidate_mean_error": 0.04447385282345927,
+    "fp64_candidate_better_count": 338,
+    "fp64_candidate_worse_count": 307
+  },
+  {
+    "shape": [
+      2880,
+      4304,
+      1152
+    ],
+    "solution": null,
+    "median_ms": 1.3657610397785902,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      2880,
+      4304,
+      1152
+    ],
+    "solution": 27955,
+    "median_ms": 1.2047004420310259,
+    "exact": false,
+    "differing_values": 139,
+    "max_delta": 0.5,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 139,
+    "fp64_original_mean_error": 0.020381237963120715,
+    "fp64_candidate_mean_error": 0.02038173195269468,
+    "fp64_candidate_better_count": 55,
+    "fp64_candidate_worse_count": 73
+  },
+  {
+    "shape": [
+      2880,
+      4304,
+      1152
+    ],
+    "solution": 27854,
+    "median_ms": 1.1008514557033777,
+    "exact": false,
+    "differing_values": 142,
+    "max_delta": 0.5,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 142,
+    "fp64_original_mean_error": 0.017210127602160816,
+    "fp64_candidate_mean_error": 0.017210792487775777,
+    "fp64_candidate_better_count": 51,
+    "fp64_candidate_worse_count": 79
+  },
+  {
+    "shape": [
+      2912,
+      1152,
+      4304
+    ],
+    "solution": null,
+    "median_ms": 1.2081169988960028,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      2912,
+      1152,
+      4304
+    ],
+    "solution": 27955,
+    "median_ms": 1.1871374445036054,
+    "exact": false,
+    "differing_values": 170,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 170,
+    "fp64_original_mean_error": 0.030487032848245957,
+    "fp64_candidate_mean_error": 0.030487119099673103,
+    "fp64_candidate_better_count": 77,
+    "fp64_candidate_worse_count": 75
+  },
+  {
+    "shape": [
+      2912,
+      1152,
+      4304
+    ],
+    "solution": 27854,
+    "median_ms": 1.026386977173388,
+    "exact": false,
+    "differing_values": 186,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 186,
+    "fp64_original_mean_error": 0.037205223114259785,
+    "fp64_candidate_mean_error": 0.037205717896902434,
+    "fp64_candidate_better_count": 85,
+    "fp64_candidate_worse_count": 80
+  },
+  {
+    "shape": [
+      64,
+      512,
+      512
+    ],
+    "solution": null,
+    "median_ms": 0.9349809261038899,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      64,
+      512,
+      512
+    ],
+    "solution": 27955,
+    "median_ms": 0.9099700255319476,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      64,
+      512,
+      512
+    ],
+    "solution": 27854,
+    "median_ms": 0.914768548682332,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  }
+]

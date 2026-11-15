@@ -1,0 +1,1110 @@
+[
+  {
+    "solution": {
+      "name": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT64x64x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSU1_GSUAMB_GSUC0_GSUWGMRR0_GLS0_ISA1200_IU1_K1_LBSPPA128_LBSPPB128_LBSPPM0_LPA8_LPB8_LPM0_LRVW8_LWPMn1_MIAV1_MIWT2_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SU32_SUM0_SUS256_SPO0_SRVW0_SSO0_SVW1_SK0_SKXCCM0_TLDS2_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1_WGM8_WGMXCC1_WGMXCCGn1",
+      "kernelName": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT64x64x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_ISA1200_IU1_K1_LBSPPA128_LBSPPB128_LBSPPM0_LPA8_LPB8_LPM0_LRVW8_LWPMn1_MIAV1_MIWT2_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SPO0_SRVW0_SSO0_SVW1_SK0_SKXCCM0_TLDS2_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1",
+      "problemType": {
+        "operationIdentifier": "Contraction_l_Alik_Bljk_Cijk_Dijk",
+        "transA": true,
+        "transB": false,
+        "computeInputType": "Float8",
+        "aType": "Float8",
+        "bType": "Float8",
+        "cType": "BFloat16",
+        "dType": "BFloat16",
+        "eType": "BFloat16",
+        "computeType": "Float",
+        "useBeta": true,
+        "useBias": 1,
+        "biasSrcWhiteList": [
+          3
+        ],
+        "useE": false,
+        "useScaleAB": "Scalar",
+        "useScaleCD": true,
+        "useScaleAlphaVec": 1,
+        "biasDataTypeWhiteList": [
+          "Float",
+          "Half",
+          "BFloat16"
+        ],
+        "highPrecisionAccumulate": true,
+        "useInitialStridesAB": false,
+        "useInitialStridesCD": false,
+        "stridedBatched": true,
+        "groupedGemm": false,
+        "useGradient": false,
+        "activationType": "Hipblaslt_all",
+        "activationArgLength": 2,
+        "activationComputeDataType": "Float",
+        "activationNoGuard": false,
+        "sparse": 0,
+        "f32XdlMathOp": "Float",
+        "supportDeviceUserArguments": true,
+        "outputAmaxD": false,
+        "swizzleTensorA": false,
+        "swizzleTensorB": false
+      },
+      "hardwarePredicate": {
+        "type": "AMDGPU",
+        "value": {
+          "type": "Processor",
+          "value": "gfx1200"
+        }
+      },
+      "problemPredicate": {
+        "type": "And",
+        "value": [
+          {
+            "type": "OperationIdentifierEqual",
+            "value": "Contraction_l_Alik_Bljk_Cijk_Dijk"
+          },
+          {
+            "type": "BiasDataTypeWhiteList",
+            "value": [
+              "Float",
+              "Half",
+              "BFloat16"
+            ]
+          },
+          {
+            "type": "BiasSrcWhiteList",
+            "value": [
+              3
+            ]
+          },
+          {
+            "type": "AmaxDCheck",
+            "value": false
+          },
+          {
+            "type": "ActivationEnumWhiteList",
+            "value": [
+              "None",
+              "Gelu",
+              "Relu",
+              "Silu"
+            ]
+          },
+          {
+            "type": "TypesEqual",
+            "value": [
+              "Float8",
+              "Float8",
+              "BFloat16",
+              "BFloat16",
+              "Float8"
+            ]
+          },
+          {
+            "type": "HighPrecisionAccumulate",
+            "value": true
+          },
+          {
+            "type": "Activation",
+            "value": "Hipblaslt_all"
+          },
+          {
+            "type": "ActivationComputeType",
+            "value": "Float"
+          },
+          {
+            "type": "ActivationNoGuard",
+            "value": false
+          },
+          {
+            "type": "UseGradient",
+            "value": false
+          },
+          {
+            "type": "UseBias",
+            "value": 1
+          },
+          {
+            "type": "UseE",
+            "value": false
+          },
+          {
+            "type": "DataTypeE",
+            "value": "BFloat16"
+          },
+          {
+            "type": "StridedBatched",
+            "value": true
+          },
+          {
+            "type": "GroupedGemm",
+            "value": false
+          },
+          {
+            "type": "UseScaleAB",
+            "value": "Scalar"
+          },
+          {
+            "type": "UseScaleCD",
+            "value": true
+          },
+          {
+            "type": "UseScaleAlphaVec",
+            "value": 1
+          },
+          {
+            "type": "Sparse",
+            "value": 0
+          },
+          {
+            "type": "F32XdlMathOp",
+            "value": "Float"
+          },
+          {
+            "type": "SupportDeviceUserArguments",
+            "value": true
+          },
+          {
+            "type": "SwizzleTensorA",
+            "value": false
+          },
+          {
+            "type": "SwizzleTensorB",
+            "value": false
+          },
+          {
+            "type": "WorkgroupNumberCheck",
+            "index": 0,
+            "value": [
+              64,
+              64,
+              1
+            ]
+          },
+          {
+            "type": "LeadingFree0SizesGreaterOrEqual",
+            "value": 1
+          },
+          {
+            "type": "LeadingFree1SizesGreaterOrEqual",
+            "value": 1
+          },
+          {
+            "type": "KernelLanguageCompatible",
+            "value": "Assembly"
+          },
+          {
+            "type": "BufferLoadOffsetLimitCheck",
+            "value": {
+              "ShiftPtrElemB": 0,
+              "ShiftPtrElemA": 0,
+              "DUorMT1": 64,
+              "DUorMT0": 64
+            }
+          },
+          {
+            "type": "BufferLoadOffsetLimitCheck_Beta",
+            "value": 64
+          },
+          {
+            "type": "BufferStoreOffsetLimitCheck",
+            "value": 64
+          },
+          {
+            "type": "GlobalSplitUCheckMinK",
+            "value": [
+              32,
+              1
+            ]
+          },
+          {
+            "type": "WorkgroupMappingXCCCheck",
+            "value": [
+              1,
+              -1
+            ]
+          }
+        ]
+      },
+      "taskPredicate": {
+        "type": "WorkspaceCheck"
+      },
+      "sizeMapping": {
+        "waveNum": 4,
+        "workGroup": [
+          32,
+          4,
+          1
+        ],
+        "macroTile": [
+          64,
+          64,
+          1
+        ],
+        "threadTile": [
+          1,
+          1
+        ],
+        "matrixInstruction": [
+          16,
+          16,
+          16,
+          1
+        ],
+        "grvwA": 8,
+        "grvwB": 8,
+        "gwvwC": 1,
+        "gwvwD": 1,
+        "depthU": 64,
+        "staggerU": 32,
+        "staggerUMapping": 0,
+        "globalSplitUPGR": 16,
+        "globalSplitU": 1,
+        "staggerStrideShift": 2,
+        "workGroupMapping": 8,
+        "packBatchDims": 0,
+        "magicDivAlg": 2,
+        "streamK": 0,
+        "streamKAtomic": 0,
+        "sourceKernel": false,
+        "globalAccumulation": 2,
+        "workspaceSizePerElemC": 4,
+        "workspaceSizePerElemBias": 0,
+        "activationFused": true,
+        "CustomKernelName": "",
+        "workGroupMappingXCC": 1,
+        "workGroupMappingXCCGroup": -1,
+        "globalSplitUCoalesced": false,
+        "globalSplitUWorkGroupMappingRoundRobin": false,
+        "CUOccupancy": 2,
+        "PrefetchGlobalRead": 1,
+        "MathClocksUnrolledLoop": 0,
+        "synchronizerSizePerWG": 4
+      },
+      "internalArgsSupport": {
+        "version": 2,
+        "gsu": true,
+        "wgm": true,
+        "staggerU": true,
+        "useUniversalArgs": true
+      },
+      "debugKernel": false,
+      "libraryLogicIndex": 101,
+      "index": 27955,
+      "ideals": {},
+      "linearModel": {}
+    },
+    "metadata": {
+      ".args": [
+        {
+          ".name": "Gemm info",
+          ".offset": 0,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "kernel info0",
+          ".offset": 4,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "kernel info1",
+          ".offset": 8,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "numWG",
+          ".offset": 12,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesFree0",
+          ".offset": 16,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesFree1",
+          ".offset": 20,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesFree2",
+          ".offset": 24,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesSum0",
+          ".offset": 28,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "D",
+          ".offset": 32,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "bf16"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "C",
+          ".offset": 40,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "bf16"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "A",
+          ".offset": 48,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "fp8"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "B",
+          ".offset": 56,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "fp8"
+        },
+        {
+          ".name": "strideD0",
+          ".offset": 64,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideD1",
+          ".offset": 68,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideC0",
+          ".offset": 72,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideC1",
+          ".offset": 76,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideA0",
+          ".offset": 80,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideA1",
+          ".offset": 84,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideB0",
+          ".offset": 88,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideB1",
+          ".offset": 92,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "alpha",
+          ".offset": 96,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".name": "beta",
+          ".offset": 100,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleA",
+          ".offset": 104,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleB",
+          ".offset": 112,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleC",
+          ".offset": 120,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleD",
+          ".offset": 128,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleAlphaVec",
+          ".offset": 136,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "bias",
+          ".offset": 144,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "void"
+        },
+        {
+          ".name": "biasType",
+          ".offset": 152,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "StrideBias",
+          ".offset": 156,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "activationAlpha",
+          ".offset": 160,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".name": "activationBeta",
+          ".offset": 164,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".name": "activationType",
+          ".offset": 168,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        }
+      ],
+      ".group_segment_fixed_size": 25088,
+      ".kernarg_segment_align": 8,
+      ".kernarg_segment_size": 176,
+      ".language": "OpenCL C",
+      ".language_version": [
+        2,
+        0
+      ],
+      ".max_flat_workgroup_size": 128,
+      ".name": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT64x64x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_ISA1200_IU1_K1_LBSPPA128_LBSPPB128_LBSPPM0_LPA8_LPB8_LPM0_LRVW8_LWPMn1_MIAV1_MIWT2_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SPO0_SRVW0_SSO0_SVW1_SK0_SKXCCM0_TLDS2_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1",
+      ".private_segment_fixed_size": 0,
+      ".sgpr_count": 76,
+      ".sgpr_spill_count": 0,
+      ".symbol": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT64x64x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB0_EPS1_FDSI0_GRPM1_GRVWA8_GRVWB8_GSUAMB_GLS0_ISA1200_IU1_K1_LBSPPA128_LBSPPB128_LBSPPM0_LPA8_LPB8_LPM0_LRVW8_LWPMn1_MIAV1_MIWT2_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB1_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SPO0_SRVW0_SSO0_SVW1_SK0_SKXCCM0_TLDS2_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA1_VWB1_WSGRA0_WSGRB0_WS32_WG32_4_1.kd",
+      ".vgpr_count": 256,
+      ".vgpr_spill_count": 0,
+      ".wavefront_size": 32
+    }
+  },
+  {
+    "solution": {
+      "name": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT128x128x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB1_EPS1_FDSI0_GRPM1_GRVWA16_GRVWB16_GSU1_GSUAMB_GSUC0_GSUWGMRR0_GLS0_ISA1200_IU1_K1_LBSPPA256_LBSPPB0_LBSPPM0_LPA32_LPB0_LPM0_LRVW16_LWPMn1_MIAV1_MIWT8_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SU32_SUM0_SUS256_SPO0_SRVW0_SSO0_SVW4_SK0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA4_VWB1_WSGRA0_WSGRB0_WS32_WG16_8_1_WGM8_WGMXCC1_WGMXCCGn1",
+      "kernelName": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT128x128x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB1_EPS1_FDSI0_GRPM1_GRVWA16_GRVWB16_GSUAMB_GLS0_ISA1200_IU1_K1_LBSPPA256_LBSPPB0_LBSPPM0_LPA32_LPB0_LPM0_LRVW16_LWPMn1_MIAV1_MIWT8_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SPO0_SRVW0_SSO0_SVW4_SK0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA4_VWB1_WSGRA0_WSGRB0_WS32_WG16_8_1",
+      "problemType": {
+        "operationIdentifier": "Contraction_l_Alik_Bljk_Cijk_Dijk",
+        "transA": true,
+        "transB": false,
+        "computeInputType": "Float8",
+        "aType": "Float8",
+        "bType": "Float8",
+        "cType": "BFloat16",
+        "dType": "BFloat16",
+        "eType": "BFloat16",
+        "computeType": "Float",
+        "useBeta": true,
+        "useBias": 1,
+        "biasSrcWhiteList": [
+          3
+        ],
+        "useE": false,
+        "useScaleAB": "Scalar",
+        "useScaleCD": true,
+        "useScaleAlphaVec": 1,
+        "biasDataTypeWhiteList": [
+          "Float",
+          "Half",
+          "BFloat16"
+        ],
+        "highPrecisionAccumulate": true,
+        "useInitialStridesAB": false,
+        "useInitialStridesCD": false,
+        "stridedBatched": true,
+        "groupedGemm": false,
+        "useGradient": false,
+        "activationType": "Hipblaslt_all",
+        "activationArgLength": 2,
+        "activationComputeDataType": "Float",
+        "activationNoGuard": false,
+        "sparse": 0,
+        "f32XdlMathOp": "Float",
+        "supportDeviceUserArguments": true,
+        "outputAmaxD": false,
+        "swizzleTensorA": false,
+        "swizzleTensorB": false
+      },
+      "hardwarePredicate": {
+        "type": "AMDGPU",
+        "value": {
+          "type": "Processor",
+          "value": "gfx1200"
+        }
+      },
+      "problemPredicate": {
+        "type": "And",
+        "value": [
+          {
+            "type": "OperationIdentifierEqual",
+            "value": "Contraction_l_Alik_Bljk_Cijk_Dijk"
+          },
+          {
+            "type": "BiasDataTypeWhiteList",
+            "value": [
+              "Float",
+              "Half",
+              "BFloat16"
+            ]
+          },
+          {
+            "type": "BiasSrcWhiteList",
+            "value": [
+              3
+            ]
+          },
+          {
+            "type": "AmaxDCheck",
+            "value": false
+          },
+          {
+            "type": "ActivationEnumWhiteList",
+            "value": [
+              "None",
+              "Gelu",
+              "Relu",
+              "Silu"
+            ]
+          },
+          {
+            "type": "TypesEqual",
+            "value": [
+              "Float8",
+              "Float8",
+              "BFloat16",
+              "BFloat16",
+              "Float8"
+            ]
+          },
+          {
+            "type": "HighPrecisionAccumulate",
+            "value": true
+          },
+          {
+            "type": "Activation",
+            "value": "Hipblaslt_all"
+          },
+          {
+            "type": "ActivationComputeType",
+            "value": "Float"
+          },
+          {
+            "type": "ActivationNoGuard",
+            "value": false
+          },
+          {
+            "type": "UseGradient",
+            "value": false
+          },
+          {
+            "type": "UseBias",
+            "value": 1
+          },
+          {
+            "type": "UseE",
+            "value": false
+          },
+          {
+            "type": "DataTypeE",
+            "value": "BFloat16"
+          },
+          {
+            "type": "StridedBatched",
+            "value": true
+          },
+          {
+            "type": "GroupedGemm",
+            "value": false
+          },
+          {
+            "type": "UseScaleAB",
+            "value": "Scalar"
+          },
+          {
+            "type": "UseScaleCD",
+            "value": true
+          },
+          {
+            "type": "UseScaleAlphaVec",
+            "value": 1
+          },
+          {
+            "type": "Sparse",
+            "value": 0
+          },
+          {
+            "type": "F32XdlMathOp",
+            "value": "Float"
+          },
+          {
+            "type": "SupportDeviceUserArguments",
+            "value": true
+          },
+          {
+            "type": "SwizzleTensorA",
+            "value": false
+          },
+          {
+            "type": "SwizzleTensorB",
+            "value": false
+          },
+          {
+            "type": "WorkgroupNumberCheck",
+            "index": 0,
+            "value": [
+              128,
+              128,
+              1
+            ]
+          },
+          {
+            "type": "LeadingFree0SizesGreaterOrEqual",
+            "value": 1
+          },
+          {
+            "type": "LeadingFree1SizesGreaterOrEqual",
+            "value": 1
+          },
+          {
+            "type": "KernelLanguageCompatible",
+            "value": "Assembly"
+          },
+          {
+            "type": "BufferLoadOffsetLimitCheck",
+            "value": {
+              "ShiftPtrElemB": 0,
+              "ShiftPtrElemA": 0,
+              "DUorMT1": 128,
+              "DUorMT0": 128
+            }
+          },
+          {
+            "type": "BufferLoadOffsetLimitCheck_Beta",
+            "value": 128
+          },
+          {
+            "type": "BufferStoreOffsetLimitCheck",
+            "value": 128
+          },
+          {
+            "type": "GlobalSplitUCheckMinK",
+            "value": [
+              32,
+              1
+            ]
+          },
+          {
+            "type": "WorkgroupMappingXCCCheck",
+            "value": [
+              1,
+              -1
+            ]
+          }
+        ]
+      },
+      "taskPredicate": {
+        "type": "WorkspaceCheck"
+      },
+      "sizeMapping": {
+        "waveNum": 4,
+        "workGroup": [
+          16,
+          8,
+          1
+        ],
+        "macroTile": [
+          128,
+          128,
+          1
+        ],
+        "threadTile": [
+          1,
+          1
+        ],
+        "matrixInstruction": [
+          16,
+          16,
+          16,
+          1
+        ],
+        "grvwA": 16,
+        "grvwB": 16,
+        "gwvwC": 4,
+        "gwvwD": 4,
+        "depthU": 64,
+        "staggerU": 32,
+        "staggerUMapping": 0,
+        "globalSplitUPGR": 16,
+        "globalSplitU": 1,
+        "staggerStrideShift": 2,
+        "workGroupMapping": 8,
+        "packBatchDims": 0,
+        "magicDivAlg": 2,
+        "streamK": 0,
+        "streamKAtomic": 0,
+        "sourceKernel": false,
+        "globalAccumulation": 2,
+        "workspaceSizePerElemC": 4,
+        "workspaceSizePerElemBias": 0,
+        "activationFused": true,
+        "CustomKernelName": "",
+        "workGroupMappingXCC": 1,
+        "workGroupMappingXCCGroup": -1,
+        "globalSplitUCoalesced": false,
+        "globalSplitUWorkGroupMappingRoundRobin": false,
+        "CUOccupancy": 2,
+        "PrefetchGlobalRead": 1,
+        "MathClocksUnrolledLoop": 0,
+        "synchronizerSizePerWG": 16
+      },
+      "internalArgsSupport": {
+        "version": 2,
+        "gsu": true,
+        "wgm": true,
+        "staggerU": true,
+        "useUniversalArgs": true
+      },
+      "debugKernel": false,
+      "libraryLogicIndex": 0,
+      "index": 27854,
+      "ideals": {},
+      "linearModel": {}
+    },
+    "metadata": {
+      ".args": [
+        {
+          ".name": "Gemm info",
+          ".offset": 0,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "kernel info0",
+          ".offset": 4,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "kernel info1",
+          ".offset": 8,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "numWG",
+          ".offset": 12,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesFree0",
+          ".offset": 16,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesFree1",
+          ".offset": 20,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesFree2",
+          ".offset": 24,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "SizesSum0",
+          ".offset": 28,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "D",
+          ".offset": 32,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "bf16"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "C",
+          ".offset": 40,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "bf16"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "A",
+          ".offset": 48,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "fp8"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "B",
+          ".offset": 56,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "fp8"
+        },
+        {
+          ".name": "strideD0",
+          ".offset": 64,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideD1",
+          ".offset": 68,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideC0",
+          ".offset": 72,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideC1",
+          ".offset": 76,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideA0",
+          ".offset": 80,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideA1",
+          ".offset": 84,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideB0",
+          ".offset": 88,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "strideB1",
+          ".offset": 92,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "alpha",
+          ".offset": 96,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".name": "beta",
+          ".offset": 100,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleA",
+          ".offset": 104,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleB",
+          ".offset": 112,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleC",
+          ".offset": 120,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleD",
+          ".offset": 128,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "AddressScaleAlphaVec",
+          ".offset": 136,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "f32"
+        },
+        {
+          ".address_space": "generic",
+          ".name": "bias",
+          ".offset": 144,
+          ".size": 8,
+          ".value_kind": "global_buffer",
+          ".value_type": "void"
+        },
+        {
+          ".name": "biasType",
+          ".offset": 152,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "StrideBias",
+          ".offset": 156,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        },
+        {
+          ".name": "activationAlpha",
+          ".offset": 160,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".name": "activationBeta",
+          ".offset": 164,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "f32"
+        },
+        {
+          ".name": "activationType",
+          ".offset": 168,
+          ".size": 4,
+          ".value_kind": "by_value",
+          ".value_type": "u32"
+        }
+      ],
+      ".group_segment_fixed_size": 25600,
+      ".kernarg_segment_align": 8,
+      ".kernarg_segment_size": 176,
+      ".language": "OpenCL C",
+      ".language_version": [
+        2,
+        0
+      ],
+      ".max_flat_workgroup_size": 128,
+      ".name": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT128x128x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB1_EPS1_FDSI0_GRPM1_GRVWA16_GRVWB16_GSUAMB_GLS0_ISA1200_IU1_K1_LBSPPA256_LBSPPB0_LBSPPM0_LPA32_LPB0_LPM0_LRVW16_LWPMn1_MIAV1_MIWT8_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SPO0_SRVW0_SSO0_SVW4_SK0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA4_VWB1_WSGRA0_WSGRB0_WS32_WG16_8_1",
+      ".private_segment_fixed_size": 0,
+      ".sgpr_count": 76,
+      ".sgpr_spill_count": 0,
+      ".symbol": "Cijk_Alik_Bljk_F8BS_BH_Bias_SHB_HA_S_SAB_SCD_SAV_UserArgs_MT128x128x64_MI16x16x1_SN_LDSB0_AFC1_AFEM1_AFEM1_ASEM1_CLR1_CADS0_DTVA0_DTVB1_EPS1_FDSI0_GRPM1_GRVWA16_GRVWB16_GSUAMB_GLS0_ISA1200_IU1_K1_LBSPPA256_LBSPPB0_LBSPPM0_LPA32_LPB0_LPM0_LRVW16_LWPMn1_MIAV1_MIWT8_2_MO40_NTn1_NTA0_NTB0_NTC0_NTD0_NTM0_NEPBS0_NLCA1_NLCB2_ONLL0_PGR1_PLR1_PKA0_SIA3_SS1_SPO0_SRVW0_SSO0_SVW4_SK0_SKXCCM0_TLDS1_ULSGRO0_USL1_UIOFGRO0_USFGROn1_VSn1_VWA4_VWB1_WSGRA0_WSGRB0_WS32_WG16_8_1.kd",
+      ".vgpr_count": 256,
+      ".vgpr_spill_count": 0,
+      ".wavefront_size": 32
+    }
+  }
+]

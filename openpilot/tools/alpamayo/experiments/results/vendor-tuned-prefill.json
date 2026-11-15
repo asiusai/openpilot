@@ -1,0 +1,208 @@
+[
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": null,
+    "median_ms": 2.238531014882028,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 27854,
+    "median_ms": 2.1300625521689653,
+    "exact": false,
+    "differing_values": 728,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 728,
+    "fp64_original_mean_error": 0.020611620375088284,
+    "fp64_candidate_mean_error": 0.02061162708879827,
+    "fp64_candidate_better_count": 346,
+    "fp64_candidate_worse_count": 298
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 28219,
+    "median_ms": 2.0914754131808877,
+    "exact": false,
+    "differing_values": 728,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 728,
+    "fp64_original_mean_error": 0.020611620375088284,
+    "fp64_candidate_mean_error": 0.02061162708879827,
+    "fp64_candidate_better_count": 346,
+    "fp64_candidate_worse_count": 298
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 28279,
+    "median_ms": 2.0438864594325423,
+    "exact": false,
+    "differing_values": 728,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 728,
+    "fp64_original_mean_error": 0.020611620375088284,
+    "fp64_candidate_mean_error": 0.02061162708879827,
+    "fp64_candidate_better_count": 346,
+    "fp64_candidate_worse_count": 298
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 28437,
+    "median_ms": 2.0715126302093267,
+    "exact": false,
+    "differing_values": 728,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 728,
+    "fp64_original_mean_error": 0.020611620375088284,
+    "fp64_candidate_mean_error": 0.02061162708879827,
+    "fp64_candidate_better_count": 346,
+    "fp64_candidate_worse_count": 298
+  },
+  {
+    "shape": [
+      3261,
+      9216,
+      2048
+    ],
+    "solution": 28440,
+    "median_ms": 2.0907639991492033,
+    "exact": false,
+    "differing_values": 728,
+    "max_delta": 1.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 728,
+    "fp64_original_mean_error": 0.020611620375088284,
+    "fp64_candidate_mean_error": 0.02061162708879827,
+    "fp64_candidate_better_count": 346,
+    "fp64_candidate_worse_count": 298
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": null,
+    "median_ms": 2.309697913005948,
+    "exact": true,
+    "differing_values": 0,
+    "max_delta": 0.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing"
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 27854,
+    "median_ms": 2.0432095043361187,
+    "exact": false,
+    "differing_values": 671,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 671,
+    "fp64_original_mean_error": 0.04447447747303015,
+    "fp64_candidate_mean_error": 0.04447385282345927,
+    "fp64_candidate_better_count": 338,
+    "fp64_candidate_worse_count": 307
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 28219,
+    "median_ms": 2.083544502966106,
+    "exact": false,
+    "differing_values": 671,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 671,
+    "fp64_original_mean_error": 0.04447447747303015,
+    "fp64_candidate_mean_error": 0.04447385282345927,
+    "fp64_candidate_better_count": 338,
+    "fp64_candidate_worse_count": 307
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 28279,
+    "median_ms": 2.136948867700994,
+    "exact": false,
+    "differing_values": 671,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 671,
+    "fp64_original_mean_error": 0.04447447747303015,
+    "fp64_candidate_mean_error": 0.04447385282345927,
+    "fp64_candidate_better_count": 338,
+    "fp64_candidate_worse_count": 307
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 28437,
+    "median_ms": 2.0875014597550035,
+    "exact": false,
+    "differing_values": 671,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 671,
+    "fp64_original_mean_error": 0.04447447747303015,
+    "fp64_candidate_mean_error": 0.04447385282345927,
+    "fp64_candidate_better_count": 338,
+    "fp64_candidate_worse_count": 307
+  },
+  {
+    "shape": [
+      3261,
+      2048,
+      9216
+    ],
+    "solution": 28440,
+    "median_ms": 2.0927564473822713,
+    "exact": false,
+    "differing_values": 671,
+    "max_delta": 2.0,
+    "timing_boundary": "Row-major FP8 activations to BF16 matrix output; weights prepared before timing",
+    "fp64_checked_changed_values": 671,
+    "fp64_original_mean_error": 0.04447447747303015,
+    "fp64_candidate_mean_error": 0.04447385282345927,
+    "fp64_candidate_better_count": 338,
+    "fp64_candidate_worse_count": 307
+  }
+]

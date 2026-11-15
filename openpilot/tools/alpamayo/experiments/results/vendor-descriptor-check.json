@@ -1,0 +1,24 @@
+[
+  {
+    "solution": 27955,
+    "descriptor": 4591360,
+    "entry": 13368320,
+    "binary_sha256": "e23cd00c796a84a3188af1eb317e58b8cac26fe6db4960368836027ccbea54a1",
+    "loaded_image_sha256": "77bfd79622d10c6b5153767720829b223708fafab9b7817e2d43357d5eea02b4",
+    "image_bytes": 67880700,
+    "lds": 25088,
+    "descriptor_kernargs": 0,
+    "metadata_kernargs": 176
+  },
+  {
+    "solution": 27854,
+    "descriptor": 4591552,
+    "entry": 13648128,
+    "binary_sha256": "e3ad1e6bdd1af46f288d8f0e3bb5146a7989757b39d600536ee787b79431b740",
+    "loaded_image_sha256": "77bfd79622d10c6b5153767720829b223708fafab9b7817e2d43357d5eea02b4",
+    "image_bytes": 67880700,
+    "lds": 25600,
+    "descriptor_kernargs": 0,
+    "metadata_kernargs": 176
+  }
+]

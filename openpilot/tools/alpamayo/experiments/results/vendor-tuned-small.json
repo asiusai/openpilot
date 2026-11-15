@@ -1,0 +1,202 @@
+[
+  {
+    "solution": 27854,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28219,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28279,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28437,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28440,
+    "shape": [
+      128,
+      128,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28219,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28279,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28437,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28440,
+    "shape": [
+      145,
+      144,
+      64
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28219,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28279,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28437,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28440,
+    "shape": [
+      145,
+      144,
+      80
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 27854,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28219,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28279,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28437,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  },
+  {
+    "solution": 28440,
+    "shape": [
+      256,
+      256,
+      256
+    ],
+    "changing_inputs": 3,
+    "exact_cpu": true
+  }
+]

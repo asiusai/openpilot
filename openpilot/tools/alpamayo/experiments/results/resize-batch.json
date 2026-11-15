@@ -1,0 +1,42 @@
+[
+  {
+    "images": 4,
+    "size": [
+      320,
+      576
+    ],
+    "batched": false,
+    "median_ms": 12.551818042993546,
+    "exact": true
+  },
+  {
+    "images": 4,
+    "size": [
+      320,
+      576
+    ],
+    "batched": true,
+    "median_ms": 35.63904017210007,
+    "exact": true
+  },
+  {
+    "images": 8,
+    "size": [
+      224,
+      416
+    ],
+    "batched": false,
+    "median_ms": 22.921623196452856,
+    "exact": true
+  },
+  {
+    "images": 8,
+    "size": [
+      224,
+      416
+    ],
+    "batched": true,
+    "median_ms": 65.78830513171852,
+    "exact": true
+  }
+]

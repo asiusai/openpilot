@@ -1,0 +1,215 @@
+[
+  {
+    "mode": "auto",
+    "median_ms": 9.861247148364782,
+    "mean_ms": 9.858969415072352,
+    "metrics": {
+      "AverageGfxclkFrequencyTarget": 1056,
+      "AverageGfxclkFrequencyPreDs": 1038,
+      "AverageGfxclkFrequencyPostDs": 221,
+      "AverageMemclkFrequencyPreDs": 279,
+      "AverageSocketPower": 15,
+      "AverageTotalBoardPower": 15,
+      "AverageGfxActivity": 9,
+      "AverageUclkActivity": 1,
+      "AvgFanRpm": 40,
+      "PcieRate": 3,
+      "PcieWidth": 2,
+      "AvgTemperature": [
+        48,
+        50,
+        49,
+        50,
+        46,
+        47,
+        50,
+        49,
+        48,
+        0,
+        0,
+        0
+      ],
+      "ThrottlingPercentage": [
+        0,
+        16,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "clocks": {
+        "0": [
+          500,
+          3500
+        ],
+        "2": [
+          96,
+          456,
+          772,
+          875,
+          1124
+        ]
+      },
+      "smu_module": "tinygrad.runtime.autogen.am.smu_14_0_2",
+      "active_power_limit_w": 144
+    },
+    "exact": true
+  },
+  {
+    "mode": "high",
+    "median_ms": 10.128796915523708,
+    "mean_ms": 10.136609037872404,
+    "metrics": {
+      "AverageGfxclkFrequencyTarget": 2983,
+      "AverageGfxclkFrequencyPreDs": 2828,
+      "AverageGfxclkFrequencyPostDs": 2581,
+      "AverageMemclkFrequencyPreDs": 1557,
+      "AverageSocketPower": 124,
+      "AverageTotalBoardPower": 124,
+      "AverageGfxActivity": 85,
+      "AverageUclkActivity": 32,
+      "AvgFanRpm": 542,
+      "PcieRate": 3,
+      "PcieWidth": 2,
+      "AvgTemperature": [
+        55,
+        70,
+        70,
+        60,
+        52,
+        49,
+        50,
+        50,
+        49,
+        0,
+        0,
+        0
+      ],
+      "ThrottlingPercentage": [
+        0,
+        82,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        78,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "clocks": {
+        "0": [
+          500,
+          3500
+        ],
+        "2": [
+          96,
+          456,
+          772,
+          875,
+          1124
+        ]
+      },
+      "smu_module": "tinygrad.runtime.autogen.am.smu_14_0_2",
+      "active_power_limit_w": 144
+    },
+    "exact": true
+  },
+  {
+    "mode": "auto-repeat",
+    "median_ms": 9.860655409283936,
+    "mean_ms": 9.854273069649935,
+    "metrics": {
+      "AverageGfxclkFrequencyTarget": 3069,
+      "AverageGfxclkFrequencyPreDs": 2955,
+      "AverageGfxclkFrequencyPostDs": 2734,
+      "AverageMemclkFrequencyPreDs": 2192,
+      "AverageSocketPower": 131,
+      "AverageTotalBoardPower": 131,
+      "AverageGfxActivity": 90,
+      "AverageUclkActivity": 27,
+      "AvgFanRpm": 604,
+      "PcieRate": 3,
+      "PcieWidth": 2,
+      "AvgTemperature": [
+        56,
+        71,
+        71,
+        61,
+        55,
+        50,
+        49,
+        50,
+        49,
+        0,
+        0,
+        0
+      ],
+      "ThrottlingPercentage": [
+        0,
+        89,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        82,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "clocks": {
+        "0": [
+          500,
+          3500
+        ],
+        "2": [
+          96,
+          456,
+          772,
+          875,
+          1124
+        ]
+      },
+      "smu_module": "tinygrad.runtime.autogen.am.smu_14_0_2",
+      "active_power_limit_w": 144
+    },
+    "exact": true
+  }
+]

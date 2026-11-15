@@ -1,0 +1,11 @@
+{
+  "rows": 3261,
+  "packed_matrices": 168,
+  "median_ms": {
+    "separate": 8.34076153114438,
+    "packed": 7.877851952798665
+  },
+  "exact_output": true,
+  "exact_kv": true,
+  "changing_inputs": 3
+}
