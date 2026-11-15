@@ -5,7 +5,7 @@ import time
 from openpilot.cereal import log, messaging
 
 IGNITION_RESTRICTED_PARAMS = {
-  'SshEnabled', 'AdbEnabled', 'JoystickDebugMode', 'LongitudinalManeuverMode', 'LateralManeuverMode',
+  'SshEnabled', 'PhysicalPasswordLogin', 'AdbEnabled', 'JoystickDebugMode', 'LongitudinalManeuverMode', 'LateralManeuverMode',
   'CameraDebugExpGain', 'CameraDebugExpTime', 'UpdaterTargetBranch', 'DoUninstall', 'FactoryReset', 'DoFactoryReset',
 }
 

@@ -115,6 +115,7 @@ LIVE_STATE_PARAM_KEYS = [
   "RecordAudio",
   "IsMetric",
   "SshEnabled",
+  "PhysicalPasswordLogin",
   "AppTerminalEnabled",
   "AdbEnabled",
   "JoystickDebugMode",
