@@ -58,6 +58,23 @@ def test_regular_writes_and_calibration_reboot_shutdown_allowed_during_ignition(
   assert p.get('Offroad_CarUnrecognized') == {'text': 'test'}
 
 
+def test_physical_password_setting_is_manual_persistent_and_ignition_restricted(setup):
+  p, ignition = setup
+  assert p.get('PhysicalPasswordLogin', return_default=True) is True
+  assert methods.saveParams({'PhysicalPasswordLogin': False})['PhysicalPasswordLogin'].startswith('ok')
+  assert p.get('PhysicalPasswordLogin', return_default=True) is False
+  p.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
+  p.put('AppAuthorizedKeys', {'app': {'label': 'Test app'}}, block=True)
+  assert p.get('PhysicalPasswordLogin', return_default=True) is False
+  for state in (True, None):
+    ignition['value'] = state
+    assert 'ignition' in methods.saveParams({'PhysicalPasswordLogin': True})['PhysicalPasswordLogin']
+    assert p.get('PhysicalPasswordLogin', return_default=True) is False
+  ignition['value'] = False
+  assert methods.saveParams({'PhysicalPasswordLogin': True})['PhysicalPasswordLogin'].startswith('ok')
+  assert p.get('PhysicalPasswordLogin', return_default=True) is True
+
+
 def test_restricted_chunked_write_rechecks_ignition_and_allows_reads(setup):
   p, ignition = setup
   editor = ParameterEditor(methods.SAVE_PARAMS_BLOCKED_KEYS, lambda: p)
