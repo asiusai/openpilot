@@ -58,6 +58,7 @@ openpilot/selfdrive/modeld/models/tg_input_devices.json
 
 # build artifacts
 docs/_site/
+openpilot/common/tests/test_live_lighting
 openpilot/selfdrive/pandad/pandad
 openpilot/cereal/services.h
 openpilot/cereal/gen
@@ -65,6 +66,7 @@ openpilot/selfdrive/ui/translations/tmp
 openpilot/selfdrive/car/tests/cars_dump
 openpilot/system/camerad/camerad
 openpilot/system/camerad/test/ae_gray_test
+openpilot/system/camerad/test/test_camera_policy
 
 .coverage*
 coverage.xml
@@ -97,3 +99,4 @@ build/
 .context/
 PLAN.md
 TASK.md
+openpilot/system/loggerd/tests/video_writer_fixture

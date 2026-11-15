@@ -1,0 +1,205 @@
+{
+  "pay_attention": {
+    "text": "Pay attention.",
+    "events": [
+      "driverDistracted1",
+      "driverDistracted2"
+    ],
+    "no_entry": [],
+    "offroad": []
+  },
+  "touch_wheel": {
+    "text": "Touch the steering wheel.",
+    "events": [
+      "driverUnresponsive1",
+      "driverUnresponsive2"
+    ],
+    "no_entry": [],
+    "offroad": []
+  },
+  "take_control": {
+    "text": "Take control.",
+    "events": [
+      "steerSaturated"
+    ],
+    "no_entry": [],
+    "offroad": []
+  },
+  "calibrating": {
+    "text": "Calibration in progress. Drive to calibrate.",
+    "events": [
+      "calibrationIncomplete",
+      "calibrationRecalibrating"
+    ],
+    "no_entry": [],
+    "offroad": [
+      "Offroad_Recalibration"
+    ]
+  },
+  "calibration_error": {
+    "text": "Calibration invalid. Check the device mount.",
+    "events": [
+      "calibrationInvalid"
+    ],
+    "no_entry": [],
+    "offroad": []
+  },
+  "car_unrecognized": {
+    "text": "Car not recognized. Dashcam mode only.",
+    "events": [
+      "carUnrecognized",
+      "startupNoCar"
+    ],
+    "no_entry": [],
+    "offroad": [
+      "Offroad_CarUnrecognized"
+    ]
+  },
+  "pedal_pressed": {
+    "text": "Pedal pressed. Cannot engage.",
+    "events": [],
+    "no_entry": [
+      "pedalPressed"
+    ],
+    "offroad": []
+  },
+  "cannot_engage": {
+    "text": "Cannot engage.",
+    "events": [],
+    "no_entry": [
+      "tooDistracted",
+      "doorOpen",
+      "seatbeltNotLatched",
+      "wrongGear",
+      "reverseGear",
+      "parkBrake",
+      "wrongCarMode",
+      "wrongCruiseMode",
+      "carNotReady",
+      "resumeBlocked",
+      "belowEngageSpeed",
+      "speedTooHigh",
+      "steerDisengage",
+      "espDisabled"
+    ],
+    "offroad": []
+  },
+  "camera_error": {
+    "text": "Camera error.",
+    "events": [
+      "cameraMalfunction",
+      "cameraFrameRate"
+    ],
+    "no_entry": [],
+    "offroad": []
+  },
+  "model_error": {
+    "text": "Driving model error.",
+    "events": [
+      "modeldLagging",
+      "posenetInvalid"
+    ],
+    "no_entry": [],
+    "offroad": [
+      "Offroad_ChestnutModelError"
+    ]
+  },
+  "overheat": {
+    "text": "Device overheated. Check cooling.",
+    "events": [
+      "overheat"
+    ],
+    "no_entry": [],
+    "offroad": [
+      "Offroad_TemperatureTooHigh"
+    ]
+  },
+  "system_error": {
+    "text": "System error.",
+    "events": [
+      "processNotRunning",
+      "commIssue",
+      "commIssueAvgFreq",
+      "selfdrivedLagging",
+      "sensorDataInvalid",
+      "vehicleSensorsInvalid",
+      "fanMalfunction",
+      "outOfSpace",
+      "lowMemory",
+      "canError",
+      "canBusMissing",
+      "relayMalfunction",
+      "radarFault",
+      "radarTempUnavailable",
+      "steerTempUnavailable",
+      "steerTempUnavailableSilent",
+      "steerUnavailable",
+      "steerTimeLimit"
+    ],
+    "no_entry": [],
+    "offroad": []
+  },
+  "chestnut_error": {
+    "text": "Chestnut error.",
+    "events": [],
+    "no_entry": [],
+    "offroad": [
+      "Offroad_ChestnutNotDetected",
+      "Offroad_ChestnutOverheated",
+      "Offroad_ChestnutUsbSlow",
+      "Offroad_ChestnutPcieUnavailable",
+      "Offroad_ChestnutUpdateFailed"
+    ]
+  },
+  "pairing_0": {
+    "text": "Zero."
+  },
+  "pairing_1": {
+    "text": "One."
+  },
+  "pairing_2": {
+    "text": "Two."
+  },
+  "pairing_3": {
+    "text": "Three."
+  },
+  "pairing_4": {
+    "text": "Four."
+  },
+  "pairing_5": {
+    "text": "Five."
+  },
+  "pairing_6": {
+    "text": "Six."
+  },
+  "pairing_7": {
+    "text": "Seven."
+  },
+  "pairing_8": {
+    "text": "Eight."
+  },
+  "pairing_9": {
+    "text": "Nine."
+  },
+  "pairing_started": {
+    "text": "Pairing started. Select your device in the app."
+  },
+  "pairing_success": {
+    "text": "Paired successfully."
+  },
+  "pairing_failed": {
+    "text": "Pairing failed. Try again."
+  },
+  "pairing_ignition_on": {
+    "text": "Pairing is disabled when ignition is on."
+  },
+  "pairing_compare": {
+    "text": "Pairing code."
+  },
+  "pairing_confirm_button": {
+    "text": "If it matches, hold the button for three seconds."
+  },
+  "pairing_confirm_screen": {
+    "text": "If it matches, confirm."
+  }
+}

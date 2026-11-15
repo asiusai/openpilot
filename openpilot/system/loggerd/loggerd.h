@@ -50,6 +50,7 @@ struct EncoderSettings {
   int bitrate;
   int gop_size;
   int b_frames = 0; // we don't use b frames
+  bool constant_bitrate = false;
 
   static EncoderSettings MainEncoderSettings(int in_width) {
     if (in_width <= 1344) {
@@ -60,7 +61,13 @@ struct EncoderSettings {
   }
 
   static EncoderSettings QcamEncoderSettings() {
-    return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::QCAMERA_H264, .bitrate = 256'000, .gop_size = 15};
+    const bool v0 = Hardware::get_device_type() == cereal::InitData::DeviceType::V0;
+    return EncoderSettings{
+      .encode_type = v0 ? cereal::EncodeIndex::Type::FULL_H_E_V_C : cereal::EncodeIndex::Type::QCAMERA_H264,
+      .bitrate = v0 ? 384'000 : 256'000,
+      .gop_size = v0 ? 40 : 15,
+      .constant_bitrate = v0,
+    };
   }
 
   static EncoderSettings StreamEncoderSettings() {
@@ -95,24 +102,29 @@ public:
   std::vector<EncoderInfo> encoder_infos;
 };
 
+constexpr char MAIN_ROAD_FILENAME[] = "fcamera.mp4";
+constexpr char MAIN_WIDE_ROAD_FILENAME[] = "ecamera.mp4";
+constexpr char MAIN_CABIN_FILENAME[] = "dcamera.mp4";
+constexpr char QCAM_FILENAME[] = "qcamera.mp4";
+
 const EncoderInfo main_road_encoder_info = {
   .publish_name = "narrowRoadEncodeData",
   .thumbnail_name = "thumbnail",
-  .filename = "fcamera.hevc",
+  .filename = MAIN_ROAD_FILENAME,
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(NarrowRoadEncode),
 };
 
 const EncoderInfo main_wide_road_encoder_info = {
   .publish_name = "wideRoadEncodeData",
-  .filename = "ecamera.hevc",
+  .filename = MAIN_WIDE_ROAD_FILENAME,
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(WideRoadEncode),
 };
 
 const EncoderInfo main_cabin_encoder_info = {
   .publish_name = "cabinEncodeData",
-  .filename = "dcamera.hevc",
+  .filename = MAIN_CABIN_FILENAME,
   .record = Params().getBool("RecordFront"),
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(CabinEncode),
@@ -151,10 +163,15 @@ const EncoderInfo stream_cabin_encoder_info = {
 
 const EncoderInfo qcam_encoder_info = {
   .publish_name = "qNarrowRoadEncodeData",
-  .filename = "qcamera.ts",
+  .filename = QCAM_FILENAME,
   .include_audio = Params().getBool("RecordAudio"),
+#ifdef __ASIUS_HARDWARE__
+  .frame_width = 672,
+  .frame_height = 380,
+#else
   .frame_width = 526,
   .frame_height = 330,
+#endif
   .get_settings = [](int){return EncoderSettings::QcamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(QNarrowRoadEncode),
 };

@@ -1,0 +1,616 @@
+#!/usr/bin/env python3
+import math
+import signal
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from openpilot.selfdrive.v0.buttond import ButtonAction, DeviceButtons
+from openpilot.system.asius.pairing_confirmation import read_confirmation
+from openpilot.system.asius.live_lighting import read_state as live_lighting_state
+
+from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB,
+                                                STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
+
+STARTUP_GRACE = 30.
+OFFROAD_SLEEP_TIMEOUT = 30.
+RUNTIME_HZ = 60.
+STARTED_AT = time.monotonic()
+CAM_LED_ADDR = 0x30
+CAM_LED_BUSES = (16, 18, 20)
+CAM_LED_STATUS_CAMERAS = (2, 3)
+CAM_LED_RETRY_INTERVAL = 5.
+CAM_LED_SYSFS_ROOT = Path("/sys/class/leds")
+# Read all faults, including those hidden by a higher-priority screen alert.
+SYSTEM_FAULT_EVENTS = {
+  'cameraMalfunction', 'cameraFrameRate', 'modeldLagging', 'bigModelFailed', 'posenetInvalid',
+  'processNotRunning', 'commIssue', 'commIssueAvgFreq', 'selfdrivedLagging', 'controlsMismatch',
+  'sensorDataInvalid', 'locationdTemporaryError',
+  'paramsdTemporaryError', 'fanMalfunction', 'overheat', 'lowMemory', 'outOfSpace',
+  'canError', 'canBusMissing', 'relayMalfunction',
+}
+CAM_LED_CHANNELS = (
+  ("red", 0), ("green", 0), ("blue", 0),
+  ("red", 1), ("green", 1), ("blue", 1),
+  ("red", 2), ("green", 2), ("blue", 2),
+  ("red", 3), ("green", 3), ("blue", 3),
+)
+
+AW21024_RGB_BASE = 0x0d  # BR12: physical OUT13, first RGB red output.
+AW21024_UPDATE = 0x49
+
+
+def rgb_registers(value: float) -> tuple[int, int]:
+  """Use low RGB current and the full PWM range for fractional brightness."""
+  current = max(6, math.ceil(value))
+  pwm = max(1, round(value * 255 / current)) if value else 0
+  return current, pwm
+
+Ratekeeper: Any = None
+log: Any = None
+messaging: Any = None
+def _pairing_mode_inactive() -> bool:
+  return False
+
+
+pairing_mode_active: Callable[[], bool] = _pairing_mode_inactive
+
+
+def cloudlog_exception(message: str) -> None:
+  try:
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.exception(message)
+  except Exception as e:
+    print(f"{message}: {e}")
+
+
+@dataclass(frozen=True)
+class LedState:
+  name: str
+  red: int
+  green: int
+  blue: int
+
+
+GREEN = LedState("green", 0, 180, 0)
+SETUP_PENDING = LedState("setup_pending", 180, 0, 180)
+BLUE = LedState("blue", 0, 0, 180)
+ORANGE = LedState("orange", *ORANGE_RGB)
+RED = LedState("red", 180, 0, 0)
+DM_WARNING = LedState("dm_warning", *ORANGE_RGB)
+OFF = LedState("off", 0, 0, 0)
+
+WARNING_ALERT_SOUNDS = {
+  "warningSoft",
+  "warningImmediate",
+  "prompt",
+  "promptRepeat",
+  "promptDistracted",
+  "preAlert",
+}
+
+
+def clamp(value: float, low: float, high: float) -> float:
+  return max(low, min(high, value))
+
+
+def interp(value: float, x0: float, x1: float, y0: float, y1: float) -> float:
+  if x1 == x0:
+    return y1
+  return y0 + (clamp((value - x0) / (x1 - x0), 0., 1.) * (y1 - y0))
+
+
+def max_brightness(state: LedState, brightness: int = 255) -> LedState:
+  peak = max(state.red, state.green, state.blue)
+  if peak <= 0:
+    return OFF
+  brightness = int(clamp(brightness, 0, MAX_AUTO_BRIGHTNESS))
+  scale = brightness / peak
+  return LedState(
+    state.name,
+    round(state.red * scale),
+    round(state.green * scale),
+    round(state.blue * scale),
+  )
+
+
+@dataclass
+class CameraLedBoard:
+  name: str
+  camera_num: int
+  bus_num: int
+  bus: Any = None
+  kernel_leds: bool = False
+  initialized: bool = False
+  next_retry: float = 0.
+  channel_maxima: tuple[int, ...] = ()
+  color_scales: list[int] = field(default_factory=lambda: [255] * 12)
+
+  @property
+  def channel_paths(self) -> list[Path]:
+    return [
+      CAM_LED_SYSFS_ROOT / f"asius:cam{self.camera_num}:{color}:{package}"
+      for color, package in CAM_LED_CHANNELS
+    ]
+
+  def kernel_leds_available(self) -> bool:
+    return all((path / "brightness").exists() for path in self.channel_paths)
+
+  def connect(self):
+    if self.kernel_leds_available():
+      if self.bus is not None:
+        self.bus.close()
+        self.bus = None
+      self.kernel_leds = True
+      return None
+    if self.bus is None:
+      from openpilot.common.i2c import SMBus
+      self.bus = SMBus(self.bus_num)
+    return self.bus
+
+  def write(self, register: int, value: int) -> None:
+    self.connect().write_byte_data(CAM_LED_ADDR, register, value)
+
+  def close(self) -> None:
+    if self.bus is not None:
+      self.bus.close()
+      self.bus = None
+    self.kernel_leds = False
+    self.initialized = False
+
+  def init(self) -> None:
+    self.connect()
+    if self.kernel_leds:
+      self.channel_maxima = tuple(int((path / "max_brightness").read_text()) for path in self.channel_paths)
+      for path in self.channel_paths:
+        trigger = path / "trigger"
+        if trigger.exists():
+          trigger.write_text("none")
+    else:
+      if self.bus.read_byte_data(CAM_LED_ADDR, 0x7f) != 0x18:
+        raise OSError("AW21024 camera LED controller not detected")
+      # Preserve IR state; initialize only the twelve RGB outputs.
+      for channel in range(12):
+        self.write(AW21024_RGB_BASE + channel, 0)
+        self.write(0x4a + 12 + channel, 255)
+      self.write(AW21024_UPDATE, 0)
+      self.write(0x6e, 255)  # RSET sets nominal full scale to 18.52 mA.
+      self.write(0x00, 1)
+      self.color_scales = [255] * 12
+    self.initialized = True
+
+  def set_channels(self, channels: list[float]) -> None:
+    if len(channels) != len(CAM_LED_CHANNELS):
+      raise ValueError(f"expected {len(CAM_LED_CHANNELS)} LED channels, got {len(channels)}")
+    if any(not math.isfinite(value) or value < 0 or value > 255 for value in channels):
+      raise ValueError("LED channel brightness must be between 0 and 255")
+    if not self.initialized:
+      self.init()
+
+    rgb = channels
+    if self.kernel_leds:
+      for path, value, maximum in zip(self.channel_paths, rgb, self.channel_maxima, strict=True):
+        (path / "brightness").write_text(str(max(1, round(value * maximum / 255)) if value else 0))
+      return
+
+    for channel, value in enumerate(rgb):
+      current, pwm = rgb_registers(value)
+      if self.color_scales[channel] != current:
+        self.write(AW21024_RGB_BASE + channel, 0)
+        self.write(AW21024_UPDATE, 0)
+        self.write(0x4a + 12 + channel, current)
+        self.color_scales[channel] = current
+      self.write(AW21024_RGB_BASE + channel, pwm)
+    self.write(AW21024_UPDATE, 0)
+
+  def set(self, state: LedState) -> None:
+    self.set_channels([state.red, state.green, state.blue] * 4)
+
+
+class CameraLeds:
+  def __init__(self) -> None:
+    self.boards = [
+      CameraLedBoard("driver", camera_num=1, bus_num=CAM_LED_BUSES[0]),
+      CameraLedBoard("road", camera_num=2, bus_num=CAM_LED_BUSES[1]),
+      CameraLedBoard("wide", camera_num=3, bus_num=CAM_LED_BUSES[2]),
+    ]
+    self.last_state: LedState | None = None
+    self.last_channels: dict[int, list[float]] | None = None
+    self.last_sent = 0.
+
+  def set(self, state: LedState, force: bool = False, brightness: int = 255) -> None:
+    state = max_brightness(state, brightness)
+    now = time.monotonic()
+    if not force and state == self.last_state and (now - self.last_sent) < 1.0:
+      return
+
+    any_success = False
+    for board in self.boards:
+      if now < board.next_retry:
+        continue
+      try:
+        board.set(state if board.camera_num in CAM_LED_STATUS_CAMERAS else OFF)
+        board.next_retry = 0.
+        any_success = True
+      except Exception:
+        board.next_retry = now + CAM_LED_RETRY_INTERVAL
+        cloudlog_exception(f"failed to set {board.name} camera LEDs")
+        board.close()
+
+    if any_success:
+      self.last_state = state
+      self.last_channels = None
+      self.last_sent = now
+
+  def set_channels(self, camera_channels: dict[int, list[float]], force: bool = False) -> None:
+    now = time.monotonic()
+    if not force and camera_channels == self.last_channels and (now - self.last_sent) < 1.0:
+      return
+
+    any_success = False
+    for board in self.boards:
+      channels = camera_channels.get(board.camera_num)
+      if channels is None or now < board.next_retry:
+        continue
+      try:
+        board.set_channels(channels)
+        board.next_retry = 0.
+        any_success = True
+      except Exception:
+        board.next_retry = now + CAM_LED_RETRY_INTERVAL
+        cloudlog_exception(f"failed to set {board.name} camera LED channels")
+        board.close()
+    self.last_state = None
+    if any_success:
+      self.last_channels = camera_channels
+      self.last_sent = now
+
+  def clear(self) -> None:
+    try:
+      self.set(OFF, force=True)
+    except Exception:
+      cloudlog_exception("failed to clear camera LEDs")
+    finally:
+      self.last_state = None
+      self.last_channels = None
+      self.close()
+
+  def close(self) -> None:
+    for board in self.boards:
+      board.close()
+
+
+def manager_failed(sm) -> bool:
+  if time.monotonic() - STARTED_AT < STARTUP_GRACE:
+    return False
+  if (sm.seen['deviceState'] and sm.alive['deviceState'] and sm.valid['deviceState'] and
+      sm['deviceState'].started and driving_initializing(sm)):
+    return False
+  if not sm.seen['managerState']:
+    return False
+
+  for process in sm['managerState'].processes:
+    if process.name == "ledd":
+      continue
+    if process.shouldBeRunning and not process.running:
+      return True
+  return False
+
+
+def process_should_run(sm, name: str) -> bool:
+  if not sm.seen['managerState']:
+    return True
+
+  for process in sm['managerState'].processes:
+    if process.name == name:
+      return process.shouldBeRunning
+  return True
+
+
+def panda_disconnected(sm) -> bool:
+  if not process_should_run(sm, "pandad"):
+    return False
+
+  if not sm.seen['pandaStates'] or not sm.alive['pandaStates']:
+    return True
+
+  panda_states = sm['pandaStates']
+  if len(panda_states) == 0:
+    return True
+
+  for panda_state in panda_states:
+    if panda_state.pandaType == log.PandaState.PandaType.unknown:
+      return True
+  return False
+
+
+def panda_failed(sm) -> bool:
+  if time.monotonic() - STARTED_AT < STARTUP_GRACE:
+    return False
+  if panda_disconnected(sm):
+    return False
+
+  for panda_state in sm['pandaStates']:
+    if panda_state.faultStatus == log.PandaState.FaultStatus.faultPerm:
+      return True
+    if len(panda_state.faults) > 0 or panda_state.heartbeatLost:
+      return True
+  return False
+
+
+def selfdrive_state_available(sm) -> bool:
+  return sm.seen['selfdriveState'] and sm.alive['selfdriveState'] and sm.valid['selfdriveState']
+
+
+def awaiting_first_selfdrive_state(sm) -> bool:
+  started_at = getattr(sm['deviceState'], 'startedMonoTime', 0) / 1e9
+  first_message_pending = not sm.seen['selfdriveState'] or getattr(sm, 'recv_time', {}).get('selfdriveState', 0.) < started_at
+  return started_at > 0 and 0 <= time.monotonic() - started_at < STARTUP_GRACE and first_message_pending
+
+
+def driving_initializing(sm) -> bool:
+  started_at = getattr(sm['deviceState'], 'startedMonoTime', 0) / 1e9
+  initializing_event = (sm.seen['onroadEvents'] and sm.alive['onroadEvents'] and sm.valid['onroadEvents'] and
+                        any(str(event.name) == 'selfdriveInitializing' for event in sm['onroadEvents']))
+  return (started_at > 0 and 0 <= time.monotonic() - started_at < STARTUP_GRACE and
+          (awaiting_first_selfdrive_state(sm) or initializing_event))
+
+
+def persistent_error(sm) -> bool:
+  if (
+    sm.seen['deviceState'] and sm.alive['deviceState'] and sm['deviceState'].started and
+    not selfdrive_state_available(sm) and not awaiting_first_selfdrive_state(sm)
+  ):
+    return True
+  if sm.seen['deviceState'] and sm.alive['deviceState'] and sm.valid['deviceState']:
+    if sm['deviceState'].thermalStatus >= log.DeviceState.ThermalStatus.overheated:
+      return True
+    if (
+      sm['deviceState'].started and
+      sm.seen['onroadEvents'] and sm.alive['onroadEvents'] and sm.valid['onroadEvents'] and
+      any(str(event.name) in SYSTEM_FAULT_EVENTS for event in sm['onroadEvents'])
+    ):
+      return True
+  if manager_failed(sm) or panda_failed(sm):
+    return True
+  if time.monotonic() - STARTED_AT < STARTUP_GRACE:
+    return False
+  return panda_disconnected(sm)
+
+
+def engaged_warning(sm) -> LedState | None:
+  if not selfdrive_state_available(sm):
+    return None
+
+  selfdrive_state = sm['selfdriveState']
+  if not selfdrive_state.active:
+    return None
+
+  dm_alert = selfdrive_state.alertType.split('/')[0] in {
+    'driverDistracted1', 'driverDistracted2', 'driverDistracted3',
+    'driverUnresponsive1', 'driverUnresponsive2', 'driverUnresponsive3', 'tooDistracted',
+  }
+  if selfdrive_state.state == log.SelfdriveState.OpenpilotState.softDisabling:
+    return RED
+  if dm_alert:
+    return RED if selfdrive_state.alertStatus == log.SelfdriveState.AlertStatus.critical else DM_WARNING
+  if str(selfdrive_state.alertSound) in WARNING_ALERT_SOUNDS:
+    return RED
+  return None
+
+
+def calibration_state(sm) -> LedState | None:
+  if not sm.seen['extrinsicsCalibration'] or not sm.alive['extrinsicsCalibration'] or not sm.valid['extrinsicsCalibration']:
+    return None
+  if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
+    return None
+  if sm['extrinsicsCalibration'].calStatus == log.ExtrinsicsCalibration.Status.invalid:
+    return RED
+  if sm['extrinsicsCalibration'].calStatus != log.ExtrinsicsCalibration.Status.calibrated:
+    return ORANGE
+  return None
+
+
+def blinking(state: LedState, now: float | None = None) -> LedState:
+  now = time.monotonic() if now is None else now
+  return state if int(now * 2) % 2 == 0 else OFF
+
+
+def camera_led_brightness(sm) -> int:
+  service = "wideRoadCameraState"
+  if not sm.seen[service] or not sm.alive[service] or not sm.valid[service]:
+    return BOOT_BRIGHTNESS
+
+  if not math.isfinite(sm[service].exposureValPercent):
+    return BOOT_BRIGHTNESS
+
+  # OS04C10's linear EV percentage includes its full exposure and gain range.
+  # Indoor/night scenes can be below 1%, so 100 - EV is not ambient light.
+  # Use exposure stops, keeping dim scenes at the minimum. Daylight endpoints
+  # are conservative initial tuning and need outdoor validation.
+  exposure = sm[service].exposureValPercent
+  if exposure < 0.:
+    return BOOT_BRIGHTNESS
+  dim_ev, bright_ev = .5, .02
+  light = math.log2(dim_ev / max(exposure, bright_ev)) / math.log2(dim_ev / bright_ev)
+  return round(interp(light, 0., 1., MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS))
+
+
+def pairing_led_channels(brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[float]] | None:
+  if not pairing_mode_active():
+    return None
+
+  now = time.monotonic()
+  confirmation = read_confirmation(now=now)
+  if confirmation:
+    phase = (now - confirmation['created']) % 2.
+    # A slow double pulse distinguishes physical confirmation from discovery.
+    state = LedState('pair_confirm', 255, 115, 0) if phase < .25 or .5 <= phase < .75 else OFF
+  else:
+    state = BLUE if int(now * 2) % 2 == 0 else OFF
+  state = max_brightness(state, brightness)
+  return camera_channels([[state.red, state.green, state.blue]] * 8)
+
+
+class OffroadLedSleep:
+  def __init__(self) -> None:
+    self.offroad_since: float | None = None
+
+  def update(self, sm, now: float, button_pressed: bool = False) -> bool:
+    # Require fresh ignition data, including when openpilot cannot start.
+    ignition_off = (
+      sm.seen['pandaStates'] and sm.alive['pandaStates'] and sm.valid['pandaStates'] and
+      len(sm['pandaStates']) > 0 and
+      all(p.pandaType != log.PandaState.PandaType.unknown and not p.ignitionLine and not p.ignitionCan
+          for p in sm['pandaStates'])
+    )
+    if not ignition_off:
+      self.offroad_since = None
+    elif self.offroad_since is None or button_pressed:
+      self.offroad_since = now
+    return self.offroad_since is not None and now - self.offroad_since >= OFFROAD_SLEEP_TIMEOUT
+
+
+def led_state(sm, now: float | None = None, setup_complete: bool = True, offroad_asleep: bool = False) -> LedState:
+  calibrating = calibration_state(sm)
+  if persistent_error(sm) or calibrating == RED:
+    return blinking(RED, now) if selfdrive_state_available(sm) and sm['selfdriveState'].active else RED
+
+  if offroad_asleep:
+    return OFF
+
+  if not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm.valid['deviceState'] or not sm['deviceState'].started:
+    return BLUE if setup_complete else SETUP_PENDING
+
+  warning = engaged_warning(sm)
+  if warning is not None:
+    return blinking(warning, now)
+
+  if not setup_complete:
+    return SETUP_PENDING
+
+  if calibrating is not None:
+    return calibrating
+
+  if selfdrive_state_available(sm) and sm['selfdriveState'].active:
+    return GREEN
+
+  return BLUE
+
+
+def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool = True,
+                           offroad_asleep: bool = False) -> dict[int, list[float]] | None:
+  state = led_state(sm, now, setup_complete, offroad_asleep)
+  if state in (RED, DM_WARNING, OFF):
+    state = max_brightness(state, brightness)
+    rgb = [state.red, state.green, state.blue]
+    return camera_channels([rgb] * 8)
+  if state == ORANGE:
+    return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
+  # Continue the kernel fade for one cycle while userspace starts. Driving
+  # statuses and Bluetooth pairing take priority immediately.
+  if (now - STARTED_AT < STARTUP_PERIOD and state == BLUE and
+      (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):
+    return startup_channels(now)
+  return None
+
+
+def live_led_channels(sm, request: dict) -> dict[int, list[float]] | None:
+  if not request or not sm.seen['pandaStates'] or not sm.alive['pandaStates'] or not sm.valid['pandaStates']:
+    return None
+  pandas = [p for p in sm['pandaStates'] if p.pandaType != log.PandaState.PandaType.unknown]
+  if not pandas or any(p.ignitionLine or p.ignitionCan for p in pandas):
+    return None
+  if persistent_error(sm) or calibration_state(sm) == RED:
+    return None
+  led = request.get('led')
+  if not isinstance(led, dict):
+    return None
+  try:
+    brightness = led['brightness']
+    color = led['color']
+    if type(brightness) is not int or not 0 <= brightness <= MAX_AUTO_BRIGHTNESS or len(color) != 7 or color[0] != '#':
+      return None
+    rgb = [round(int(color[i:i+2], 16) * brightness / 255) for i in (1, 3, 5)]
+    return camera_channels([rgb] * 8)
+  except (KeyError, TypeError, ValueError):
+    return None
+
+
+def main() -> None:
+  led = CameraLeds()
+
+  global Ratekeeper, log, messaging, pairing_mode_active
+  from openpilot.common.realtime import Ratekeeper as OpenpilotRatekeeper
+  from openpilot.system.asius.bluetoothd import pairing_mode_active as app_pairing_mode_active
+  from openpilot.system.asius.onboarding import setup_status
+  from openpilot.common.params import Params
+  params = Params()
+  try:
+    from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
+  except ModuleNotFoundError:
+    from cereal import log as cereal_log, messaging as cereal_messaging
+  Ratekeeper = OpenpilotRatekeeper
+  log = cereal_log
+  messaging = cereal_messaging
+  pairing_mode_active = app_pairing_mode_active
+
+  done = False
+
+  def sigterm_handler(signum, frame) -> None:
+    nonlocal done
+    done = True
+
+  signal.signal(signal.SIGINT, sigterm_handler)
+  signal.signal(signal.SIGTERM, sigterm_handler)
+
+  sm = messaging.SubMaster([
+    'deviceState',
+    'extrinsicsCalibration',
+    'managerState',
+    'onroadEvents',
+    'pandaStates',
+    'selfdriveState',
+    'wideRoadCameraState',
+  ], ignore_avg_freq=['managerState'])
+  rk = Ratekeeper(RUNTIME_HZ)
+  live_request = {}
+  next_live_read = 0.
+  sleep = OffroadLedSleep()
+  # Evdev gives each reader its own queue; buttond still handles Bluetooth actions.
+  button = DeviceButtons()
+
+  while not done:
+    sm.update(0)
+    now = time.monotonic()
+    button_pressed = any(event.action == ButtonAction.CANCEL for event in button.poll(now))
+    offroad_asleep = sleep.update(sm, now, button_pressed)
+    if time.monotonic() >= next_live_read:
+      live_request = live_lighting_state()
+      next_live_read = time.monotonic() + .1
+    brightness = BOOT_BRIGHTNESS if time.monotonic() - STARTED_AT < STARTUP_PERIOD else camera_led_brightness(sm)
+    pairing_channels = pairing_led_channels(brightness)
+    if pairing_channels is not None:
+      led.set_channels(pairing_channels)
+    else:
+      now = time.monotonic()
+      manual_channels = live_led_channels(sm, live_request)
+      if manual_channels is not None:
+        led.set_channels(manual_channels)
+        rk.keep_time()
+        continue
+      setup_complete = setup_status(params)["complete"]
+      animated_channels = automatic_led_channels(sm, brightness, now, setup_complete, offroad_asleep)
+      if animated_channels is not None:
+        led.set_channels(animated_channels)
+      else:
+        led.set(led_state(sm, now, setup_complete, offroad_asleep), brightness=brightness)
+    rk.keep_time()
+
+  button.close()
+  led.clear()
+
+
+if __name__ == "__main__":
+  main()

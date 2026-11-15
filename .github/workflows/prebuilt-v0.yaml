@@ -1,0 +1,80 @@
+name: Asius v0 prebuilt
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asius-v0-prebuilt
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'asiusai/openpilot' && github.ref == 'refs/heads/master'
+    runs-on: [asius-v0-prebuilt]
+    timeout-minutes: 60
+    env:
+      CI: "1"
+      INCLUDE_BIG_MODEL: "1"
+      PANDA_DEBUG_BUILD: "1"
+      SCONS_JOBS: "2"
+      PREBUILT_ARTIFACTS: ${{ runner.temp }}/prebuilt-artifacts
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+          lfs: true
+          persist-credentials: false
+      - name: Check build inputs
+        run: |
+          test -f /ASIUS
+          test "$(uname -m)" = aarch64
+          git lfs fsck
+          python3 -m unittest discover -s tools/release -p 'test_package_prebuilt.py'
+      - name: Build and package
+        run: tools/release/build_release.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openpilot-v0-chestnut-${{ github.sha }}
+          path: ${{ env.PREBUILT_ARTIFACTS }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openpilot-v0-chestnut-${{ github.sha }}
+          path: artifacts
+      - name: Publish master-ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SOURCE: ${{ github.sha }}
+        run: |
+          cd artifacts
+          sha256sum -c SHA256SUMS
+          mkdir ../prebuilt
+          tar -xJf openpilot-v0-chestnut.tar.xz -C ../prebuilt
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          report = json.loads(Path("build-report.json").read_text())
+          commit = subprocess.check_output(["git", "-C", "../prebuilt", "rev-parse", "HEAD"], text=True).strip()
+          assert report["source_commit"] == os.environ["EXPECTED_SOURCE"]
+          assert report["artifact_commit"] == commit
+          PY
+          cd ../prebuilt
+          test "$(git branch --show-current)" = master-ci
+          git fsck --full
+          gh auth setup-git
+          previous="$(git ls-remote origin refs/heads/master-ci | cut -f1)"
+          GIT_LFS_SKIP_PUSH=1 git push \
+            "--force-with-lease=refs/heads/master-ci:$previous" origin HEAD:refs/heads/master-ci

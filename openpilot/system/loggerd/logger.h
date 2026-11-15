@@ -26,7 +26,7 @@ public:
   inline void setExitSignal(int signal) { exit_signal = signal; }
 
 protected:
-  int part = -1, exit_signal = 0;
+  int part = -1, exit_signal = 0, counter_lock = -1;
   std::string route_path, route_name, segment_path, lock_file;
   kj::Array<capnp::word> init_data;
   std::unique_ptr<ZstdFileWriter> rlog, qlog;

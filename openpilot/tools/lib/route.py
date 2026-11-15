@@ -14,10 +14,10 @@ from openpilot.tools.lib.helpers import RE
 class FileName:
   RLOG = ("rlog.zst", "rlog.bz2")
   QLOG = ("qlog.zst", "qlog.bz2")
-  QCAMERA = ('qcamera.ts',)
-  FCAMERA = ('fcamera.hevc',)
-  ECAMERA = ('ecamera.hevc',)
-  DCAMERA = ('dcamera.hevc',)
+  QCAMERA = ('qcamera.mp4',)
+  FCAMERA = ('fcamera.mp4',)
+  ECAMERA = ('ecamera.mp4',)
+  DCAMERA = ('dcamera.mp4',)
   BOOTLOG = ('bootlog.zst', 'bootlog.bz2')
 
 
@@ -210,7 +210,7 @@ class RouteName:
     delim = "|" if slash == -1 or 0 <= pipe < slash else "/"
     self._dongle_id, self._time_str = self._name_str.split(delim)
 
-    assert len(self._dongle_id) == 16, self._name_str
+    assert len(self._dongle_id) in (16, 44), self._name_str
     assert len(self._time_str) == 20, self._name_str
     self._canonical_name = f"{self._dongle_id}|{self._time_str}"
 

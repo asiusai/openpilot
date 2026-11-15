@@ -7,10 +7,11 @@ import threading
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal.services import SERVICE_LIST
+from openpilot.common.hardware import ASIUS_HARDWARE
 from openpilot.common.utils import sudo_write
 from openpilot.common.realtime import config_realtime_process, Ratekeeper
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.gpio import gpiochip_get_ro_value_fd, gpioevent_data
+from openpilot.common.gpio import gpiochip_get_ro_value_fd, gpioevent_data, get_irqs_for_action
 
 from openpilot.system.sensord.sensors.i2c_sensor import Sensor
 from openpilot.system.sensord.sensors.lsm6ds3_accel import LSM6DS3_Accel
@@ -18,6 +19,8 @@ from openpilot.system.sensord.sensors.lsm6ds3_gyro import LSM6DS3_Gyro
 from openpilot.system.sensord.sensors.lsm6ds3_temp import LSM6DS3_Temp
 
 I2C_BUS_IMU = 1
+IMU_IRQ_GPIOCHIP = 4 if ASIUS_HARDWARE else 0
+IMU_IRQ_GPIO = 0 if ASIUS_HARDWARE else 84
 
 def interrupt_loop(sensors: list[tuple[Sensor, str, bool]], event) -> None:
   pm = messaging.PubMaster([service for sensor, service, interrupt in sensors if interrupt])
@@ -29,14 +32,19 @@ def interrupt_loop(sensors: list[tuple[Sensor, str, bool]], event) -> None:
   # Requesting both edges as the data ready pulse from the lsm6ds sensor is
   # very short (75us) and is mostly detected as falling edge instead of rising.
   # So if it is detected as rising the following falling edge is skipped.
-  fd = gpiochip_get_ro_value_fd("sensord", 0, 84)
+  fd = gpiochip_get_ro_value_fd("sensord", IMU_IRQ_GPIOCHIP, IMU_IRQ_GPIO)
 
   # Configure IRQ affinity
-  irq_path = "/proc/irq/336/smp_affinity_list"
-  if not os.path.exists(irq_path):
-    irq_path = "/proc/irq/335/smp_affinity_list"
-  if os.path.exists(irq_path):
-    sudo_write('2\n', irq_path)
+  if ASIUS_HARDWARE:
+    # Mainline allocates the GPIO IRQ when the event handle is requested.
+    for irq in get_irqs_for_action("sensord"):
+      sudo_write('2\n', f"/proc/irq/{irq}/smp_affinity_list")
+  else:
+    irq_path = "/proc/irq/336/smp_affinity_list"
+    if not os.path.exists(irq_path):
+      irq_path = "/proc/irq/335/smp_affinity_list"
+    if os.path.exists(irq_path):
+      sudo_write('2\n', irq_path)
 
   offset = time.time_ns() - time.monotonic_ns()
 
@@ -60,7 +68,9 @@ def interrupt_loop(sensors: list[tuple[Sensor, str, bool]], event) -> None:
       offset = cur_offset
       continue
 
-    ts = evd.timestamp - cur_offset
+    # Mainline GPIO event timestamps use CLOCK_MONOTONIC. The Qualcomm kernel
+    # uses CLOCK_REALTIME, which must be converted to the messaging clock.
+    ts = evd.timestamp if ASIUS_HARDWARE else evd.timestamp - cur_offset
     for sensor, service, interrupt in sensors:
       if interrupt:
         try:

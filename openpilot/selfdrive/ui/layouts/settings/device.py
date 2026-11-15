@@ -3,6 +3,7 @@ import math
 
 from openpilot.cereal import messaging, log
 from openpilot.common.basedir import BASEDIR
+from openpilot.common.hardware import BLUETOOTH_AVAILABLE
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.onroad.cabin_camera_dialog import CabinCameraDialog
@@ -17,6 +18,7 @@ from openpilot.system.ui.widgets.html_render import HtmlModal
 from openpilot.system.ui.widgets.list_view import text_item, button_item, dual_button_item
 from openpilot.system.ui.widgets.option_dialog import MultiOptionDialog
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+from openpilot.system.asius.bluetooth_ui import start_pairing
 
 # Description constants
 DESCRIPTIONS = {
@@ -46,6 +48,10 @@ class DeviceLayout(Widget):
                                         callback=lambda: gui_app.push_widget(PairingDialog()))
     self._pair_device_btn.set_visible(lambda: not ui_state.prime_state.is_paired())
 
+    bluetooth_btn = button_item(lambda: tr("Bluetooth Pairing"), lambda: tr("PAIR"),
+                                callback=lambda: gui_app.push_widget(alert_dialog(tr(start_pairing()))), enabled=ui_state.is_offroad)
+    bluetooth_btn.set_visible(BLUETOOTH_AVAILABLE)
+
     self._reset_calib_btn = button_item(lambda: tr("Reset Calibration"), lambda: tr("RESET"), lambda: tr(DESCRIPTIONS['reset_calibration']),
                                         callback=self._reset_calibration_prompt)
     self._reset_calib_btn.set_description_opened_callback(self._update_calib_description)
@@ -57,6 +63,7 @@ class DeviceLayout(Widget):
       text_item(lambda: tr("Dongle ID"), self._params.get("DongleId") or (lambda: tr("N/A"))),
       text_item(lambda: tr("Serial"), self._params.get("HardwareSerial") or (lambda: tr("N/A"))),
       self._pair_device_btn,
+      bluetooth_btn,
       button_item(lambda: tr("Cabin Camera"), lambda: tr("PREVIEW"), lambda: tr(DESCRIPTIONS['cabin_camera']),
                   callback=lambda: gui_app.push_widget(CabinCameraDialog()), enabled=ui_state.is_offroad),
       self._reset_calib_btn,

@@ -4,15 +4,17 @@ from functools import cache
 import threading
 
 from openpilot.cereal import messaging
+from openpilot.common.hardware import ASIUS_HARDWARE
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.utils import retry
 from openpilot.common.swaglog import cloudlog
 
 RATE = 10
-FFT_SAMPLES = 1600 # 100ms
 REFERENCE_SPL = 2e-5  # newtons/m^2
-SAMPLE_RATE = 16000
-SAMPLE_BUFFER = 800  # 50ms
+# Dragon exposes the Panda microphone at a fixed 48 kHz.
+SAMPLE_RATE = 48000 if ASIUS_HARDWARE else 16000
+FFT_SAMPLES = SAMPLE_RATE // 10  # 100ms
+SAMPLE_BUFFER = SAMPLE_RATE // 20  # 50ms
 
 
 def patch_sounddevice(sd):
