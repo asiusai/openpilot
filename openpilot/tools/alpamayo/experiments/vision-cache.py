@@ -15,7 +15,8 @@ from tinygrad.uop.ops import UOp
 class VisionCache:
   def __init__(self, model, capacity=48, verify=False, grouped=False, views=False, batch_encoder=None, group_limit=0):
     self.model, self.capacity = model, capacity
-    self.cache, self.encoders, self.stitchers = OrderedDict(), {}, {}
+    self.cache, self.encoders, self.stitchers = OrderedDict(), {}, OrderedDict()
+    self.stitcher_capacity = 8
     self.keys = ()
     self.hits = self.misses = 0
     self.original_encode = model.encode
@@ -94,11 +95,20 @@ class VisionCache:
       features.append(self.cache[key])
     while len(self.cache) > self.capacity:
       self.cache.popitem(last=False)
-    shape = (ids.shape, spans)
+    # Identical history images share a cache tensor. TinyJit requires distinct
+    # input buffers; retain repeated image positions inside the captured graph.
+    unique, indices, layout = [], {}, []
+    for key, feature in zip(self.keys, features, strict=True):
+      if key not in indices:
+        indices[key] = len(unique)
+        unique.append(feature)
+      layout.append(indices[key])
+    layout = tuple(layout)
+    shape = (ids.shape, spans, layout)
     if shape not in self.stitchers:
       def stitch(tokens, *images):
         embedding = self.model.weights['vlm.model.language_model.embed_tokens.weight'][tokens]
-        merged = Tensor.cat(*images, dim=0)
+        merged = Tensor.cat(*(images[i] for i in layout), dim=0)
         chunks, cursor, feature_cursor = [], 0, 0
         for begin, end in spans:
           chunks.extend((embedding[:, cursor:begin], merged[feature_cursor:feature_cursor+end-begin].unsqueeze(0)))
@@ -106,7 +116,10 @@ class VisionCache:
         chunks.append(embedding[:, cursor:])
         return Tensor.cat(*chunks, dim=1).realize()
       self.stitchers[shape] = TinyJit(stitch)
-    result = self.stitchers[shape](ids, *features)
+    self.stitchers.move_to_end(shape)
+    while len(self.stitchers) > self.stitcher_capacity:
+      self.stitchers.popitem(last=False)
+    result = self.stitchers[shape](ids, *unique)
     if self.verify:
       if self.reference_model is None:
         # Keep Harald's complete assembly of embeddings, but capture only one

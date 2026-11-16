@@ -1,6 +1,6 @@
 # Alpamayo six-camera investigation
 
-Saved on 2026-11-15 after stopping the experiments at the user's request.
+Initial benchmark saved on 2026-11-15. Recorded-route replay and calibration results added on 2026-11-16.
 The best measured throughput is **1.958 FPS** on Chestnut with RX 9060 at 144 W and automatic clocks.
 The target of four complete predictions per second remains unmet.
 
@@ -149,6 +149,291 @@ Initial diffusion noise must match exactly. Equal NumPy and PyTorch seeds do not
 The vocabulary file comes unchanged from NVlabs/alpamayo-recipes revision `622f9d23ff9e4961ba8c6aac71367776cdf6b016`.
 Its path is `recipes/alpamayo2edge_edgellm/host/coc_vocab.json`; SHA256 is `a31437be0e5b900d3028ec8fb809bcb86e767ef1e703f727b052675fca9f18b0`.
 See [NVIDIA-RECIPES-LICENSE](NVIDIA-RECIPES-LICENSE) for its Apache 2.0 license.
+
+## Replay a recorded route
+
+`replay-route.py` prepares synchronized inputs, runs inference, and renders camera footage with reasoning and future paths.
+It requires the normalized export manifest, camera timestamp logs, and native route rlogs.
+Run preparation with the openpilot checkout and its `opendbc_repo` on `PYTHONPATH`.
+The pinned Python environment supplies NumPy, SciPy, PyAV, Pillow, Cap'n Proto, and Zstandard.
+Rendering also requires FFmpeg and the DejaVu Sans font.
+
+Set `EXPORT`, `LOGS`, `OUTPUT`, `SAMPLES`, and `WORK` to explicit directories.
+Keep model assets, compilation caches, and source snapshots outside the recording filesystem.
+Set `RECORDING_UUID` to the required recording filesystem UUID.
+
+```bash
+"$PYTHON" "$EXP/replay-route.py" prepare --export "$EXPORT" --logs "$LOGS" \
+  --samples "$SAMPLES" --output "$OUTPUT" --hz 1 --recording-uuid "$RECORDING_UUID"
+"$PYTHON" "$EXP/replay-route.py" infer --output "$OUTPUT" --checkpoint "$MODEL" \
+  --tinygrad "$TINYGRAD" --noise "$REFERENCE/initial_noise.npy" --fp8-cache "$FP8_CACHE" \
+  --cache "$WORK/cache.db" --work "$WORK/inference" --recording-uuid "$RECORDING_UUID"
+"$PYTHON" "$EXP/replay-route.py" render --output "$OUTPUT" --recording-uuid "$RECORDING_UUID"
+```
+
+The cadence selects recorded timestamps; offline processing runs as fast as possible.
+Every prediction uses measured ego history and an exactly matched logged openpilot frame.
+Missing side views are omitted from the prompt when any required history frame exceeds 150 ms age.
+The runner retains both front views and supports two to six available cameras without synthetic black inputs.
+Each camera layout runs in a separate process to isolate captured GPU graphs and their cache buffers.
+Use `--group-prompts --batch-size 64 --collect-garbage` for offline trials with many navigation and image changes.
+These options group equal prompt lengths and bound each GPU process while retaining saved predictions and final chronological output.
+For long route replays, `--persistent-runtime --group-prompts --collect-garbage` retains one loaded model across all remaining layouts.
+It uses single-image vision graphs, eight cached stitching graphs, a shared 3,584-position KV allocation, and collection every 32 predictions.
+Prompt lengths, attention masks, image histories, precision, and diffusion steps remain unchanged.
+When saved controls exist, the runner verifies generated tokens and trajectory differences before processing new inputs.
+The persistent mode ignores process batch limits and avoids speculative warmup of unused graph variants.
+Record its control results and measured throughput separately from the saved benchmark configuration.
+Interrupted inference resumes from verified journal entries without repeating completed predictions.
+Repeated history images share features while retaining every image position in the prompt.
+Run `check-vision-cache.py` with the pinned tinygrad checkout on `PYTHONPATH` to check repeated-image graph replay.
+The manifest records omitted views, frame references, calibration, and source log checksums.
+
+The default instruction is `Follow the road.` It does not infer a destination from the recorded driving path.
+Images retain their complete field of view, receive the recorded orientation correction, and use aspect-preserving padding.
+This does not calibrate the camera lenses or side-camera extrinsics to NVIDIA's setup.
+The saved FP8/BF16 configuration uses three diffusion steps and the restricted reasoning vocabulary described above.
+
+Outputs include `predictions.jsonl`, `manifest.json`, `comparison.mp4`, previews, and comparison metrics.
+The video places Alpamayo and openpilot paths on the large wide-camera view, with five smaller camera views beside it.
+Navigation and non-nominal model messages appear below the footage. Display zoom defaults to 1.0.
+Captions remove an incomplete leading `<N` marker and display complete `<NOMINAL>` outputs as “No additional reasoning”.
+Raw generated text and token IDs remain unchanged. The source of malformed generations remains unresolved.
+The overlay uses recorded calibration, camera height, and measured ego motion to align each saved path with subsequent video frames.
+The blue path uses every frame-matched logged openpilot prediction, independently of Alpamayo's selected cadence.
+The gray path shows integrated recorded motion at each video frame. It is a motion estimate, not independent ground truth.
+The wide-camera projection follows openpilot's nominal intrinsics; measured lens distortion remains unavailable.
+Run `check-route-geometry.py` to verify axes, camera height, calibration, and motion compensation.
+Paths use forward/left/up coordinates; logged openpilot paths are converted from forward/right/down.
+Recorded motion is an integrated estimate, not independent ground truth. Future trajectory arrays never enter the model inputs.
+Metrics describe agreement with that estimate and do not establish driving safety.
+Source recordings remain unchanged.
+
+### Reconstructed navigation
+
+When live navigation is absent, `navigate` creates a separate replay from reviewed turn annotations and integrated travel distance.
+This is retrospective route-intent testing. Do not present it as recorded navigation or independent evaluation.
+The annotation JSON contains `route`, ordered `turns` with `start_s`, `end_s`, and `direction`, and `arrival_s`.
+Times are seconds from the exported capture start. Directions are `left` or `right`.
+
+```bash
+"$PYTHON" "$EXP/replay-route.py" navigate --source "$OUTPUT" --turns "$TURNS" \
+  --logs "$LOGS" --samples "$NAV_SAMPLES" --output "$NAV_OUTPUT" \
+  --trim-end-seconds 50 --recording-uuid "$RECORDING_UUID"
+```
+
+Run `infer` and `render` with `NAV_OUTPUT` afterward. Use separate inference work directories for different prepared inputs.
+Unchanged input arrays use hardlinks, so their source and destination directories must share a filesystem.
+The original replay, logs, footage, and predictions remain available for comparison.
+
+### Camera-input experiments
+
+`camera_profiles.py` compares road-camera crops at 45, 35, and 30 degrees, then adds wide and side-camera adjustments.
+The full crop profile targets 120-degree front-wide and cross views, 70-degree rear views, and a 30-degree telephoto view.
+`all_map` uses NVIDIA's measured F-theta camera intrinsics with explicitly nominal source lens models.
+It preserves each source optical axis; it cannot correct unknown camera mounting angles or positions.
+Reject target rays outside the recorded image rather than synthesize unseen content.
+
+Provide source geometry and target calibration JSON explicitly. Preserve their dataset revision, clip identifier, and calibration assumptions.
+Source `cameras` use numeric camera-ID keys with `prepared_size`, `content_box`, `focal_pixels`, `principal_point`, and `projection`.
+Source projection is `equidistant` or `pinhole`. Target `cameras` use NVIDIA camera names with `width`, `height`, `principal_point`, and `r2th` coefficients.
+Polynomial coefficients use ascending powers. Input geometry describes the prepared image, including padding and remote-stream resizing.
+
+```bash
+"$PYTHON" "$EXP/camera_profiles.py" extract --source "$NAV_OUTPUT" --output "$RAW_FRAMES"
+"$PYTHON" "$EXP/camera_profiles.py" prepare --source "$NAV_OUTPUT" --output "$CROP_OUTPUT" \
+  --samples "$CROP_SAMPLES" --profile tele30 --raw-frames "$RAW_FRAMES" \
+  --source-calibration "$SOURCE_GEOMETRY" --target-calibration "$NVIDIA_CALIBRATION" \
+  --recording-uuid "$RECORDING_UUID"
+```
+
+Native extraction preserves original decoded resolution and applies recorded display rotation exactly once.
+Use `--raw-frames` to crop before resizing, especially for the telephoto view.
+Omitting it explicitly tests crops of the already prepared images, which can lose angular detail.
+Use `--ticks` to prepare selected timestamps. Hold navigation, history, model settings, noise, and pixel budgets fixed across candidates.
+Choose tuning and held-out timestamps before inference, and report both sets separately.
+Model-input cropping does not change the displayed camera footage or the logged openpilot predictions.
+
+### Compare camera configurations
+
+`subset` removes other camera histories without resampling retained pixels or changing navigation and motion inputs.
+Both front cameras remain required. Use a new output directory and inference work directory.
+
+```bash
+"$PYTHON" "$EXP/camera_profiles.py" subset --source "$CROP_OUTPUT" --output "$TWO_OUTPUT" \
+  --samples "$TWO_SAMPLES" --views 1 6 --recording-uuid "$RECORDING_UUID"
+"$PYTHON" "$EXP/replay-route.py" infer --output "$TWO_OUTPUT" --checkpoint "$MODEL" \
+  --tinygrad "$TINYGRAD" --noise "$REFERENCE/initial_noise.npy" --fp8-cache "$FP8_CACHE" \
+  --cache "$WORK/cache.db" --work "$WORK/two-inference" --persistent-runtime \
+  --group-prompts --collect-garbage --recording-uuid "$RECORDING_UUID"
+"$PYTHON" "$EXP/route_compare.py" --output "$TWO_OUTPUT" --reference "$CROP_OUTPUT" \
+  --recording-uuid "$RECORDING_UUID"
+"$PYTHON" "$EXP/replay-route.py" render --output "$TWO_OUTPUT" --compare-output "$CROP_OUTPUT" \
+  --recording-uuid "$RECORDING_UUID"
+```
+
+The combined video shows magenta two-camera and orange surround-camera predictions, with both reasoning messages.
+To add front-side views, prepare another subset with `--views 0 1 2 6` and run fresh inference.
+Compare all three outputs with `route_compare.py --output FOUR_OUTPUT --reference SURROUND_OUTPUT --other TWO_OUTPUT`.
+Render with `replay-route.py render --output FOUR_OUTPUT --compare-output SURROUND_OUTPUT TWO_OUTPUT`.
+The four-camera path is green. Each configuration retains its own complete reasoning message and prediction cadence.
+Blue openpilot and gray recorded-motion paths retain their independent frame alignment.
+The surround run can omit missing views; its six-camera label identifies the configured setup.
+`camera-comparison.json` reports every configuration pair, turn windows, full-six-camera cases, and unchanged-input controls.
+Controls measure runtime variation when different configurations receive the same available views.
+These correlated route samples measure agreement with integrated motion, not closed-loop driving performance.
+
+For throughput comparisons, select identical chronological timestamps with complete camera histories in every configuration.
+Keep the runtime, image budgets, crops, navigation, noise, precision, and solver steps fixed.
+Report startup separately from measured execution. Do not compare a warm short replay with a full run containing process restarts.
+
+### Continuous openpilot big-model replay
+
+`replay_openpilot_big.py` runs the installed big-model artifact without starting vehicle publishers or controls.
+Use the openpilot checkout's Python environment and its pinned tinygrad version, separately from the Alpamayo environment.
+Prepare recorded inputs before reserving the GPU. Keep other GPU benchmarks separate from this replay.
+
+```bash
+export PYTHONPATH="$OPENPILOT/tinygrad_repo:$OPENPILOT/opendbc_repo:$OPENPILOT/msgq_repo:$OPENPILOT"
+"$OPENPILOT/.venv/bin/python" "$EXP/replay_openpilot_big.py" prepare \
+  --source "$FOUR_OUTPUT" --logs "$LOGS" --checkout "$OPENPILOT" \
+  --output "$BIG_OUTPUT" --recording-uuid "$RECORDING_UUID"
+DEV=USB+AMD:LLVM "$OPENPILOT/.venv/bin/python" "$EXP/replay_openpilot_big.py" infer \
+  --output "$BIG_OUTPUT" --recording-uuid "$RECORDING_UUID"
+```
+
+The replay checks artifact hashes, source files, imported modules, and the pinned tinygrad revision.
+It processes every paired native front frame with continuous recurrent state and recorded vehicle inputs.
+At least 20 seconds of recorded pre-roll precede the displayed interval.
+Original MP4 frames decode directly to NV12. Standard openpilot camera warps replace the Alpamayo input crops for this model.
+An independent CPU warp checks the first compiled GPU warp before predictions are accepted.
+The replay follows modeld's recorded-value policy, including invalid message flags, and reports their counts.
+Interrupted recurrent runs require a fresh output directory; individual predictions cannot resume without their recurrent state.
+
+Use a new video output directory containing the prepared Alpamayo manifest, predictions, and rendering assets.
+Add `--big-model-output "$BIG_OUTPUT"` to both `route_compare.py` and `replay-route.py render`.
+The big-model path appears red; the logged small-model path remains blue. Both update at the native camera cadence.
+Metrics require an exact matching native capture timestamp and account for the recorded calibration frame.
+Openpilot and Alpamayo use different model inputs. Camera-only controlled comparisons apply between the Alpamayo configurations.
+
+### Four predictions per recorded second
+
+Use `prepare --hz 4 --trim-end-seconds 50`, then add navigation and the selected camera profile.
+Every prepared timestamp requires a fresh prediction. The renderer does not interpolate model predictions to increase their cadence.
+Camera-layout groups run separately, with chronological inputs inside each group unless `--group-prompts` is selected.
+Persistent mode uses one process; optional prompt grouping still changes processing order, while the saved route remains chronological.
+This is an offline throughput measurement. Camera capture, live layout changes, and streaming deployment are outside its scope.
+
+`infer` writes `command-timing-*.json` into its work directory, including failed and resumed attempts.
+The measured wall time includes CPU input processing, model loading, graph compilation, and process restarts.
+Prior video decoding, input preparation, and rendering are excluded.
+Report new predictions divided by this wall time separately from the requested sampling cadence.
+Run `route_timing.py --output "$CROP_OUTPUT" --work "$INFERENCE_WORK" --recording-uuid "$RECORDING_UUID"` to save `timing-summary.json`.
+Benchmark reports also preserve startup time, model loading time, measured throughput after warmup, and individual model-stage timings.
+Do not add overlapping CPU and GPU stage times or equate reciprocal median latency with measured throughput.
+
+### GPS map in the video
+
+Before rendering, prepare a small map from recorded GPS:
+
+```bash
+"$PYTHON" "$EXP/route_map.py" --output "$CROP_OUTPUT" --logs "$LOGS" \
+  --tile-cache "$WORK/map-tiles" --recording-uuid "$RECORDING_UUID"
+"$PYTHON" "$EXP/replay-route.py" render --output "$CROP_OUTPUT" --recording-uuid "$RECORDING_UUID"
+```
+
+The MP4 contains the route overview, progress, and moving GPS marker. Navigation and unabridged model reasoning use separate caption cards.
+Recorded GPS aligns by publication timestamps. Gaps longer than one second remain unconnected, and stale markers are hidden.
+Preparation downloads and caches the needed OpenStreetMap tiles. The rendered video requires no network access.
+`post-caption.txt` contains the map credit and replay context. Include this text in the accompanying publication description.
+OSMF's video attribution guidelines permit description credits when the map is not the production's focus.
+The video does not show Alpamayo controlling the car or establish real-time operation.
+
+### Short calibration and lens studies
+
+`calibration_trials.py` prepares short, fixed turn windows before inference. It preserves navigation, model settings, and the recorded evaluation paths.
+
+```bash
+"$PYTHON" "$EXP/calibration_trials.py" --source "$BASELINE_OUTPUT" --output "$TRIALS" \
+  --logs "$LOGS" --raw-frames "$RAW_FRAMES" \
+  --source-geometry "$SOURCE_GEOMETRY" --target-geometry "$TARGET_GEOMETRY"
+"$PYTHON" "$EXP/replay-route.py" infer --output "$TRIALS" --work "$TRIAL_WORK" \
+  --checkpoint "$CHECKPOINT" --tinygrad "$TINYGRAD" --noise "$INITIAL_NOISE" \
+  --fp8-cache "$FP8_CACHE" --cache "$CACHE" --persistent-runtime --group-prompts --collect-garbage
+"$PYTHON" "$EXP/camera_profiles.py" evaluate --source "$TRIALS" --output "$TRIALS/comparison.json"
+```
+
+Use `--study lens-combinations` for the second set of narrower front-camera crops.
+That study treats the previous two turn windows as tuning data and reserves another turn window.
+These windows belong to one previously inspected drive. They do not provide independent driving validation.
+
+Image calibration uses recorded `rpyCalib` and `wideFromDeviceEuler` from before each historical frame.
+Only the two device cameras have this extrinsic calibration. Side-camera mounting angles remain unmeasured.
+Source lens projections remain nominal estimates. An identity-resampling control separates interpolation changes from image alignment changes.
+
+The vehicle-history candidates use causal CAN speed and learned steering ratio, offset, stiffness, and roll through openpilot's vehicle model.
+They replace planar history while retaining the measured vertical and tilt components.
+This is a bicycle-model approximation. Steering-controller torque parameters are not added to the language prompt.
+Future vehicle measurements appear only in evaluation. `check-calibration-trials.py` checks geometry, steering signs, and causal history.
+
+### Full-drive calibration follow-up
+
+Use `calibration_trials.py --study full-calibration` with the same preparation arguments to retain every valid baseline timestamp.
+It prepares four variants: front-image calibration, NVIDIA target intrinsics, learned vehicle history, and combined calibration/history.
+Run inference with the persistent command above. Each sample path is unique; timestamps repeat across variants.
+Separate predictions by sample path and `camera_profile` before timestamp-based route comparisons.
+Use `route_longitudinal.py --model NAME DIRECTORY` for each separated full-drive variant.
+The short-study `camera_profiles.py evaluate` command requires tuning and held-out splits and does not evaluate the full-drive manifest.
+
+The completed follow-up contains 1,001 predictions per variant at four selected timestamps per recorded second.
+Each variant retains the baseline's available views: 730 six-camera, 209 four-camera, two five-camera, and 60 two-camera samples.
+Navigation, side-camera pixels, model precision, solver steps, and evaluation references remain fixed.
+
+| Input variant | Mean XY trajectory error | Endpoint error | Equal-distance lateral error | Speed MAE |
+| --- | ---: | ---: | ---: | ---: |
+| Original 120 / 30-degree front geometry | 2.290 m | 6.042 m | 1.260 m | 2.766 km/h |
+| Calibrated front images | 1.793 m | 4.703 m | 0.626 m | 2.712 km/h |
+| Calibrated fronts with NVIDIA target intrinsics | 1.942 m | 5.183 m | 0.850 m | 2.692 km/h |
+| Learned vehicle history | 2.089 m | 5.460 m | 1.213 m | 2.310 km/h |
+| Calibrated images and learned history | **1.621 m** | **4.169 m** | **0.595 m** | **2.251 km/h** |
+
+Combined calibration/history improves mean trajectory error by 29.2%, lateral shape error by 52.7%, and speed MAE by 18.6%.
+It improves 811 prediction windows and regresses 190. Outside the 32 short-study windows, mean trajectory error changes from 2.249 to 1.566 m.
+The earlier reserved left-turn regression remains: 2.809 to 3.303 m. These results come from one previously inspected drive with retrospective navigation.
+Slowing results are mixed: unmatched predictions decrease from 69 to 64 windows, but missed recorded slowing increases from 132 to 135.
+These overlapping windows are not independent braking events. Recorded motion is an estimate, not independent ground truth.
+
+All 128 overlapping short-study inputs match exactly, as do their generated token sequences.
+Of these trajectories, 127 match exactly. One learned-history trajectory differs by 0.018 m mean point distance.
+The combined run produced 4,004 predictions in 2,577 seconds, including loading and compilation: 1.554 predictions per second.
+Input preparation and video rendering are excluded. This mixed-variant run is not a separate steady-throughput benchmark for each variant.
+Existing rendered videos retain the previous predictions until explicitly regenerated.
+
+The earlier 110 / 20-degree crop improved short tests but regressed full-drive mean error from 2.290 to 2.726 m.
+It remains rejected. Combined calibration/history retains the nominal 120 / 30-degree geometry for further offline validation.
+See [the aggregate result record](results/route-calibration-20261116.json) for metrics, checks, and evidence hashes.
+
+For a selected custom lens configuration, use `camera_profiles.py prepare --profile-json "$PROFILE_JSON"`.
+The JSON contains a `name` and camera-ID-to-operation `operations` object.
+Numeric operations specify nominal horizontal FOV in degrees; `"nvidia"` selects the recorded target-intrinsics mapping.
+Unchanged cameras retain their original prepared pixels. Changed cameras should use `--raw-frames` to crop before resizing.
+
+### Speed, slowing, and path shape
+
+```bash
+"$PYTHON" "$EXP/route_longitudinal.py" --source "$BASELINE_OUTPUT" --logs "$LOGS" \
+  --model alpamayo6 "$BASELINE_OUTPUT" --big-model "$BIG_OUTPUT" --trials "$TRIALS" \
+  --output "$REPORT_OUTPUT/longitudinal.json" --recording-uuid "$RECORDING_UUID"
+```
+
+The logged small model is included automatically. Repeat `--model NAME DIRECTORY` for other Alpamayo runs.
+All models use the same position-derived speed estimator. Native velocity heads and executed braking commands are not compared here.
+Recorded CAN speed supplies the speed reference. Future CAN samples never enter model inputs.
+Slowing means acceleration below -0.5 m/s² for at least 0.5 seconds after smoothing.
+Report brake-pedal observations separately. Overlapping prediction windows are not independent braking events.
+
+Equal-distance path errors compare geometry over the shared traveled distance, with coverage reported explicitly.
+They supplement the original time-aligned trajectory error. Faster predictions alone do not establish better or safer driving.
 
 ## Archived experiments and shadow helpers
 

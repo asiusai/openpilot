@@ -30,10 +30,14 @@ def same_image(a, b):
 
 class FastInputs:
   def __init__(self, checkpoint, pixel_scale=1.0, cache_resize=False, narrow_crop=1.0,
-               wide_equidistant_focal=0.0, wide_target_fov=120.0, camera_profile='openpilot', camera_pixel_scales=None):
+                wide_equidistant_focal=0.0, wide_target_fov=120.0, camera_profile='openpilot', camera_pixel_scales=None,
+                allow_missing_cameras=False):
     if camera_profile not in ('openpilot', 'nvidia'):
       raise ValueError('Unsupported camera profile')
     self.camera_profile = camera_profile
+    self.allow_missing_cameras = allow_missing_cameras
+    if allow_missing_cameras and camera_profile != 'nvidia':
+      raise ValueError('Missing-camera replay uses the NVIDIA camera IDs and budgets')
     if not 0 < pixel_scale <= 1:
       raise ValueError('pixel_scale must be in (0, 1]')
     if not 0 < narrow_crop <= 1:
@@ -85,7 +89,10 @@ class FastInputs:
 
   def prepare(self, data):
     if self.camera_profile == 'nvidia':
-      validate_sample(data)
+      if self.allow_missing_cameras:
+        validate_available_sample(data)
+      else:
+        validate_sample(data)
       order = canonical_frame_order(data['camera_indices'], data['absolute_timestamps'])
       if not torch.equal(order, torch.arange(len(order))):
         data = dict(data, **{key: data[key][order] for key in ('image_frames', 'camera_indices', 'absolute_timestamps')})
@@ -139,3 +146,27 @@ class FastInputs:
       self.position_cache[key] = reference.Cosmos3EdgeVisionEmbeddings.resize_positional_embeddings(
         self.position_weight, tokens['image_grid_thw'], 2).float().numpy()
     return ids.numpy(), positions.numpy(), int(delta.item()), self.position_cache[key]
+
+
+def validate_available_sample(data):
+  """Omit whole unavailable views, retaining the normal history for present views."""
+  cameras, times, images = (data[key] for key in ('camera_indices', 'absolute_timestamps', 'image_frames'))
+  if cameras.dtype != torch.int64 or cameras.ndim != 1 or cameras.device.type != 'cpu':
+    raise ValueError('Camera IDs must be a CPU int64 vector')
+  ids, counts = cameras.unique(return_counts=True)
+  available = dict(zip(ids.tolist(), counts.tolist(), strict=True))
+  if not {1, 6}.issubset(available) or any(reference.CAMERA_FRAME_COUNTS.get(c) != n for c, n in available.items()):
+    raise ValueError('Both front views and complete histories for each included view are required')
+  n = cameras.numel()
+  if (images.dtype != torch.uint8 or images.device.type != 'cpu' or images.ndim != 5
+      or images.shape[:3] != (n, 1, 3) or not images.is_contiguous() or min(images.shape[-2:]) <= 0):
+    raise ValueError('Images must be contiguous CPU uint8 [N,1,3,H,W]')
+  if times.dtype != torch.int64 or times.shape not in ((n,), (n, 1)) or times.device.type != 'cpu':
+    raise ValueError('Image timestamps must be CPU int64 microseconds')
+  for key, shape in (('ego_history_xyz', (1, 20, 3)), ('ego_history_rot', (1, 20, 3, 3))):
+    value = data[key]
+    if value.shape != shape or not value.is_floating_point() or not torch.isfinite(value).all():
+      raise ValueError('Invalid measured ego history')
+  nav = data.get('nav_text')
+  if not isinstance(nav, (list, tuple)) or len(nav) != 1 or not isinstance(nav[0], str) or not nav[0].strip():
+    raise ValueError('A nonempty navigation instruction is required')

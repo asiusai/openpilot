@@ -184,6 +184,7 @@ class EdgeModel:
 
   def prefill(self, x, cos, sin, max_tokens):
     capacity = ((x.shape[1] + max_tokens + 255) // 256) * 256
+    capacity = max(capacity, getattr(self, 'minimum_cache_capacity', 0))
     if self.cache is None or self.cache[0].shape[3] != capacity:
       self.cache = [Tensor.zeros(2, 1, 8, capacity, 128, dtype=self.dtype).realize()
                     for _ in range(self.config['vlm_config']['text_config']['num_hidden_layers'])]

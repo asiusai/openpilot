@@ -1,6 +1,7 @@
 """Transfer BF16 inputs and reuse immutable vision positions across snapshots."""
 import numpy as np
 import torch
+import weakref
 from tinygrad import Device, Tensor, TinyJit, dtypes
 from benchmark import NativeInputs
 from inputs import rotary
@@ -97,7 +98,8 @@ class CompactInputs(NativeInputs):
         self.pixel_storage = Tensor.empty(self.cpu[0].shape, dtype=dtypes.bfloat16).realize()
         self.pixel_destinations = tuple(self.rows(self.pixel_storage,a,b) for a,b,_ in self.batches)
       if missing not in self.selective_jits:
-        self.selective_jits[missing] = TinyJit(lambda *xs: self.upload_selected(missing, xs))
+        owner = weakref.proxy(self)
+        self.selective_jits[missing] = TinyJit(lambda *xs: owner.upload_selected(missing, xs))
       self.uploaded_pixel_bytes = sum((self.batches[i][1]-self.batches[i][0])*self.cpu[0].shape[1]*self.cpu[0].dtype.itemsize
                                       for i in missing)
       sources = [self.rows(self.cpu[0],self.batches[i][0],self.batches[i][1]) for i in missing]
@@ -134,7 +136,8 @@ class CompactInputs(NativeInputs):
     # Other miss patterns use the ordinary on-demand path.
     for missing in patterns:
       if missing not in self.selective_jits:
-        self.selective_jits[missing] = TinyJit(lambda *xs, selected=missing: self.upload_selected(selected, xs))
+        owner = weakref.proxy(self)
+        self.selective_jits[missing] = TinyJit(lambda *xs, selected=missing: owner.upload_selected(selected, xs))
       jit = self.selective_jits[missing]
       sources = [self.rows(self.cpu[0],self.batches[i][0],self.batches[i][1]) for i in missing]
       while jit.cnt < 2:

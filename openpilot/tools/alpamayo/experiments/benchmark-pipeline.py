@@ -22,9 +22,15 @@ def local_module(name):
 
 
 def main():
+  process_started = time.perf_counter()
   parser = argparse.ArgumentParser()
   parser.add_argument('--checkpoint', required=True)
   parser.add_argument('--camera-profile', choices=('openpilot','nvidia'), default='openpilot')
+  parser.add_argument('--allow-missing-cameras', action='store_true', help='Omit unavailable side views; require both front histories')
+  parser.add_argument('--collect-garbage', action='store_true', help='Collect retired input graphs between offline predictions')
+  parser.add_argument('--gc-interval', type=int, default=1)
+  parser.add_argument('--minimum-cache-capacity', type=int, default=0, help='Keep one KV allocation across camera layouts')
+  parser.add_argument('--validation-reference', type=Path, help='Replay saved controls before new predictions; reject changed tokens or paths')
   parser.add_argument('--samples', nargs='+', required=True)
   parser.add_argument('--mmap-inputs', action='store_true', help='Read frozen RGB arrays through copy-on-write file mappings')
   parser.add_argument('--warmup', type=int, default=2)
@@ -97,10 +103,11 @@ def main():
   parser.add_argument('--wide-target-fov', type=float, default=120.0)
   parser.add_argument('--output', type=Path, required=True)
   args = parser.parse_args()
+  assert args.gc_interval > 0 and args.minimum_cache_capacity >= 0
   sources = {}
   source_dir = args.output.parent / (args.output.stem+'-sources')
   source_dir.mkdir(parents=True, exist_ok=True)
-  for path in Path(__file__).parent.glob('*.py'):
+  for path in [*Path(__file__).parent.glob('*.py'), Path(__file__).parent.parent/'model.py']:
     content = path.read_bytes()
     (source_dir/path.name).write_bytes(content)
     sources[path.name] = hashlib.sha256(content).hexdigest()
@@ -119,7 +126,8 @@ def main():
                                                  cache_resize=args.cache_resize, narrow_crop=args.narrow_crop,
                                                  wide_equidistant_focal=args.wide_equidistant_focal,
                                                    wide_target_fov=args.wide_target_fov, camera_profile=args.camera_profile,
-                                                   camera_pixel_scales=args.camera_pixel_scales)
+                                                    camera_pixel_scales=args.camera_pixel_scales,
+                                                    allow_missing_cameras=args.allow_missing_cameras)
   assert not args.vision_cache or args.vision_batch == 1
   assert not args.byte_pixels or args.compact_inputs
   assert not args.selective_pixels or (args.compact_inputs and args.vision_cache)
@@ -128,6 +136,7 @@ def main():
                              byte_pixels=args.byte_pixels)
   started = time.perf_counter()
   model = benchmark.EdgeModel(args.checkpoint, precision='fp8')
+  model.minimum_cache_capacity = args.minimum_cache_capacity
   precision_restoration = None
   assert args.bf16_vision_layers >= 0
   if args.bf16_vision_layers or args.bf16_expert_projections:
@@ -255,7 +264,10 @@ def main():
               'vision_views': args.vision_views,
              'verify_vision_cache': args.verify_vision_cache,
              'verify_vision_warmup': args.verify_vision_warmup,
-              'pixel_scale': args.pixel_scale, 'camera_pixel_scales': args.camera_pixel_scales, 'pixel_bounds': adapter.pixel_bounds,
+               'pixel_scale': args.pixel_scale, 'camera_pixel_scales': args.camera_pixel_scales, 'pixel_bounds': adapter.pixel_bounds,
+               'allow_missing_cameras': args.allow_missing_cameras,
+                'collect_garbage': args.collect_garbage,
+                'gc_interval': args.gc_interval, 'minimum_cache_capacity': args.minimum_cache_capacity,
               'narrow_crop': args.narrow_crop,
               'wide_equidistant_focal': args.wide_equidistant_focal,
               'wide_target_fov': args.wide_target_fov,
@@ -269,6 +281,10 @@ def main():
     report['settings'] = {key:value for key,value in vars(settings).items() if key != 'initial_noise'}
     report['initial_noise_sha256'] = hashlib.sha256(settings.initial_noise.tobytes()).hexdigest()
   inputs = None
+  validation = json.loads(args.validation_reference.read_text()) if args.validation_reference else {}
+  validation_count = len(validation)
+  paths = list(validation) + [args.samples[i % len(args.samples)] for i in range(args.warmup+args.runs)]
+  report['validation'] = []
   progress_path = args.output.with_suffix('.jsonl')
   progress_path.write_text('')
   def prepare_input(path):
@@ -288,15 +304,22 @@ def main():
   # A separate tokenizer avoids concurrent Rust tokenizer mutation during decode.
   decode_tokenizer = copy.deepcopy(adapter.tokenizer) if args.pipeline_inputs else None
   pool = ThreadPoolExecutor(max_workers=1) if args.pipeline_inputs else None
-  pending = pool.submit(prepare_input, args.samples[0]) if pool else None
+  pending = pool.submit(prepare_input, paths[0]) if pool else None
   measured_begin = None
   if args.profile_host:
     import cProfile
     host_profile = cProfile.Profile()
-  for iteration in range(args.warmup+args.runs):
+  for index, path in enumerate(paths):
+    iteration = index-validation_count
+    iteration_started = time.perf_counter()
+    if args.collect_garbage and index % args.gc_interval == 0:
+      # Selective upload graphs capture their input owner. Collect retired
+      # cycles before the next GPU allocation, including prompt shape changes.
+      import gc
+      gc.collect()
+    collected = time.perf_counter()
     if profiler:
       profiler.reset()
-    path = args.samples[iteration % len(args.samples)]
     if iteration == args.warmup:
       measured_begin = time.perf_counter()
     if args.profile_host and iteration >= args.warmup:
@@ -304,7 +327,7 @@ def main():
     data, config, tokenizer, prepared, packed, arrays, keys, start, loaded, cpu_ready = pending.result() if pending else prepare_input(path)
     if pool:
       tokenizer = decode_tokenizer
-      next_path = args.samples[(iteration+1) % len(args.samples)] if iteration+1 < args.warmup+args.runs else None
+      next_path = paths[index+1] if index+1 < len(paths) else None
       if args.late_inputs:
         pending = None
         def queue_next(path=next_path):
@@ -335,19 +358,24 @@ def main():
           old._buffer().as_memoryview(allow_zero_copy=True)[:] = new._buffer().as_memoryview(allow_zero_copy=True)
       else:
         inputs = fresh
+      del fresh
     if args.selective_pixels:
       inputs.selective_cache = vision_cache
-      if args.warmup_graphs and iteration < args.warmup:
+      if args.warmup_graphs and iteration < args.warmup and len(inputs.batches) in (10, 22):
         inputs.warmup_selections()
     staged = time.perf_counter()
     prediction = runner(model, settings, config, tokenizer, prepared, packed, seed=0, inputs=inputs)
     done = time.perf_counter()
+    if index == 0:
+      report['startup_through_first_prediction_s'] = done-process_started
     if args.profile_host and iteration >= args.warmup:
       host_profile.disable()
     entry = {'sample': path, 'load_ms': (loaded-start)*1000,
                'preprocess_ms': ((cpu_ready-loaded)+(preprocessed-selected))*1000,
                'prepared_queue_ms': (selected-cpu_ready)*1000,
-                'cpu_buffers_ms': (staged-preprocessed)*1000, 'pipeline_ms': (done-start)*1000, 'prediction': prediction}
+                 'cpu_buffers_ms': (staged-preprocessed)*1000, 'pipeline_ms': (done-start)*1000,
+                  'service_ms': (done-iteration_started)*1000, 'prediction': prediction}
+    entry['gc_ms'] = (collected-iteration_started)*1000
     entry['allocated_bytes_by_device'] = dict(GlobalCounters.mem_used_per_device)
     if vision_cache:
       entry['vision_reference_checks'] = vision_cache.reference_checks
@@ -362,6 +390,18 @@ def main():
       entry['gpu_metrics'] = local_module('gpu-metrics').read(Device[Device.DEFAULT])
     if profiler:
       entry['device_profile'] = profiler.report()
+    if iteration < 0:
+      expected = validation[path]['prediction']
+      difference = np.abs(np.asarray(prediction['xyz'])-np.asarray(expected['xyz']))
+      check = {'sample': path, 'max_xyz_difference_m': float(difference.max()),
+               'mean_xyz_difference_m': float(difference.mean()),
+               'tokens_equal': prediction['generated_token_ids'] == expected['generated_token_ids']}
+      report['validation'].append(check)
+      args.output.with_suffix('.validation.json').write_text(json.dumps(report['validation'], indent=2)+'\n')
+      if not check['tokens_equal'] or difference.max() > 0.15 or difference.mean() > 0.025:
+        raise ValueError(f'Persistent replay changed a saved control: {check}')
+      print('Validated saved prediction: '+json.dumps(check), flush=True)
+      continue
     report['warmup' if iteration < args.warmup else 'runs'].append(entry)
     with progress_path.open('a') as stream:
       stream.write(json.dumps({'iteration':iteration,'warmup':iteration < args.warmup, **entry})+'\n')
@@ -377,7 +417,8 @@ def main():
                         'inverse_mean_latency_fps': 1000/float(np.mean(totals)),
                         'predictions_over_250ms': sum(t > 250 for t in totals), 'measured_predictions': len(totals),
                         'all_inputs_strictly_advance': all(b > a for a,b in zip(timestamps,timestamps[1:])),
-                         'profiling_enabled': args.profile_kernels or args.profile_host}
+                          'profiling_enabled': args.profile_kernels or args.profile_host}
+  report['process_elapsed_s'] = time.perf_counter()-process_started
   if args.profile_host:
     host_profile.dump_stats(str(args.output.with_suffix('.pstats')))
   args.output.write_text(json.dumps(report, indent=2)+'\n')

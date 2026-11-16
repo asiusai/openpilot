@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-16",
+  "experiment": "Full-drive front-camera calibration and causal learned vehicle history",
+  "sampling_hz": 4,
+  "samples_per_variant": 1001,
+  "new_predictions": 4004,
+  "available_camera_counts": {"6": 730, "4": 209, "5": 2, "2": 60},
+  "nominal_front_fov_degrees": {"wide": 120, "narrow": 30},
+  "horizon_seconds": 6.4,
+  "baseline": {
+    "mean_xy_error_m": 2.2901808190411566,
+    "endpoint_xy_error_m": 6.041786315220024,
+    "equal_distance_lateral_error_m": 1.2595421,
+    "speed_mae_km_h": 2.7655020,
+    "slowing_windows": {"matched": 145, "predicted_only": 69, "recorded_only": 132}
+  },
+  "variants": {
+    "calibrated_fronts": {
+      "mean_xy_error_m": 1.7926336115486767,
+      "endpoint_xy_error_m": 4.70334366567841,
+      "equal_distance_lateral_error_m": 0.6257159,
+      "speed_mae_km_h": 2.7115554,
+      "improved_windows": 793,
+      "regressed_windows": 208
+    },
+    "calibrated_nvidia_fronts": {
+      "mean_xy_error_m": 1.9417155388923437,
+      "endpoint_xy_error_m": 5.183259689691208,
+      "equal_distance_lateral_error_m": 0.8500692,
+      "speed_mae_km_h": 2.6919801,
+      "improved_windows": 784,
+      "regressed_windows": 217
+    },
+    "learned_vehicle_history": {
+      "mean_xy_error_m": 2.0886281368157524,
+      "endpoint_xy_error_m": 5.460047569419877,
+      "equal_distance_lateral_error_m": 1.2132988,
+      "speed_mae_km_h": 2.3096099,
+      "improved_windows": 611,
+      "regressed_windows": 390
+    },
+    "calibrated_vehicle_history": {
+      "mean_xy_error_m": 1.6205847389346733,
+      "endpoint_xy_error_m": 4.168515779539726,
+      "equal_distance_lateral_error_m": 0.5953240,
+      "speed_mae_km_h": 2.2508256,
+      "improved_windows": 811,
+      "regressed_windows": 190,
+      "slowing_windows": {"matched": 142, "predicted_only": 64, "recorded_only": 135}
+    }
+  },
+  "checks": {
+    "unchanged_side_pixels": true,
+    "unchanged_navigation_and_timestamps": true,
+    "causal_image_calibration": true,
+    "causal_vehicle_history": true,
+    "identical_short_study_inputs": 128,
+    "identical_short_study_token_sequences": 128,
+    "identical_short_study_trajectories": 127,
+    "remaining_short_trajectory_mean_point_difference_m": 0.01784368374
+  },
+  "execution": {
+    "gpu": "RX 9060 gfx1200 through Chestnut USB",
+    "configured_gpu_limit_w": 144,
+    "precision": "FP8 E4M3 with selected BF16 layers and BF16 attention/KV",
+    "diffusion_steps": 3,
+    "persistent_processes": 1,
+    "wall_seconds": 2577.084962571971,
+    "predictions_per_second": 1.5536934397397382,
+    "boundary": "Inference wrapper, including loading and compilation; excludes image preparation and rendering",
+    "limit": "Mixed variants with prompt grouping and possible shared image reuse; not independent steady-throughput measurements"
+  },
+  "evidence_sha256": {
+    "comparison.json": "cd6691f30dccaeee5cb9d6fc28b0cd5e925e0ea99d1b7309754183de8b3a3790",
+    "input-verification.json": "b14212ec96ea2f40cd97ae5a0c68cbaec4881503c06f488be870a65df92bec45",
+    "timing-summary.json": "65a8a12e7b849922e824bd0b3c81bfb2cff82a6979101531263443ce840b7262",
+    "short-output-consistency.json": "28c72053bfc770da85c81a269688cb12d94f36b09292210a9adfc65c6b198776",
+    "baseline_manifest": "33d0a2e3f4925cc57d70c3996685c65b2f35cb3ac6c0235918b6ac85fa5d3bbd",
+    "prepared_manifest": "6111a597a4b0625dc2df6d60e409dc6d19f1d42d69e4ee73a703e5f8807df281"
+  },
+  "limitations": [
+    "One previously inspected drive with retrospective navigation and nominal source lens geometry",
+    "Integrated recorded motion is an estimate, not independent ground truth",
+    "A reserved short left-turn window regresses from 2.809 to 3.303 m",
+    "Slowing counts describe overlapping windows, not independent events or executed braking",
+    "Faster predicted speed alone does not establish correct or safe driving",
+    "No closed-loop deployment or new video render"
+  ]
+}
