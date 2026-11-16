@@ -644,7 +644,7 @@ def _active_wifi_connection() -> str:
   output = _nmcli(["-t", "--escape", "yes", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])
   for line in output.splitlines():
     fields = _nmcli_fields(line)
-    if len(fields) >= 3 and fields[1] == "802-11-wireless":
+    if len(fields) >= 3 and fields[1] == "802-11-wireless" and fields[2] == "wlan0":
       return fields[0]
   return ""
 
@@ -662,7 +662,7 @@ def _nmcli_wifi_networks() -> list[dict[str, str | int | bool]]:
   saved = _saved_wifi_connections()
   operation = _network_operation_snapshot()
   networks_by_ssid: dict[str, dict[str, str | int | bool]] = {}
-  output = _nmcli(["-t", "--escape", "yes", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "device", "wifi", "list"])
+  output = _nmcli(["-t", "--escape", "yes", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", "wlan0"])
   for line in output.splitlines():
     fields = _nmcli_fields(line)
     if len(fields) < 4:
@@ -691,7 +691,8 @@ def _nmcli_wifi_state() -> dict[str, str | int | None]:
   output = _nmcli(["-t", "--escape", "yes", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status"])
   for line in output.splitlines():
     fields = _nmcli_fields(line)
-    if len(fields) >= 4 and fields[1] == "wifi":
+    # VamOS can expose a separate AP while wlan0 remains the upstream station.
+    if len(fields) >= 4 and fields[0] == "wlan0" and fields[1] == "wifi":
       status = 2 if fields[2].startswith("connected") else 1 if fields[2] == "connecting" else 0
       connection = (fields[3].removeprefix("openpilot connection ") or None) if status else None
       if isinstance(connection, str) and connection.lower() in ("--", "none"):
