@@ -45,6 +45,45 @@ def test_version_includes_stable_fork_identity(monkeypatch):
                                    'termsVersion': methods.terms_version, 'trainingVersion': methods.training_version}
 
 
+@pytest.mark.parametrize('ap_first', [False, True])
+@pytest.mark.parametrize('station_connected', [False, True])
+def test_wifi_state_uses_station_when_hotspot_is_present(monkeypatch, ap_first, station_connected):
+  station = 'wlan0:wifi:connected:openpilot connection Office' if station_connected else 'wlan0:wifi:disconnected:'
+  # An externally managed AP can be listed before the station interface.
+  ap = 'asiusap0:wifi:connected (externally):Asius-Live-test'
+  rows = [ap, station] if ap_first else [station, ap]
+  monkeypatch.setattr(methods, '_nmcli', lambda args: '\n'.join(rows))
+  expected = {'ssid': 'Office', 'status': 2} if station_connected else {'ssid': None, 'status': 0}
+  assert methods._nmcli_wifi_state() == expected
+
+
+@pytest.mark.parametrize('station_connected', [False, True])
+def test_metering_uses_station_connection_with_concurrent_hotspot(monkeypatch, station_connected):
+  def nmcli(args):
+    if args[-2:] == ['show', '--active']:
+      rows = ['Camera hotspot:802-11-wireless:asiusap0']
+      if station_connected:
+        rows.append('openpilot connection Office:802-11-wireless:wlan0')
+      return '\n'.join(rows)
+    assert args[-1] == 'openpilot connection Office'
+    return 'yes'
+
+  monkeypatch.setattr(methods, '_nmcli', nmcli)
+  assert methods._connection_metered() == (1 if station_connected else 0)
+
+
+def test_wifi_scan_uses_station_interface(monkeypatch):
+  monkeypatch.setattr(methods, '_saved_wifi_connections', lambda: {'Office'})
+
+  def nmcli(args):
+    if args[-2:] == ['ifname', 'wlan0']:
+      return 'yes:Office:75:WPA2'
+    return 'yes:Asius-Live-test:100:WPA2'
+
+  monkeypatch.setattr(methods, '_nmcli', nmcli)
+  assert [(network['ssid'], network['connected']) for network in methods._nmcli_wifi_networks()] == [('Office', True)]
+
+
 @pytest.mark.parametrize('transport', ['web', 'bluetooth'])
 @pytest.mark.parametrize('ignition', [False, True, None])
 def test_sound_preview_checks_ignition_on_each_transport(tmp_path, monkeypatch, transport, ignition):
