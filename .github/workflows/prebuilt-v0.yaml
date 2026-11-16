@@ -1,6 +1,8 @@
 name: Asius v0 prebuilt
 
 on:
+  push:
+    branches: [release]
   workflow_dispatch:
 
 permissions:
@@ -12,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.repository == 'asiusai/openpilot' && github.ref == 'refs/heads/master'
+    if: github.repository == 'asiusai/openpilot' && github.ref == 'refs/heads/release'
     runs-on: [asius-v0-prebuilt]
     timeout-minutes: 60
     env:
@@ -20,7 +22,6 @@ jobs:
       INCLUDE_BIG_MODEL: "1"
       PANDA_DEBUG_BUILD: "1"
       SCONS_JOBS: "2"
-      PREBUILT_ARTIFACTS: ${{ runner.temp }}/prebuilt-artifacts
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -35,11 +36,13 @@ jobs:
           git lfs fsck
           python3 -m unittest discover -s tools/release -p 'test_package_prebuilt.py'
       - name: Build and package
+        env:
+          PREBUILT_ARTIFACTS: ${{ runner.temp }}/prebuilt-artifacts
         run: tools/release/build_release.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: openpilot-v0-chestnut-${{ github.sha }}
-          path: ${{ env.PREBUILT_ARTIFACTS }}/*
+          path: ${{ runner.temp }}/prebuilt-artifacts/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -54,11 +57,16 @@ jobs:
         with:
           name: openpilot-v0-chestnut-${{ github.sha }}
           path: artifacts
-      - name: Publish master-ci
+      - name: Publish release-ci
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SOURCE: ${{ github.sha }}
         run: |
+          current="$(gh api repos/asiusai/openpilot/git/ref/heads/release --jq .object.sha)"
+          if test "$current" != "$EXPECTED_SOURCE"; then
+            echo "Release source advanced; this older build will not replace release-ci."
+            exit 0
+          fi
           cd artifacts
           sha256sum -c SHA256SUMS
           mkdir ../prebuilt
@@ -72,9 +80,9 @@ jobs:
           assert report["artifact_commit"] == commit
           PY
           cd ../prebuilt
-          test "$(git branch --show-current)" = master-ci
+          test "$(git branch --show-current)" = release-ci
           git fsck --full
           gh auth setup-git
-          previous="$(git ls-remote origin refs/heads/master-ci | cut -f1)"
+          previous="$(git ls-remote origin refs/heads/release-ci | cut -f1)"
           GIT_LFS_SKIP_PUSH=1 git push \
-            "--force-with-lease=refs/heads/master-ci:$previous" origin HEAD:refs/heads/master-ci
+            "--force-with-lease=refs/heads/release-ci:$previous" origin HEAD:refs/heads/release-ci
