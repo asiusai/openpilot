@@ -326,12 +326,104 @@ class TestRouteEngine(unittest.TestCase):
     sent = lambda: sum(call.args[0] == 'navRoute' for call in self.pm.send.call_args_list)  # noqa: E731
     self.sm.frame = 1
     with patch('requests.get', return_value=self.response), patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
-      self.engine.update()  # the route to a new destination is sent once
+      self.engine.update()  # clear any previous route before the request, then send the new route
       self.engine.update()
-    self.assertEqual(sent(), 1)
+    self.assertEqual(sent(), 2)
     self.sm.frame = ROUTE_RESEND_PERIOD  # and again periodically, for a mapsd that started after it
     self.engine.update()
-    self.assertEqual(sent(), 2)
+    self.assertEqual(sent(), 3)
+
+  def test_reroute_invalidates_subscribers_before_waiting_for_http(self):
+    self.load_route()
+    self.engine.send_instruction()
+    self.assertTrue(self.last_message('navInstruction').valid)
+
+    def response(*args, **kwargs):
+      self.assertFalse(self.last_message('navInstruction').valid)
+      self.assertEqual(len(self.last_message('navRoute').navRoute.coordinates), 0)
+      return self.response
+
+    with patch('requests.get', side_effect=response), patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
+      self.engine.calculate_route((0.002, 0))
+    self.engine.send_instruction()
+    self.assertTrue(self.last_message('navInstruction').valid)
+
+  def test_replaced_cancelled_or_disabled_destination_invalidates_guidance(self):
+    self.load_route()
+    original = self.values['NavDestination']
+    for destination in (None, {**original, 'requestId': 'another-selection'}):
+      self.values['NavDestination'] = destination
+      self.engine.send_instruction()
+      self.assertFalse(self.last_message('navInstruction').valid)
+    self.values['NavDestination'] = original
+    self.engine.params.get_bool.return_value = False
+    self.engine.send_instruction()
+    self.assertFalse(self.last_message('navInstruction').valid)
+
+  def test_turn_progression_publishes_the_next_maneuver_without_negative_distance(self):
+    steps = self.response.json.return_value['routes'][0]['legs'][0]['steps']
+    # An eastbound approach turns north, then arrives. No banner is supplied for arrival.
+    steps[1]['geometry']['coordinates'] = [[0.001, 0], [0.001, 0.001]]
+    steps[1]['maneuver'] = {'type': 'turn', 'modifier': 'left', 'instruction': 'Turn left'}
+    steps.append({'geometry': {'coordinates': [[0.001, 0.001], [0.001, 0.001]]}, 'distance': 0, 'duration': 0,
+                  'bannerInstructions': [], 'maneuver': {'type': 'arrive', 'instruction': 'You have arrived'}})
+    self.load_route()
+    self.engine.nav_destination = (0.001, 0.001)
+    self.engine.last_position = (0.001, 0.0002)  # 22 m beyond a right-angle turn
+    self.engine.send_instruction()
+    instruction = self.last_message('navInstruction').navInstruction
+    self.assertEqual(self.engine.step_idx, 1)
+    self.assertEqual(instruction.maneuverType, 'arrive')
+    self.assertEqual(instruction.maneuverPrimaryText, 'You have arrived')
+    self.assertGreater(instruction.maneuverDistance, 0)
+    self.assertLess(instruction.distanceRemaining, 100)
+    self.engine.last_position = (0.001, 0.00115)
+    self.engine.send_instruction()
+    self.assertEqual(self.engine.step_idx, 2)
+    self.assertEqual(self.last_message('navInstruction').navInstruction.maneuverType, 'arrive')
+    self.assertEqual(self.last_message('navInstruction').navInstruction.maneuverDistance, 0)
+    self.engine.last_position = (0.001, 0.0014)
+    self.engine.send_instruction()
+    self.assertFalse(self.last_message('navInstruction').valid)
+    self.assertNotIn('NavDestination', self.values)
+
+  def test_invalid_estimates_never_publish_valid_guidance(self):
+    for value in (float('nan'), float('inf'), -1, '100', True):
+      with self.subTest(value=value):
+        self.response.json.return_value['routes'][0]['legs'][0]['steps'][0]['duration'] = value
+        self.load_route()
+        self.assertIsNone(self.engine.route)
+        self.engine.send_instruction()
+        self.assertFalse(self.last_message('navInstruction').valid)
+
+  def test_computation_error_clears_the_previous_instruction(self):
+    self.load_route()
+    self.engine.send_instruction()
+    with patch.object(self.engine, 'recompute_route', side_effect=ValueError('invalid response')):
+      self.engine.update()
+    self.assertFalse(self.last_message('navInstruction').valid)
+    self.assertEqual(len(self.last_message('navRoute').navRoute.coordinates), 0)
+
+  def test_request_rechecks_gps_age_before_publishing_guidance(self):
+    def response(*args, **kwargs):
+      self.sm.recv_time = dict.fromkeys(self.sm.valid, time.monotonic() - 3)
+      return self.response
+
+    with patch('requests.get', side_effect=response), patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
+      self.engine.update()
+    self.assertIsNotNone(self.engine.route)
+    self.assertFalse(self.last_message('navInstruction').valid)
+
+  def test_wrong_way_reroutes_from_the_current_position(self):
+    self.load_route()
+    self.engine.last_position, self.engine.last_bearing, self.engine.last_speed = (0.0007, 0), 270, 8
+    with patch('openpilot.selfdrive.navigation.navd.request_json', return_value=self.response.json.return_value) as request:
+      for _ in range(REROUTE_COUNTER_MIN):
+        self.engine.recompute_route(gps_ok=True)
+        request.assert_not_called()
+      self.engine.recompute_route(gps_ok=True)
+    self.assertIn('/0.0007,0;0.002,0', request.call_args.args[0])
+    self.assertEqual(request.call_args.args[1]['bearings'], '270,90;')
 
   def test_maneuvers_and_rerouting(self):
     self.load_route()
@@ -383,6 +475,7 @@ class TestRouteEngine(unittest.TestCase):
       self.sm.recv_time = dict.fromkeys(self.sm.valid, time.monotonic() - 3)  # or stale
       self.engine.update()
       self.assertEqual(self.engine.last_position, (2, 2))
+      self.assertFalse(self.last_message('navInstruction').valid)
 
 
 class TestTiles(unittest.TestCase):

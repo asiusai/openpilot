@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "checkpoint_config_sha256": "784fc20f67294d7a4805e860033a88339cd81b7c0f9bd99d1dc95564fe159dc7",
+  "checkpoint_weight_index_sha256": "0e922b870e530b52a3b92c7b8d3abd3e7eb14714c310b32069bf1ab8e59c1390",
+  "fp8_index_sha256": "c4366c5b7e92b4cd5e2d826881b99b9a80361ec171ebd4a50d51b0f718dffa3e",
+  "fp8_weights_sha256": "dd6b716a2ade3646eff71d874bef676926422d9aca39358fd3f8b4fe75755052",
+  "fp8_bytes": 2929010944,
+  "prefill_calibration_sha256": "a8522fab229a3e19574f5faafbe84a51479ce9a5b81f09458e237a911393ffbb",
+  "checkpoint_shards": {
+    "00000.safetensors": "d13c1a427218baf7b7d365098c0f5496c0e5e6a6bf662836b8eebbe7eb7cfe7f",
+    "00001.safetensors": "cfe424a7320ce729cd927b5ceaab4323a62443b50f461a2f5c0dd0b10634e0b5"
+  }
+}

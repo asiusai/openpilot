@@ -66,6 +66,9 @@ def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
+def alpamayo_shadow(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and os.environ.get('ALPAMAYO_SHADOW') == '1'
+
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("NavigationEnabled")
 
@@ -104,6 +107,7 @@ procs = [
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
+  PythonProcess("alpamayod", "openpilot.selfdrive.alpamayo.shadowd", alpamayo_shadow),
   PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
 

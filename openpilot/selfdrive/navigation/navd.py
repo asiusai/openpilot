@@ -57,6 +57,8 @@ class RouteEngine:
     self.step_idx = None
     self.route = None
     self.route_geometry = None  # an (n, 2) array of (longitude, latitude) per step
+    self.route_data = None
+    self.route_last_known = False
 
     self.recompute_hold = 0
     self.reroute_counter = 0
@@ -94,6 +96,8 @@ class RouteEngine:
       self.send_instruction()
     except Exception:
       cloudlog.exception("navd.failed_to_compute")
+      self.clear_route()
+      self.send_instruction()
     # mapsd dedupes repeats, so a periodic resend is how a restarted mapsd gets the route
     if self.route is not route or self.sm.frame % ROUTE_RESEND_PERIOD == 0:
       self.send_route()
@@ -109,13 +113,22 @@ class RouteEngine:
       return
     new_destination = (destination['longitude'], destination['latitude'])
     changed = destination != self.destination_request
+    revalidate = gps_ok and self.route_last_known
+    if not changed and revalidate:
+      # Preserve a selected preview if fresh GPS still matches its path and direction.
+      assert self.route_geometry is not None and self.route_data is not None
+      closest = min(self.route_geometry, key=lambda path: along_path(path, self.last_position)[1])
+      if not self.route_deviation(closest):
+        self.accept_route(destination, self.route_data, resume=True)
+        self.reroute_counter = 0
+        return
 
     # Don't recompute when GPS drifts in tunnels
-    if not changed and self.step_idx is not None and (not gps_ok or not self.started):
+    if not changed and self.step_idx is not None and (not gps_ok or (not self.started and not revalidate)):
       return
 
     self.recompute_hold -= 1
-    if changed or (self.should_recompute() and self.recompute_hold <= 0):
+    if changed or revalidate or (self.should_recompute() and self.recompute_hold <= 0):
       self.recompute_hold = RECOMPUTE_HOLD
       self.calculate_route(new_destination)
       self.reroute_counter = 0
@@ -130,6 +143,9 @@ class RouteEngine:
     selected = PreviewStore(self.params).take_selected(request) if changed else None
     self.destination_request = request
     self.clear_route()
+    # Clear subscribers before a direct or app-forwarded request can block.
+    self.send_instruction()
+    self.send_route()
     self.nav_destination = destination
     if selected is not None:
       try:
@@ -192,33 +208,63 @@ class RouteEngine:
     geometry = [np.array(step['geometry']['coordinates'], dtype=np.float64).reshape((-1, 2)) for step in steps]
     if not steps or any(len(path) < 2 or not np.isfinite(path).all() for path in geometry):
       raise ValueError("Invalid route geometry")
+    if any(type(step.get(key)) not in (int, float) or not np.isfinite(step[key]) or step[key] < 0
+           for step in steps for key in ('distance', 'duration')):
+      raise ValueError("Invalid route estimates")
     origin = {'longitude': self.last_position[0], 'latitude': self.last_position[1]}
     if self.store.publish(request, route=route, origin=origin, last_known=self.last_known):
       self.route = steps
       self.route_geometry = geometry
+      self.route_data = route
+      self.route_last_known = self.last_known
       self.step_idx = min(range(len(geometry)), key=lambda i: along_path(geometry[i], self.last_position)[1]) if resume else 0
 
   def send_instruction(self):
     msg = messaging.new_message('navInstruction', valid=True)
 
-    if self.step_idx is None or not self.started or self.last_known:
+    if (self.step_idx is None or not self.started or self.last_known or self.route_last_known or not self.params.get_bool("NavigationEnabled") or
+        self.params.get("NavDestination") != self.destination_request):
       msg.valid = False
       self.pm.send('navInstruction', msg)
       return
 
     assert self.route is not None and self.route_geometry is not None and self.last_position is not None
-    step = self.route[self.step_idx]
-    along_geometry, _ = along_path(self.route_geometry[self.step_idx], self.last_position)
-    distance_to_maneuver_along_geometry = step['distance'] - along_geometry
-
-    # Banner instructions are for the following maneuver step, don't use empty last step
-    banner_step = step
-    if not len(banner_step['bannerInstructions']) and self.step_idx == len(self.route) - 1:
-      banner_step = self.route[max(self.step_idx - 1, 0)]
+    # Advance before publication: consumers must not receive a turn already passed.
+    while True:
+      step = self.route[self.step_idx]
+      along_geometry, lateral = along_path(self.route_geometry[self.step_idx], self.last_position)
+      distance_to_maneuver_along_geometry = step['distance'] - along_geometry
+      on_next_step = False
+      if self.step_idx + 1 < len(self.route):
+        next_along, next_lateral = along_path(self.route_geometry[self.step_idx + 1], self.last_position)
+        on_next_step = next_along > MANEUVER_TRANSITION_THRESHOLD and next_lateral < min(lateral, REROUTE_DISTANCE)
+      if distance_to_maneuver_along_geometry >= -MANEUVER_TRANSITION_THRESHOLD and not on_next_step:
+        break
+      if self.step_idx + 1 < len(self.route):
+        self.step_idx += 1
+        self.recompute_hold = 0
+      else:
+        # Retain the route near arrival, and clear it when driving away.
+        if np.linalg.norm(local_meters(self.last_position, self.nav_destination)) > REROUTE_DISTANCE:
+          cloudlog.warning("Destination reached")
+          self.params.remove("NavDestination")
+          self.clear_route()
+          msg.valid = False
+          self.pm.send('navInstruction', msg)
+          return
+        break
 
     # Current instruction
-    msg.navInstruction.maneuverDistance = distance_to_maneuver_along_geometry
-    set_banner(msg.navInstruction, banner_step['bannerInstructions'], distance_to_maneuver_along_geometry)
+    msg.navInstruction.maneuverDistance = max(0., distance_to_maneuver_along_geometry)
+    banners = step.get('bannerInstructions') or []
+    if banners:
+      set_banner(msg.navInstruction, banners, distance_to_maneuver_along_geometry)
+    else:
+      # Banners describe the next step. At arrival use its own maneuver, never the previous turn.
+      maneuver = self.route[min(self.step_idx + 1, len(self.route) - 1)].get('maneuver', {})
+      msg.navInstruction.maneuverPrimaryText = maneuver.get('instruction') or ''
+      msg.navInstruction.maneuverType = maneuver.get('type') or ''
+      msg.navInstruction.maneuverModifier = maneuver.get('modifier') or ''
 
     # Total remaining distance and time: the rest of this step, then every step after it
     remaining = max(0., min(1., 1.0 - along_geometry / max(step['distance'], 1)))
@@ -227,19 +273,6 @@ class RouteEngine:
     msg.navInstruction.timeRemaining = step['duration'] * remaining + sum(s['duration'] for s in future)
 
     self.pm.send('navInstruction', msg)
-
-    # Transition to next route segment
-    if distance_to_maneuver_along_geometry < -MANEUVER_TRANSITION_THRESHOLD:
-      if self.step_idx + 1 < len(self.route):
-        self.step_idx += 1
-        self.recompute_hold = 0
-      else:
-        cloudlog.warning("Destination reached")
-
-        # Clear route if driving away from destination
-        if np.linalg.norm(local_meters(self.last_position, self.nav_destination)) > REROUTE_DISTANCE:
-          self.params.remove("NavDestination")
-          self.clear_route()
 
   def send_route(self):
     coords = np.concatenate(self.route_geometry) if self.route_geometry is not None else np.empty((0, 2))
@@ -250,8 +283,20 @@ class RouteEngine:
   def clear_route(self):
     self.route = None
     self.route_geometry = None
+    self.route_data = None
+    self.route_last_known = False
     self.step_idx = None
     self.nav_destination = None
+
+  def route_deviation(self, path):
+    wrong_way = False
+    if self.last_bearing is not None and self.last_speed >= 3 and len(path) > 1:
+      local = local_meters(path, self.last_position)
+      index, _, _ = nearest_segment(local[:-1], local[1:], np.zeros(2))
+      direction = local[index + 1] - local[index]
+      heading = np.degrees(np.arctan2(direction[0], direction[1]))
+      wrong_way = abs((self.last_bearing - heading + 180) % 360 - 180) > 100
+    return wrong_way or along_path(path, self.last_position)[1] > REROUTE_DISTANCE
 
   def should_recompute(self):
     if self.step_idx is None:
@@ -262,15 +307,7 @@ class RouteEngine:
     if self.step_idx == len(self.route) - 1:
       return False
 
-    path = self.route_geometry[self.step_idx]
-    wrong_way = False
-    if self.last_bearing is not None and self.last_speed >= 3 and len(path) > 1:
-      local = local_meters(path, self.last_position)
-      index, _, _ = nearest_segment(local[:-1], local[1:], np.zeros(2))
-      direction = local[index + 1] - local[index]
-      heading = np.degrees(np.arctan2(direction[0], direction[1]))
-      wrong_way = abs((self.last_bearing - heading + 180) % 360 - 180) > 100
-    if wrong_way or along_path(path, self.last_position)[1] > REROUTE_DISTANCE:
+    if self.route_deviation(self.route_geometry[self.step_idx]):
       self.reroute_counter += 1
     else:
       self.reroute_counter = 0

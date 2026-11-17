@@ -87,6 +87,7 @@ def test_device_keeps_route_ownership_with_offline_http(store, monkeypatch):
   monkeypatch.delenv("MAPBOX_TOKEN", raising=False)
   engine = RouteEngine(MagicMock(), MagicMock(), store.params, RouteStore(store.params))
   engine.last_position = (24.7, 59.4)
+  engine.last_known = False  # This test starts with a live fix, then exercises sustained route deviation.
   route = {"geometry": {"coordinates": [[24.7, 59.4], [24.75, 59.45], [24.8, 59.5]]}, "distance": 100, "duration": 10,
            "legs": [{"steps": [{"geometry": {"coordinates": [[24.7, 59.4], [24.75, 59.45]]}, "distance": 50, "duration": 5},
                                {"geometry": {"coordinates": [[24.75, 59.45], [24.8, 59.5]]}, "distance": 50, "duration": 5}]}]}
