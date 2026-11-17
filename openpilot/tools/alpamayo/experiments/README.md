@@ -1,5 +1,12 @@
 # Alpamayo six-camera investigation
 
+This experimental source archive is preserved on `alpamayo-experiments-20261117`.
+It includes rejected candidates and diagnostic scripts, not a supported runtime.
+The `alpamayo` branch contains the maintained integration relative to `master`.
+Training and distillation work stopped on 2026-11-17. Their source remains archived.
+Generated weights, recordings, compiler caches, and local measurement artifacts remain outside this source snapshot.
+The measurements below describe their dated workloads. They do not establish 10 Hz device operation.
+
 Initial benchmark saved on 2026-11-15. Recorded-route replay and calibration results added on 2026-11-16.
 The best measured throughput is **1.958 FPS** on Chestnut with RX 9060 at 144 W and automatic clocks.
 The target of four complete predictions per second remains unmet.
@@ -283,6 +290,13 @@ The surround run can omit missing views; its six-camera label identifies the con
 Controls measure runtime variation when different configurations receive the same available views.
 These correlated route samples measure agreement with integrated motion, not closed-loop driving performance.
 
+For calibrated comparisons, subset the separated `calibrated_vehicle_history` output and run fresh inference on the subset.
+Retained front images, navigation, and learned motion history must match the surround run exactly.
+Pass only these updated outputs to the renderer to replace older Alpamayo overlays.
+The legend identifies calibration plus learned history and displays each run's measured Hz and mean trajectory error.
+Measure throughput again using the updated inputs. Set each timing result's `profile` to the measured manifest's `camera_input_profile`.
+The renderer rejects mismatched profile labels. Small and big openpilot overlays retain their independent recorded timestamps.
+
 For throughput comparisons, select identical chronological timestamps with complete camera histories in every configuration.
 Keep the runtime, image budgets, crops, navigation, noise, precision, and solver steps fixed.
 Report startup separately from measured execution. Do not compare a warm short replay with a full run containing process restarts.
@@ -407,7 +421,7 @@ All 128 overlapping short-study inputs match exactly, as do their generated toke
 Of these trajectories, 127 match exactly. One learned-history trajectory differs by 0.018 m mean point distance.
 The combined run produced 4,004 predictions in 2,577 seconds, including loading and compilation: 1.554 predictions per second.
 Input preparation and video rendering are excluded. This mixed-variant run is not a separate steady-throughput benchmark for each variant.
-Existing rendered videos retain the previous predictions until explicitly regenerated.
+Earlier rendered videos retain their previous predictions. Render updated comparisons into a separate output directory.
 
 The earlier 110 / 20-degree crop improved short tests but regressed full-drive mean error from 2.290 to 2.726 m.
 It remains rejected. Combined calibration/history retains the nominal 120 / 30-degree geometry for further offline validation.

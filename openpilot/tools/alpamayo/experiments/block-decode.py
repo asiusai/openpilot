@@ -11,6 +11,14 @@ from tinygrad import Tensor, TinyJit
 from tinygrad.uop.ops import UOp
 from benchmark import timed, UnicycleAccelCurvatureCourseActionSpace
 from runtime import download
+from contextlib import contextmanager
+
+
+@contextmanager
+def enqueue_timed(name,times,sync):
+  start=time.perf_counter()
+  yield
+  times[name]=(time.perf_counter()-start)*1000
 
 
 class BlockDecoder:
@@ -42,20 +50,25 @@ class BlockDecoder:
     noise = getattr(args, 'initial_noise', None)
     if noise is None:
       noise = rng.standard_normal((1,64,2))
+    coarse=getattr(args,'coarse_timing',False)
+    measure=enqueue_timed if coarse else timed
+    if coarse: model.synchronize()
     started = time.perf_counter()
-    with timed('input_upload', times, model.synchronize):
+    with measure('input_upload', times, model.synchronize):
       pixels, vpos, ids, cos, sin, dc, ds, ac, ass, actions = inputs.upload(noise)
-    with timed('vision', times, model.synchronize):
+    with measure('vision', times, model.synchronize):
       embedding = model.encode(pixels, vpos, ids, inputs.batches, inputs.spans)
-    with timed('prefill', times, model.synchronize):
-      logits = model.prefill(embedding, cos, sin, args.max_tokens)
-    with timed('reasoning', times, model.synchronize):
-      generated = self.generate(model, args, config, tokenizer, logits, dc, ds, ids.shape[1])
+    with measure('prefill', times, model.synchronize):
+      prompt = prepared.get('actual_prompt_length',ids.shape[1])
+      logits = (model.padded_prefill(embedding,cos,sin,args.max_tokens,prompt) if 'actual_prompt_length' in prepared
+                else model.prefill(embedding, cos, sin, args.max_tokens))
+    with measure('reasoning', times, model.synchronize):
+      generated = self.generate(model, args, config, tokenizer, logits, dc, ds, prompt)
     self.before_diffusion()
-    with timed('diffusion', times, model.synchronize):
-      actions = model.trajectory(actions, ac, ass, ids.shape[1]+len(generated), args.diffusion_steps, len(generated))
+    with measure('diffusion', times, model.synchronize):
+      actions = model.trajectory(actions, ac, ass, prompt+len(generated), args.diffusion_steps, len(generated))
       action_array = self.readback(actions)
-    with timed('trajectory_decode', times, model.synchronize):
+    with measure('trajectory_decode', times, model.synchronize):
       action_config = dict(config.expert_config.action_space_cfg)
       action_config.pop('_target_')
       action_space = UnicycleAccelCurvatureCourseActionSpace(**action_config)
@@ -63,8 +76,11 @@ class BlockDecoder:
         xyz, rot = action_space.action_to_traj(torch.from_numpy(action_array.copy()), prepared['ego_history_xyz'][:,0], prepared['ego_history_rot'][:,0])
       assert xyz.shape == (1,64,3) and rot.shape == (1,64,3,3)
       assert torch.isfinite(xyz).all() and torch.isfinite(rot).all()
+    if coarse: model.synchronize()
     times['total'] = (time.perf_counter()-started)*1000
-    return {'timings_ms': times, 'generated_tokens': len(generated), 'generated_token_ids': generated,
+    return {'timings_ms': times, 'prompt_tokens':prompt,'prefill_tokens':ids.shape[1],
+             'stage_timing_kind':'host enqueue and waits; only total guarantees GPU completion' if coarse else 'synchronized stages',
+            'generated_tokens': len(generated), 'generated_token_ids': generated,
             'reasoning': tokenizer.decode(generated),
             'xyz': xyz.numpy().tolist(), 'rot': rot.numpy().tolist()}
 

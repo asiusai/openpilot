@@ -31,7 +31,8 @@ def same_image(a, b):
 class FastInputs:
   def __init__(self, checkpoint, pixel_scale=1.0, cache_resize=False, narrow_crop=1.0,
                 wide_equidistant_focal=0.0, wide_target_fov=120.0, camera_profile='openpilot', camera_pixel_scales=None,
-                allow_missing_cameras=False):
+                  allow_missing_cameras=False, history_pixel_scale=1.0, history_feature_scale=1.0, direct_byte_inputs=False,
+                  front_history_indices=None):
     if camera_profile not in ('openpilot', 'nvidia'):
       raise ValueError('Unsupported camera profile')
     self.camera_profile = camera_profile
@@ -40,6 +41,17 @@ class FastInputs:
       raise ValueError('Missing-camera replay uses the NVIDIA camera IDs and budgets')
     if not 0 < pixel_scale <= 1:
       raise ValueError('pixel_scale must be in (0, 1]')
+    if not 0 < history_pixel_scale <= 1:
+      raise ValueError('history_pixel_scale must be in (0, 1]')
+    self.history_pixel_scale = history_pixel_scale
+    if not 0 < history_feature_scale <= 1 or (history_feature_scale < 1 and history_pixel_scale < 1):
+      raise ValueError('Feature compression requires unchanged image pixel budgets and a scale in (0, 1]')
+    self.history_feature_scale = history_feature_scale
+    self.front_history_indices = None if front_history_indices is None else tuple(front_history_indices)
+    if self.front_history_indices is not None and (not self.front_history_indices or
+        tuple(sorted(set(self.front_history_indices))) != self.front_history_indices or
+        self.front_history_indices[0] < 0 or self.front_history_indices[-1] != 4):
+      raise ValueError('Front history indices must be a sorted subset of 0..4 including the current frame')
     if not 0 < narrow_crop <= 1:
       raise ValueError('narrow_crop must be in (0, 1]')
     self.narrow_crop = narrow_crop
@@ -86,6 +98,18 @@ class FastInputs:
         return result
       self.tokenize = FunctionType(original.__code__, dict(original.__globals__, resize=cached_resize), original.__name__, original.__defaults__)
       self.tokenize.__kwdefaults__ = original.__kwdefaults__
+    if direct_byte_inputs:
+      image = self.processor.image_processor
+      if (list(image.image_mean) != [.5]*3 or list(image.image_std) != [.5]*3 or
+          image.rescale_factor != 1/255 or image.temporal_patch_size != 1):
+        raise ValueError('Direct byte inputs require the exact checkpoint pixel palette')
+      def retain_bytes(patches, image_processor):
+        if patches.dtype != torch.uint8 or patches.ndim != 2 or patches.shape[1] != 3*image_processor.patch_size**2:
+          raise ValueError('Expected unnormalized uint8 image patches')
+        return patches
+      original = self.tokenize
+      self.tokenize = FunctionType(original.__code__, dict(original.__globals__, _normalize_patches=retain_bytes), original.__name__, original.__defaults__)
+      self.tokenize.__kwdefaults__ = original.__kwdefaults__
 
   def prepare(self, data):
     if self.camera_profile == 'nvidia':
@@ -101,15 +125,26 @@ class FastInputs:
       assert data['camera_indices'].tolist() == [1]*5 + [6]*5
       assert data['image_frames'].dtype == torch.uint8 and data['image_frames'].shape[:3] == (10, 1, 3)
     assert data['ego_history_xyz'].shape == (1, 20, 3) and data['ego_history_rot'].shape == (1, 20, 3, 3)
+    if self.front_history_indices is not None:
+      if data['camera_indices'].tolist() != [1]*5+[6]*5:
+        raise ValueError('Temporal thinning currently requires exactly the two complete front-camera histories')
+      selected = torch.tensor([i+base for base in (0,5) for i in self.front_history_indices])
+      data = dict(data, **{key:data[key][selected] for key in ('image_frames','camera_indices','absolute_timestamps')})
     canonical = dict(data, camera_pixel_bounds=self.pixel_bounds)
     self.resize_keys = deque(zip(data['camera_indices'].tolist(), data['absolute_timestamps'].tolist(), strict=True))
     messages = reference.build_conversation(canonical)
+    latest = {}
+    for camera, timestamp in zip(data['camera_indices'].tolist(), data['absolute_timestamps'].tolist(), strict=True):
+      latest[camera] = max(latest.get(camera, timestamp), timestamp)
     cameras = iter(zip(data['camera_indices'].tolist(), data['absolute_timestamps'].tolist(), strict=True))
     for message in messages:
       for entry in message['content']:
         if entry['type'] != 'image':
           continue
         camera, timestamp = next(cameras)
+        if timestamp < latest[camera] and self.history_pixel_scale < 1:
+          for key in ('min_pixels', 'max_pixels'):
+            entry[key] = max(1, round(entry[key]*self.history_pixel_scale))
         if camera == 1 and self.wide_equidistant_focal:
           frame = entry['image']
           old = self.warp_cache.get(timestamp)
@@ -127,6 +162,29 @@ class FastInputs:
           ch, cw = round(h*self.narrow_crop), round(w*self.narrow_crop)
           entry['image'] = frame[..., (h-ch)//2:(h-ch)//2+ch, (w-cw)//2:(w-cw)//2+cw]
     tokens = self.tokenize(messages, self.processor, include_closed_thinking=True)
+    if self.history_feature_scale < 1:
+      # Encode every image at the original resolution. Compress only historical
+      # feature grids after vision encoding; retain actual timestamps and text.
+      grids = tokens['image_grid_thw'].clone()
+      for i, (camera, timestamp) in enumerate(zip(data['camera_indices'].tolist(), data['absolute_timestamps'].tolist(), strict=True)):
+        if timestamp < latest[camera]:
+          grids[i, 1:] = torch.clamp((grids[i, 1:]*self.history_feature_scale**.5/2).round().to(grids.dtype)*2, min=2)
+      ids = tokens['input_ids'][0]
+      indices = torch.nonzero(ids == self.config.vlm_config.image_token_id).flatten()
+      boundaries = torch.nonzero(indices[1:]-indices[:-1] != 1).flatten()+1
+      spans = torch.tensor_split(indices, boundaries.tolist())
+      if len(spans) != len(grids):
+        raise ValueError('Image spans do not match feature grids')
+      for key in ('input_ids', 'attention_mask', 'mm_token_type_ids'):
+        chunks, cursor = [], 0
+        for span, grid in zip(spans, grids, strict=True):
+          begin, end = int(span[0]), int(span[-1])+1
+          count = int(grid.prod())//4
+          chunks.extend((tokens[key][:, cursor:begin], tokens[key][:, begin:begin+1].expand(-1, count)))
+          cursor = end
+        chunks.append(tokens[key][:, cursor:])
+        tokens[key] = torch.cat(chunks, dim=1)
+      tokens['embedding_grid_thw'] = grids
     prepared = {'tokenized_data': tokens, 'ego_history_xyz': data['ego_history_xyz'].unsqueeze(0),
                 'ego_history_rot': data['ego_history_rot'].unsqueeze(0)}
     return self.config, self.tokenizer, prepared
@@ -137,7 +195,7 @@ class FastInputs:
     history = self.history.encode(None, None, prepared['ego_history_xyz'][:, 0], prepared['ego_history_rot'][:, 0])
     ids[ids == self.config.traj_ids['history_pad']] = (history + self.config.traj_ids['history_id0']).flatten()
     positions, delta = reference.Cosmos3EdgeModel.get_rope_index(
-      self.rope, ids, tokens['mm_token_type_ids'], image_grid_thw=tokens['image_grid_thw'])
+      self.rope, ids, tokens['mm_token_type_ids'], image_grid_thw=tokens.get('embedding_grid_thw', tokens['image_grid_thw']))
     key = tuple(map(tuple, tokens['image_grid_thw'].tolist()))
     if key not in self.position_cache:
       # Bound storage when callers change image sizes.

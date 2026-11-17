@@ -18,6 +18,7 @@ class VisionCache:
     self.cache, self.encoders, self.stitchers = OrderedDict(), {}, OrderedDict()
     self.stitcher_capacity = 8
     self.keys = ()
+    self.output_grids = None
     self.hits = self.misses = 0
     self.original_encode = model.encode
     self.reference_model = None
@@ -42,6 +43,24 @@ class VisionCache:
 
   def prepare(self, prepared):
     self.keys = self.input_keys(prepared)
+    self.set_layout(prepared)
+
+  def set_layout(self, prepared):
+    grids = prepared['tokenized_data'].get('embedding_grid_thw')
+    self.output_grids = tuple(map(tuple, grids.tolist())) if grids is not None else None
+    if self.verify and self.output_grids is not None:
+      raise ValueError('Original embedding parity checks require unchanged feature grids')
+
+  @staticmethod
+  def resample_feature(image, source_grid, target_grid):
+    if source_grid == target_grid:
+      return image
+    assert source_grid[0] == target_grid[0] == 1
+    sh, sw = int(source_grid[1])//2, int(source_grid[2])//2
+    th, tw = int(target_grid[1])//2, int(target_grid[2])//2
+    assert image.shape[0] == sh*sw and 0 < th <= sh and 0 < tw <= sw
+    image_2d = image.reshape(1, sh, sw, -1).permute(0, 3, 1, 2)
+    return image_2d.float().interpolate((th, tw), mode='linear', align_corners=False).cast(image.dtype).permute(0, 2, 3, 1).reshape(th*tw, -1)
 
   def encode(self, pixels, positions, ids, batches, spans):
     assert len(batches) == len(self.keys) and all(count == 1 for _, _, count in batches)
@@ -104,11 +123,14 @@ class VisionCache:
         unique.append(feature)
       layout.append(indices[key])
     layout = tuple(layout)
-    shape = (ids.shape, spans, layout)
+    grids = tuple(key[0] for key in self.keys)
+    output_grids = self.output_grids or grids
+    shape = (ids.shape, spans, layout, grids, output_grids)
     if shape not in self.stitchers:
       def stitch(tokens, *images):
         embedding = self.model.weights['vlm.model.language_model.embed_tokens.weight'][tokens]
-        merged = Tensor.cat(*(images[i] for i in layout), dim=0)
+        merged = Tensor.cat(*(self.resample_feature(images[i], src, dst)
+                              for i, src, dst in zip(layout, grids, output_grids, strict=True)), dim=0)
         chunks, cursor, feature_cursor = [], 0, 0
         for begin, end in spans:
           chunks.extend((embedding[:, cursor:begin], merged[feature_cursor:feature_cursor+end-begin].unsqueeze(0)))

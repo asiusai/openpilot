@@ -23,9 +23,12 @@ class CompactInputs(NativeInputs):
       pos = np.arange(length) + ids.shape[1] + delta
       arrays.extend(rotary(np.broadcast_to(pos, (3, 1, length))))
     arrays.append(np.zeros((1, 64, 2), dtype=np.float32))
+    direct_bytes = arrays[0].dtype == np.uint8
+    if direct_bytes and not getattr(args, 'byte_pixels', False):
+      raise ValueError('Unnormalized image patches require byte-pixel GPU expansion')
     values = [torch.from_numpy(a).to(torch.bfloat16).view(torch.uint16).numpy()
-              if i not in (1, 2, len(arrays)-1) else a for i, a in enumerate(arrays)]
-    if getattr(args, 'byte_pixels', False):
+              if i not in (1, 2, len(arrays)-1) and not (i == 0 and direct_bytes) else a for i, a in enumerate(arrays)]
+    if getattr(args, 'byte_pixels', False) and not direct_bytes:
       codes = CompactInputs.pixel_inverse[values[0]]
       # Reject incompatible normalization or interpolation, rather than silently
       # converting a value that cannot be represented by this exact palette.
@@ -48,6 +51,12 @@ class CompactInputs(NativeInputs):
     for a, old in zip(arrays, self.cpu, strict=True):
       destination = np.frombuffer(old._buffer().as_memoryview(allow_zero_copy=True), dtype=a.dtype).reshape(a.shape)
       np.copyto(destination, a, casting='no')
+    if self.cache_rotary_inputs:
+      for i in range(3,len(arrays)-1):
+        if not np.array_equal(arrays[i],self.rotary_values[i]):
+          self.gpu_rotary[i].assign(self.cpu[i].to(Device.DEFAULT)).realize()
+          np.copyto(self.rotary_values[i],arrays[i],casting='no')
+          self.rotary_uploaded_bytes += arrays[i].nbytes
     return True
 
   def __init__(self, args, config, prepared, packed, arrays=None):
@@ -64,6 +73,13 @@ class CompactInputs(NativeInputs):
     if byte_pixels:
       pixel_table = Tensor(self.pixel_table.copy(), device='CPU').to(Device.DEFAULT).bitcast(dtypes.bfloat16).realize()
     self.cpu = [Tensor(a, device='CPU').realize() for a in (self.arrays(args, prepared, packed) if arrays is None else arrays)]
+    self.cache_rotary_inputs = getattr(args,'cache_rotary_inputs',False)
+    self.gpu_rotary,self.rotary_values,self.rotary_uploaded_bytes = {},{},0
+    if self.cache_rotary_inputs:
+      for i in range(3,len(self.cpu)-1):
+        self.gpu_rotary[i] = self.cpu[i].to(Device.DEFAULT).contiguous().realize()
+        self.rotary_values[i] = self.cpu[i].numpy().copy()
+        self.rotary_uploaded_bytes += self.rotary_values[i].nbytes
     self.noise = np.frombuffer(self.cpu[-1]._buffer().as_memoryview(allow_zero_copy=True), dtype=np.float32).reshape(1, 64, 2)
     grids = prepared['tokenized_data']['image_grid_thw'].numpy()
     offsets = np.concatenate(([0], np.cumsum(grids.prod(axis=1))))
@@ -90,6 +106,7 @@ class CompactInputs(NativeInputs):
 
   def upload(self, noise):
     self.noise[:] = noise
+    sources_all = [self.gpu_rotary.get(i,x) for i,x in enumerate(self.cpu)]
     if self.selective_cache is not None:
       cache = self.selective_cache
       assert len(cache.keys) == len(self.batches) and all(n == 1 for _, _, n in self.batches)
@@ -103,8 +120,8 @@ class CompactInputs(NativeInputs):
       self.uploaded_pixel_bytes = sum((self.batches[i][1]-self.batches[i][0])*self.cpu[0].shape[1]*self.cpu[0].dtype.itemsize
                                       for i in missing)
       sources = [self.rows(self.cpu[0],self.batches[i][0],self.batches[i][1]) for i in missing]
-      return self.selective_jits[missing](*sources, *self.cpu[1:])
-    return self.upload_jit(*self.cpu)
+      return self.selective_jits[missing](*sources, *sources_all[1:])
+    return self.upload_jit(*sources_all)
 
   @staticmethod
   def rows(tensor, begin, end):
@@ -141,5 +158,5 @@ class CompactInputs(NativeInputs):
       jit = self.selective_jits[missing]
       sources = [self.rows(self.cpu[0],self.batches[i][0],self.batches[i][1]) for i in missing]
       while jit.cnt < 2:
-        jit(*sources, *self.cpu[1:])
+        jit(*sources, *[self.gpu_rotary.get(i,x) for i,x in enumerate(self.cpu)][1:])
     Device[Device.DEFAULT].synchronize()

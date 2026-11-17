@@ -1,6 +1,7 @@
 """Short, controlled lens, camera-calibration and measured-history experiments."""
 import argparse
 from collections import OrderedDict
+from functools import lru_cache
 import copy
 import hashlib
 import json
@@ -109,7 +110,7 @@ def vehicle_history(row, records):
                           'speed_m_s': float(speed[-1]), 'left_yaw_rate_rad_s': float(yaw_rate[-1])}
 
 
-def calibrated_image(array, camera, source, target, calibration, target_nvidia=False, identity=False):
+def calibrated_coordinates(source_shape, camera, source, target, calibration, target_nvidia=False, identity=False):
   """Rotate virtual calibrated rays into each measured front camera's source rays."""
   src = source['cameras'][str(camera)]
   w, h = src['prepared_size']
@@ -146,9 +147,23 @@ def calibrated_image(array, camera, source, target, calibration, target_nvidia=F
   sx, sy = cx+fx*rays[..., 0]*factor, cy+fy*rays[..., 1]*factor
   if (rays[..., 2] <= 0).any() or sx.min() < left or sx.max() > right-1 or sy.min() < top or sy.max() > bottom-1:
     raise ValueError(f'Camera {camera}: calibrated rays exceed recorded image coverage')
-  source_h, source_w = array.shape[-2:]
+  source_h, source_w = source_shape
   sx = (sx-left+.5)*source_w/(right-left)-.5
   sy = (sy-top+.5)*source_h/(bottom-top)-.5
+  return sy, sx
+
+
+@lru_cache(maxsize=8)
+def cached_calibrated_coordinates(source_shape, camera, source_json, target_json, rotation, wide_rotation, target_nvidia, identity):
+  calibration = {'rpyCalib':rotation, 'wideFromDeviceEuler':wide_rotation}
+  return calibrated_coordinates(source_shape, camera, json.loads(source_json), json.loads(target_json),
+                                calibration, target_nvidia, identity)
+
+
+def calibrated_image(array, camera, source, target, calibration, target_nvidia=False, identity=False):
+  """Reuse exact ray maps when geometry and measured camera rotation are unchanged."""
+  sy, sx = cached_calibrated_coordinates(tuple(array.shape[-2:]), camera, json.dumps(source, sort_keys=True),
+      json.dumps(target, sort_keys=True), tuple(calibration['rpyCalib']), tuple(calibration['wideFromDeviceEuler']), target_nvidia, identity)
   return np.stack([map_coordinates(channel, (sy, sx), order=1, mode='nearest', prefilter=False)
                    for channel in array]).astype(np.uint8)
 

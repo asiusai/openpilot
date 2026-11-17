@@ -255,7 +255,15 @@ def legend_statistics(output, manifest, models, big_output=None):
       raise ValueError(f'Invalid mean path error: {name}')
     stats[name] = {'mean_error_m': error, 'error_horizon_s': comparison['horizon_s'],
                    'error_samples': comparison['summary']['all']['samples']}
+    if name.endswith('cam'):
+      source = Path(comparison['outputs'][name])
+      profile = json.loads((source/'manifest.json').read_text()).get('camera_input_profile', 'baseline')
+      stats[name]['input_profile'] = profile
+      if profile == 'calibrated_vehicle_history':
+        stats[name]['input_label'] = 'Calibration + learned history'
     if name.endswith('cam') and timing is not None:
+      if timing['results'][name[:-3]].get('profile', profile) != profile:
+        raise ValueError(f'Timing measures another input profile: {name}')
       rate = timing['results'][name[:-3]]['summary']['throughput_fps']
       stats[name].update(hz=rate, hz_label='replay', hz_source=str(timing_path))
   selected = models.ns[(models.ns >= manifest['capture_start_ns']) &
@@ -311,7 +319,8 @@ def compose(wide, grid, row, prediction, geometry, ns, zoom, small_model=None, r
   details = []
   for _, _, key in legend:
     entry = (statistics or {}).get(key, {})
-    lines = ([f'{entry["hz"]:.2f} Hz {entry["hz_label"]}'] if 'hz' in entry else [])
+    lines = [entry['input_label']] if 'input_label' in entry else []
+    lines += ([f'{entry["hz"]:.2f} Hz {entry["hz_label"]}'] if 'hz' in entry else [])
     if 'mean_error_m' in entry:
       lines.append(f'{entry["mean_error_m"]:.2f} m mean error')
     details.append(lines)
@@ -323,7 +332,8 @@ def compose(wide, grid, row, prediction, geometry, ns, zoom, small_model=None, r
                  *[draw.textlength(line, font=font(16)) for line in lines]])+24
             for (text, _, _), lines in zip(legend, details)]
   x = 1584-sum(widths)
-  draw.rounded_rectangle((x-16, 16, 1584, 99 if any(details) else 57), radius=12, fill='#10151c')
+  bottom = 59+20*max(map(len, details), default=0)
+  draw.rounded_rectangle((x-16, 16, 1584, bottom), radius=12, fill='#10151c')
   for (text, color, _), width, lines in zip(legend, widths, details):
     draw.text((x, 23), text, font=font(legend_size), fill=color)
     for line_number, line in enumerate(lines):
@@ -396,7 +406,11 @@ def render_route(args, manifest):
         if reference_schedule[tick][key] != row[key]:
           raise ValueError(f'Comparison non-camera input differs: {key}')
     references.append({'output': compare_output, 'cameras': len(reference_manifest.get('camera_subset', [0, 1, 2, 3, 5, 6])),
+                       'input_profile': reference_manifest.get('camera_input_profile', 'baseline'),
                        'schedule': reference_schedule, 'predictions': reference_predictions, 'selected': set()})
+  if manifest.get('camera_input_profile') == 'calibrated_vehicle_history' and any(
+      r['input_profile'] != 'calibrated_vehicle_history' for r in references):
+    raise ValueError('Calibration comparison captions require matching input profiles')
   export = Path(manifest['export'])
   grid_meta = json.loads((export/'grid-summary.json').read_text())
   count_expected = min(grid_meta['frames'], math.ceil(manifest['duration_s']*grid_meta['fps']))
@@ -484,7 +498,8 @@ def render_route(args, manifest):
                 'alpamayo_overlay': {'unique_predictions': len(selected_alpamayo), 'requested_sample_hz': manifest['sample_hz'],
                                      'source': 'Fresh saved predictions, held until the next prediction; no prediction interpolation'},
                  'alpamayo_reference_overlays': [
-                   {'source': str(r['output']), 'configured_cameras': r['cameras'], 'unique_predictions': len(r['selected']),
+                    {'source': str(r['output']), 'configured_cameras': r['cameras'], 'unique_predictions': len(r['selected']),
+                     'model_input_profile': r['input_profile'],
                     'prediction_sha256': hashlib.sha256((r['output']/'predictions.jsonl').read_bytes()).hexdigest(),
                     'camera_limit': 'Configured cameras; unavailable side views were omitted'} for r in references],
                'gray_path': 'Future integrated recorded motion at each displayed frame; not independent ground truth',
@@ -512,6 +527,11 @@ def render_route(args, manifest):
                'Driver assistance requires an attentive driver.\n')
   elif manifest.get('camera_subset') == [1, 6]:
     caption += '\nAlpamayo receives only the device front-wide and road cameras, with nominal 120° and 30° model-input crops.\n'
+  if manifest.get('camera_input_profile') == 'calibrated_vehicle_history':
+    caption += ('\nBoth device-camera inputs use recorded camera calibration with nominal 120° wide / 30° road framing. '
+                'Alpamayo receives causal motion history from recorded speed, steering, and learned vehicle parameters. '
+                'Future recorded motion is only used for comparison. Side-camera poses remain uncalibrated.\n')
+    caption += f'\nAlpamayo predictions advance at {manifest["sample_hz"]:g} saved timestamps per recorded second.\n'
   if big_models is not None:
     caption = caption.replace('Blue: openpilot.', 'Blue: logged small openpilot. Red: offline big openpilot.')
     caption += '\nThe big openpilot replay uses continuous frame history and standard openpilot camera warps, without Alpamayo input crops.\n'
