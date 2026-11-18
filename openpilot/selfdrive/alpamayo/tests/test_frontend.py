@@ -12,10 +12,11 @@ import numpy as np
 
 from openpilot.selfdrive.alpamayo.capture import copy_vision_buffer, healthy, navigation_ready, state_value
 from openpilot.selfdrive.alpamayo.feature_cache import FeatureCache
-from openpilot.selfdrive.alpamayo.frontend import CAMERAS, OFFSETS_NS, Frame, Preparer, State, Store, Unavailable, navigation, required
+from openpilot.selfdrive.alpamayo.frontend import CAMERAS, OFFSETS_NS, Frame, Preparer, Priming, State, Store, Unavailable, navigation, required
 from openpilot.selfdrive.alpamayo.geometry import calibrated_image
 from openpilot.selfdrive.alpamayo.history import measured_history
-from openpilot.selfdrive.alpamayo.runtime import atomic_json, load_selection, private_output, ram_handoff, run_prediction, save_selection, storage_ok
+from openpilot.selfdrive.alpamayo.runtime import (atomic_json, load_selection, private_output, ram_handoff, run_prediction, save_selection,
+                                                 storage_ok, validate_input)
 
 BASE, MS = 10_000_000_000, 1_000_000
 CAL = {'rpyCalib': [0., 0., 0.], 'wideFromDeviceEuler': [0., 0., 0.]}
@@ -32,10 +33,10 @@ def geometry():
           'principal_point': [383.5, 215.5], 'projection': 'pinhole'}}}
 
 
-def populated():
+def populated(ticks=61):
   store = Store()
   store.add_state('carParams', BASE, BASE, CP)
-  for tick in range(61):
+  for tick in range(ticks):
     stamp = BASE+tick*50*MS
     store.add_state('deviceMotion', stamp, stamp+MS, [[0., 0., 0.], [10., 0., 0.]])
     store.add_state('carState', stamp, stamp+MS, {'vEgo': 10., 'steeringAngleDeg': 0., 'aEgo': 0.})
@@ -43,7 +44,7 @@ def populated():
     store.add_state('extrinsicsCalibration', stamp, stamp+MS, CAL)
     if tick % 2 == 0:
       for camera in CAMERAS:
-        pixels = np.full((3, 16, 24), tick, dtype=np.uint8)
+        pixels = np.full((3, 16, 24), tick+camera, dtype=np.uint8)
         pixels.flags.writeable = False
         store.add_frame(Frame(camera, tick//2, stamp, stamp+5*MS, stamp+10*MS, stamp+11*MS, pixels))
       store.add_state('modelV2', stamp+12*MS, stamp+13*MS, {'frameId': tick//2, 'timestampEof': stamp+5*MS})
@@ -112,6 +113,72 @@ class FrontendTests(unittest.TestCase):
       store.select(BASE+3015*MS)
     with self.assertRaises(Unavailable):
       populated().select(BASE+4000*MS)
+
+  def test_half_second_snapshots_reuse_actual_anchors_across_query_jitter(self):
+    store, inputs, mappings = populated(65), [], []
+    # Return a view of the mapping to exercise ownership across normal and exceptional exits.
+    preparer = Preparer(geometry(), sampler=lambda pixels, *_: np.broadcast_to(pixels[:, :1, :1], (3, 432, 768)))
+    features = FeatureCache(lambda pixels, *_: pixels[0, 0, 0], np.copy)
+    def prepare_snapshot(path):
+      with load_selection(path) as (loaded, context):
+        mappings.append(loaded.frames[0].pixels._mmap)
+        arrays, meta = preparer.prepare(loaded, context['slot_start_ns'])
+        return arrays, dict(meta, **context)
+    # The model result for this exposure arrives after slot four's selection watermark.
+    delayed = store.states['modelV2'][21]
+    store.add_state('modelV2', delayed.stamp, BASE+2190*MS, delayed.value)
+    with ram_handoff() as ram:
+      path = Path(ram)/'pending.bin'
+      for k in range(7):
+        opening = BASE+(150+500*k)*MS
+        selected = store.select(opening, half_second_slot=opening)
+        self.assertEqual([f.camera for f in selected.frames], [1, 1, 6, 6])
+        inputs.append(selected.frames)
+        context = {'period_ms': 500, 'slot_start_ns': opening}
+        save_selection(path, selected, context)
+        if k < 4:
+          with self.assertRaises(Priming):
+            prepare_snapshot(path)
+        else:
+          arrays, meta = prepare_snapshot(path)
+          validate_input(arrays, meta)
+          before = features.misses
+          for pixels in arrays['image_frames'][:, 0]:
+            features(pixels, np.ones(1), np.ones(1))
+          self.assertEqual(features.misses-before, (10, 6, 4)[k-4])
+          for i in range(len(CAMERAS)):
+            expected = [inputs[k-j][2*i+1] for j in (4, 2, 1)]+list(inputs[k][2*i:2*i+2])
+            refs = meta['frames'][5*i:5*i+5]
+            self.assertEqual([ref['frame_id'] for ref in refs], [f.frame_id for f in expected])
+            self.assertEqual([ref['capture_ns'] for ref in refs], [f.sof_ns for f in expected])
+            self.assertEqual([ref['anchor_slot_ns'] for ref in refs[:3]], [opening-j*500*MS for j in (4, 2, 1)])
+            np.testing.assert_array_equal(arrays['image_frames'][5*i:5*i+5, 0, 0, 0, 0], [f.pixels[0, 0, 0] for f in expected])
+          if k == 4:
+            ref = meta['frames'][0]
+            self.assertEqual(ref['image_calibration'], CAL)
+            self.assertGreater(ref['capture_ns'], ref['requested_ns'])
+            for edits in ({'anchor_slot_ns': ref['anchor_slot_ns']+500*MS}, {'anchor_query_ns': ref['anchor_query_ns']-MS},
+                          {'anchor_selected_ns': ref['ready_ns']-MS}):
+              with self.assertRaises(ValueError):
+                validate_input(arrays, dict(meta, frames=[dict(ref, **edits), *meta['frames'][1:]]))
+            with self.assertRaises(ValueError):  # The baseline keeps its causal floors.
+              validate_input(arrays, dict(meta, frames=[{k:v for k,v in f.items() if not k.startswith('anchor_')} for f in meta['frames']]))
+        self.assertTrue(mappings[-1].closed)
+        path.unlink()
+        if k == 0:  # A later correction must not change an anchor already selected under the old calibration.
+          store.add_state('extrinsicsCalibration', selected.query_ns, opening+MS, dict(CAL, rpyCalib=[0., .01, 0.]))
+
+  def test_missed_half_second_slot_starts_a_new_two_second_history(self):
+    store, preparer = populated(), Preparer(geometry())
+    for k in (0, 2, 3, 4, 5, 6):
+      opening = BASE+(150+500*k)*MS
+      selected = store.select(opening, half_second_slot=opening)
+      if k < 6:
+        with self.assertRaisesRegex(Priming, 'missed slot' if k == 2 else 'Priming'):
+          preparer.prepare(selected, opening)
+      else:
+        _, meta = preparer.prepare(selected, opening)
+        self.assertEqual(meta['frames'][0]['anchor_slot_ns'], BASE+1150*MS)
 
   def test_prepare_preserves_history_navigation_and_calibration(self):
     store = populated()

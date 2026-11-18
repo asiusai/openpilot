@@ -14,7 +14,7 @@ from typing import Protocol
 
 import numpy as np
 
-from openpilot.selfdrive.alpamayo.frontend import CAMERAS, OFFSETS_NS, Frame, Selection, State, Unavailable
+from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_TOLERANCE_NS, HALF_SECOND_NS, OFFSETS_NS, Frame, Selection, State, Unavailable
 
 INPUT_LIMIT = 32*1024**2
 HEADER_LIMIT = 4*1024**2
@@ -130,6 +130,11 @@ def frame_layout(ref):
   return tuple(shape), size
 
 
+def valid_snapshot_views(refs, context):
+  views = [ref['view'] for ref in refs]
+  return views == [1]*5+[6]*5 or (views == [1, 1, 6, 6] and context.get('period_ms') == 500 and type(context.get('slot_start_ns')) is int)
+
+
 def save_selection(path, selected, context):
   refs = []
   for frame in selected.frames:
@@ -139,8 +144,8 @@ def save_selection(path, selected, context):
     if not pixels.flags.c_contiguous or pixels.flags.writeable:
       raise ValueError('Input frames must be immutable and contiguous')
     refs.append(ref)
-  if [ref['view'] for ref in refs] != [1]*5+[6]*5:
-    raise ValueError('Keep all ten ordered front-camera frames')
+  if not valid_snapshot_views(refs, context):
+    raise ValueError('Invalid front-camera snapshot layout')
   meta = {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
           'frames': refs, 'small_model': selected.small_model,
           'states': {kind: [vars(row) for row in rows] for kind, rows in selected.states.items()},
@@ -185,8 +190,8 @@ def load_selection(path):
     try:
       meta = json.loads(stream.read(length), parse_constant=invalid_json_number)
       if (not isinstance(meta, dict) or not isinstance(meta['frames'], list) or
-          [ref['view'] for ref in meta['frames']] != [1]*5+[6]*5 or
           any(not isinstance(meta[key], dict) for key in ('states', 'small_model', 'camera_gaps', 'context')) or
+          not valid_snapshot_views(meta['frames'], meta['context']) or
           any(type(meta[key]) is not int or meta[key] <= 0 for key in ('query_ns', 'selected_ns'))):
         raise ValueError('Invalid input metadata')
       layouts = [frame_layout(ref) for ref in meta['frames']]
@@ -229,11 +234,31 @@ def validate_input(arrays, meta):
       raise ValueError(f'Invalid {name}')
   if arrays['camera_indices'].tolist() != [1]*5+[6]*5 or len(meta['frames']) != 10:
     raise ValueError('Keep both complete front-camera histories')
+  rolling = any('anchor_slot_ns' in ref for ref in meta['frames'])
+  if rolling and (meta.get('period_ms') != 500 or not 0 <= meta['slot_start_ns']-meta['query_ns'] <= FRAME_TOLERANCE_NS or
+                  not meta['slot_start_ns'] <= meta['selected_ns'] < meta['slot_start_ns']+HALF_SECOND_NS):
+    raise ValueError('Invalid half-second history context')
   for i, (ref, offset) in enumerate(zip(meta['frames'], OFFSETS_NS*2, strict=True)):
     desired = meta['query_ns']+offset
+    capture = ref['capture_ns']
+    causal = 0 <= desired-capture <= FRAME_TOLERANCE_NS
+    if rolling and i % 5 < 3:
+      # Camera jitter can put a real earlier slot's anchor on either side of the nominal offset.
+      source = meta['slot_start_ns']+offset
+      origin, watermark = ref.get('anchor_query_ns', 0), ref.get('anchor_selected_ns', 0)
+      paired = meta['frames'][(i+5) % 10]
+      causal = (ref.get('anchor_slot_ns') == source and 0 <= source-origin <= FRAME_TOLERANCE_NS and
+                source <= watermark < source+HALF_SECOND_NS and capture <= ref['ready_ns'] <= watermark and
+                origin == paired.get('anchor_query_ns') and watermark == paired.get('anchor_selected_ns') and
+                0 <= origin-capture <= FRAME_TOLERANCE_NS and (ref['view'] != 6 or origin == capture) and
+                abs(desired-capture) <= FRAME_TOLERANCE_NS and capture < meta['query_ns'])
+    elif 'anchor_slot_ns' in ref:
+      causal = False
+    elif rolling:
+      causal = causal and capture <= ref['ready_ns'] <= meta['selected_ns'] and (i != 9 or capture == meta['query_ns'])
     if (ref['view'] != CAMERAS[i//5] or ref['requested_ns'] != desired or
-        not 0 <= desired-ref['capture_ns'] <= 150_000_000 or arrays['absolute_timestamps'][i] != ref['capture_ns']//1000 or
-        not 0 <= ref['capture_ns']-ref['image_calibration_ns'] <= 1_000_000_000):
+        not causal or arrays['absolute_timestamps'][i] != capture//1000 or
+        not 0 <= capture-ref['image_calibration_ns'] <= 1_000_000_000):
       raise ValueError('Noncausal or mismatched camera input')
   if any(np.any(np.diff(arrays['absolute_timestamps'][i:i+5]) <= 0) for i in (0, 5)):
     raise ValueError('Camera histories must contain five distinct frames')
@@ -277,7 +302,7 @@ def run_prediction(adapter, arrays, metadata, clock=time.monotonic_ns):
 def live_timing(selected, worker_started_ns, output_ready_ns, slot=None):
   """Current-pair receipt through validated output, including selection and RAM handoff."""
   # Historical images were copied on earlier queries; do not count their two-second lookback as current processing.
-  live_started_ns = min(selected.selected_ns, *(selected.frames[i].received_ns for i in (4, 9)))
+  live_started_ns = min(selected.selected_ns, selected.frames[len(selected.frames)//2-1].received_ns, selected.frames[-1].received_ns)
   if not 0 < live_started_ns <= selected.selected_ns <= worker_started_ns <= output_ready_ns or output_ready_ns < selected.query_ns:
     raise ValueError('Invalid live processing timestamps')
   result = {'live_processing_started_ns': live_started_ns, 'selection_started_ns': selected.selected_ns,
@@ -311,7 +336,7 @@ def load_adapter(config):
 
 
 def worker(config, directory, handoff):
-  from openpilot.selfdrive.alpamayo.frontend import Preparer, Unavailable
+  from openpilot.selfdrive.alpamayo.frontend import Preparer, Priming, Unavailable
   from openpilot.selfdrive.alpamayo.selected.policy import PromptTooLong
   from openpilot.selfdrive.alpamayo.shadowd import planner_mode
   from openpilot.selfdrive.alpamayo.planner import packet
@@ -345,7 +370,7 @@ def worker(config, directory, handoff):
           admitted = time.monotonic_ns()
           if not 0 <= admitted-selected.query_ns <= 500_000_000 or admitted >= context.get('slot_deadline_ns', admitted+1):
             raise Unavailable('Input expired before preparation')
-          arrays, meta = preparer.prepare(selected)
+          arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 4 else None)
           meta.update(context)
           meta['prepared_ns'] = time.monotonic_ns()
           if meta['prepared_ns'] >= context.get('slot_deadline_ns', meta['prepared_ns']+1):
@@ -362,6 +387,8 @@ def worker(config, directory, handoff):
           written += atomic_json(root/f'{selected.query_ns}.json', result)
           count += 1
       except (Unavailable, PromptTooLong) as error:
+        if not isinstance(error, Priming):
+          preparer.anchors.clear()
         atomic_json(root/'unavailable.json', {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
                                             'slot_start_ns': context.get('slot_start_ns'), 'slot_deadline_ns': context.get('slot_deadline_ns'),
                                             'rejected_ns': time.monotonic_ns(), 'type': type(error).__name__, 'reason': str(error)[:1024]})

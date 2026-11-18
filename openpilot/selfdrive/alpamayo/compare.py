@@ -157,11 +157,9 @@ def performance_gate(rows, elapsed_s, period_ms=100):
     return {'mean': float(np.mean(values)), 'p95': float(np.percentile(values, 95)), 'max': float(max(values))}
   stages = [r.get('prediction', {}).get('timings_ms', {}) for r in measured]
   common = set.intersection(*(set(s) for s in stages)) if stages else set()
-  model_keys = {'vision', 'prefill', 'reasoning', 'diffusion'}
-  model = [sum(s[k] for k in model_keys) for s in stages] if model_keys <= common else []
   return {'result': 'PASS' if valid and max(times) <= period_ms and hz >= 1000/period_ms else 'FAIL', 'elapsed_hz': hz,
           'maximum_full_pipeline_ms': max(times) if valid else None, 'limit_ms': period_ms, 'minimum_hz': 1000/period_ms,
-          'full_pipeline_ms': stats(times), 'model_execution_ms': stats(model),
+          'full_pipeline_ms': stats(times), 'model_execution_ms': stats([r['inference_ms'] for r in measured]),
           'stage_ms': {key: stats([s[key] for s in stages]) for key in sorted(common)}}
 
 

@@ -133,14 +133,14 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
             selected_ns = time.monotonic_ns()
             if (selected_ns >= slot['slot_deadline_ns'] or (handoff/'pending.bin').exists() or (handoff/'working.bin').exists()):
               raise Unavailable('Busy or late slot')
-            selected = store.select(selected_ns, last_query, last_current)
+            selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if slots.period_ms == 500 else None)
             route = params.get('CurrentRoute')
             if not route:
               raise Unavailable('No current recording route')
             context = dict(slot, route=route.decode() if isinstance(route, bytes) else route, boot_id=boot)
             save_selection(handoff/'pending.bin', selected, context)
             last_query = selected.query_ns
-            last_current = {c: selected.frames[i*5+4].sof_ns for i, c in enumerate((1, 6))}
+            last_current = {f.camera: f.sof_ns for f in selected.frames}
           except Unavailable:
             slots.skip()
             publish()

@@ -143,7 +143,7 @@ class Runtime:
       self.decoder = Decoder(self.model,self.draft,self.anchor)
       self.vision = VisionCache(self.model)
       self.inputs,self.positions = None,{}
-      self.settings = SimpleNamespace(max_tokens=64,vision_batch=1,byte_pixels=True)
+      self.settings = SimpleNamespace(max_tokens=64,vision_batch=1)
       self.model.synchronize()
       self.device = Device.DEFAULT
       self.manifest = {'variant':'selected','recipe':'fp8-group2-pad2048-nominal6-euler3','precision':'mixed-fp8-bf16',
@@ -199,7 +199,6 @@ class Runtime:
     with timed('cpu_buffers'):
       if self.inputs is None or not self.inputs.update(self.settings,self.adapter.config,prepared,packed):
         self.inputs = CompactInputs(self.settings,self.adapter.config,prepared,packed,positions_cache=self.positions)
-      self.inputs.selective_cache = self.vision
     with timed('input_upload'):
       pixels,vpos,ids,cos,sin,dc,ds,ac,ass,actions = self.inputs.upload(noise)
     with timed('vision'):

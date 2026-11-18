@@ -10,6 +10,8 @@ from tinygrad.renderer.llvmir import AMDLLVMRenderer
 from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 from . import amd_gemm, amd_decode, weights
+from .serial_attention import direct as serial_cache_attention
+from .serial_coordinates import cache_attention
 from .kernels import bf16_linear, frozen_ops, tiled_gemm, vision_tiles
 
 
@@ -211,7 +213,7 @@ class SelectedModel(EdgeModel):
     h = self.linear(self.norm(x,f'{prefix}.layer_norm2'),f'{prefix}.mlp.fc1').float().gelu().cast(self.dtype)
     return (x+self.linear(h,f'{prefix}.mlp.fc2')).realize()
 
-  def text_layer(self, x, cos, sin, prefix, cache=None, mask=None, cache_pos=None):
+  def text_layer(self, x, cos, sin, prefix, cache=None, mask=None, cache_pos=None, serial_position=None):
     previous = self.prefill_prefix,self.quantizer_slot
     prefill = x.shape[1] >= 128
     self.prefill_prefix,self.quantizer_slot = (prefix if prefill else None),0
@@ -221,15 +223,24 @@ class SelectedModel(EdgeModel):
       q,k,v = (self.linear(h,f'{prefix}.self_attn.{n}_proj',quantized,heads=heads).reshape(1,h.shape[1],heads,128).transpose(1,2)
                for n,heads in (('q',16),('k',8),('v',8)))
       q,k = self.rope(q,k,cos,sin)
-      if cache_pos is not None:
-        store = cache[:,:,:,cache_pos:cache_pos+x.shape[1]].uop.store(Tensor.stack(k,v).uop)
-        assigned = Tensor(cache.uop.after(store))
-        end = cache.shape[3] if not isinstance(cache_pos,int) else cache_pos+x.shape[1]
-        k,v = (assigned[i,:,:,:end] for i in range(2))
-      elif cache is not None:
-        k,v = (old.cat(new,dim=2) for old,new in zip(cache,(k,v),strict=True))
-      causal = isinstance(cache_pos,int) and cache_pos == 0
-      h = self.attention(q,k,v,mask,causal).transpose(1,2).reshape(1,x.shape[1],2048)
+      if serial_position is not None:
+        assert x.shape[1] == 1 and cache_pos is None and not self.verifying and not self.trajectory_active
+        h = cache_attention(q,cache,k,v,*serial_position,mask)
+      else:
+        if cache_pos is not None:
+          store = cache[:,:,:,cache_pos:cache_pos+x.shape[1]].uop.store(Tensor.stack(k,v).uop)
+          assigned = Tensor(cache.uop.after(store))
+          end = cache.shape[3] if not isinstance(cache_pos,int) else cache_pos+x.shape[1]
+          k,v = (assigned[i,:,:,:end] for i in range(2))
+        elif cache is not None:
+          k,v = (old.cat(new,dim=2) for old,new in zip(cache,(k,v),strict=True))
+        causal = isinstance(cache_pos,int) and cache_pos == 0
+        if (not self.verifying and not self.trajectory_active and cache_pos is not None and not isinstance(cache_pos,int)
+            and q.shape == (1,16,1,128) and cache.shape == (2,1,8,2304,128) and mask is not None and mask.numel() == 2304):
+          h = serial_cache_attention(q,assigned,mask)
+        else:
+          h = self.attention(q,k,v,mask,causal)
+      h = h.transpose(1,2).reshape(1,x.shape[1],2048)
       x = x+self.linear(h,f'{prefix}.self_attn.o_proj')
       h = self.norm(x,f'{prefix}.post_attention_layernorm',rms=True)
       if prefill:

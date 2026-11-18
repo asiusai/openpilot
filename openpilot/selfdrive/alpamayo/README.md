@@ -93,6 +93,12 @@ DEV=USB+AMD:LLVM GMMU=0 TC_OPT=2 CACHEDB=/path/to/compiler-cache.db \
 ```
 
 Add `--reference /path/to/reference` to compare another run. `--thresholds` accepts explicit JSON limits.
+Use `--start-index N --warmup 0 --runs 1` for one cold prediction at row N.
+For warm measurements, start earlier and use `--warmup` before the measured rows. Compare references from the same window.
+For a selected prediction generated in full serial blocks, add `--decoder-repeats 8` with `--runs 1`.
+Replay times the first six, twelve (if available), and all tokens with the same weights and prompt resident. Each prefix must match the original tokens.
+These component trials run after the pipeline measurement. They do not count toward replay throughput.
+`startup.initialization_ms` stops when the runtime and weights are ready. The first prediction separately pays for first-use GPU graph setup and execution.
 `default` selects the original BF16 reference; `selected` requires the fixed external assets described below.
 Unavailable variants are rejected without fallback. `--no-vision-cache` permits a default full-image cache comparison at the same single-image encoding layout.
 
@@ -107,7 +113,8 @@ Prepared replay times sample reads, token/position preprocessing, transfers, inf
 It excludes camera capture, ISP, video decoding, projection, and ego-history construction; it does not measure live camera age.
 Reference generation preserves slow outputs and returns failure when the performance gate is unmet.
 A qualified PASS requires both reference agreement and speed; generating a reference alone does not qualify a run.
-Reports separate startup and measured results, with mean/p95/maximum stage and model timings.
+`model_execution_ms` measures the synchronized model call after inputs are ready, like modeld's `modelExecutionTime`.
+`full_pipeline_ms` also includes loading and validating the prepared sample. The live slot deadline separately includes waiting for input publication.
 A comparison command returns failure if numerical or performance limits fail.
 
 ## Live configuration
@@ -164,7 +171,7 @@ The worker removes `variant` and derives the adapter's `cache_dir` from the top-
 To run the original baseline instead, use `"variant": "default"` with only `checkpoint`, `initial_noise`, and optional `cache_vision`.
 
 Capture retains bounded native frames and state histories. It requires an exact small-model frame-ID and EOF match.
-All camera selections use causal floor timestamps. Invalid state updates block use of older valid state.
+Current and −100 ms exposures use causal floor timestamps. Invalid state updates block use of older valid state.
 Later-received updates replace the same measurement timestamp, including invalidations when a filter stops advancing.
 Measured motion supplies vertical motion and tilt. Valid learned vehicle parameters supply planar bicycle-model history.
 Motion admission requires the publisher's input, sensor, pose, orientation, and velocity health flags.
@@ -181,8 +188,10 @@ Inference that overruns its deadline finishes in its occupied slot; subsequent b
 `250` ms remains an unqualified diagnostic option. `100` ms / 10 Hz is a later phase after the initial car test.
 The input camera rate and requested slot rate do not establish achieved output throughput; actual completion times and missed slots determine that rate.
 The first five completed outputs are marked startup; graph compilation can overrun multiple slots. Later overruns remain visible in deadline results.
-All five offsets remain unchanged at every cadence. Ideal advancing 250/500 ms queries need four new images after full priming and reuse six cached features.
-Actual gaps, jitter, skipped queries, or changed calibration can require additional encodes; cache keys retain complete pixel and positional content.
+At 500 ms, the worker retains the calibrated current pair from four consecutive slots. A gap restarts that history.
+For each front camera it reuses the actual current exposures from four, two, and one slot ago, with their original timestamps and calibration.
+Priming retains pixels on the CPU. With distinct images and an empty GPU cache, the first predictions encode ten and six images, then four per slot.
+Other cadences select all five exposures from capture timestamps. Feature reuse always depends on actual image content.
 
 The supervisor monitors small-model health, temperatures, memory, and storage while inference runs in its isolated child.
 It maintains one input slot in a private `/dev/shm` directory and selects fresh inputs when the worker becomes idle.
@@ -218,18 +227,8 @@ Run the CPU suite in the isolated environment:
 DEV=CPU python -m unittest discover -s openpilot/selfdrive/alpamayo/tests -v
 ```
 
-Tests cover process defaults, causal inputs, cache invalidation, 10 Hz history reuse, complete outputs, BF16 primitives, and regression limits.
-The CPU replay oracle does not establish GPU numerical parity, live color parity, or real-time performance.
-The selected extraction matched all trajectories, rotations, tokens, and text across ten ARM/gfx1200 replay queries.
-Five measured outputs passed the BF16 regression limits. Prepared replay averaged 389 ms, with one 517 ms maximum; the 500 ms gate failed.
-The native RGB replay averaged 530 ms with the previous copying handoff. All predictions matched the prepared replay exactly.
-With parallel calibrated projection and fewer copies, all five measured native RGB inputs completed in 438–475 ms (nearest millisecond).
-Mean latency was 454 ms; wall throughput including output persistence and BF16 comparison was 2.16 Hz. All five passed the numerical gates.
-This is a short straight replay. A separate prepared right-turn replay missed one deadline. Both selected and original BF16 predictions under-turned before the junction.
-Recorded-message replay selected GPU actions on 33 of 60 measured straight updates and zero of 60 turn updates. It used prepared timings as an optimistic proxy.
-Native camera processing, concurrent small-model operation, and live throughput remain unqualified.
-The default still uploads all image inputs and uses CPU calibrated projection.
-GPU compilation, resource-failure injection, ignition cycles, and simultaneous live small-model operation need separate validation.
+Use the BF16 replay as the accuracy reference. Also measure every deadline on advancing camera inputs with the local model running.
+The selected two-camera bench implementation still missed 500 ms on a turn. Live timing and vehicle control are unqualified.
 
 The model, input adapter, and AMD kernels derive from comma's Alpamayo prototype, including revision `fe68e1d0595d48ffd0d058404181d873250e4ae4`.
 Their Comma.ai copyright and MIT license remain in the repository [LICENSE](../../../LICENSE).

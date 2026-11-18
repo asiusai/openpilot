@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -31,6 +33,25 @@ def replay(root='first'):
 
 
 class ComparisonTests(unittest.TestCase):
+  def test_resident_replay_rewinds_logits_and_text_history(self):
+    from openpilot.selfdrive.alpamayo.replay import repeat_decoder
+    expected = list(range(12))
+    def block(logits, c, s, pos, step, count):
+      self.assertEqual((logits, pos, count), (step, 100+step, 6))
+      return logits+count, np.arange(step, step+count)
+    def generate(*inputs):
+      self.assertEqual(dec.history, [[91]])
+      dec.history.append(expected)
+      return expected[:]
+    dec = SimpleNamespace(statistics={'serial_tokens': 12, 'lookup_rounds': 0}, decode=block, generate=generate)
+    runtime = SimpleNamespace(decoder=dec, synchronize=lambda: None)
+    with patch('openpilot.selfdrive.alpamayo.selected.transport.download', side_effect=lambda x: x):
+      inputs = (([91],), None, 0, None, None, 100)
+      result = repeat_decoder(runtime, inputs, expected, 2)
+      self.assertEqual({k: len(v) for k, v in result.items()}, {'6': 2, '12': 2, 'full_generate': 2})
+      with self.assertRaisesRegex(ValueError, 'changed greedy tokens'):
+        repeat_decoder(runtime, inputs, expected[::-1], 2)
+
   def test_identical_and_shapes(self):
     p = prediction()
     result = C.compare_predictions(p, p)
@@ -143,26 +164,26 @@ class ComparisonTests(unittest.TestCase):
     self.assertEqual(C.compare_replays(config, rows, *replay())['result'], 'FAIL')
 
   def test_every_prediction_and_elapsed_throughput_must_pass(self):
-    rows = [{'warmup': True, 'full_pipeline_ms': 10000.}, {'warmup': False, 'full_pipeline_ms': 100.}]
+    rows = [{'warmup': True, 'full_pipeline_ms': 10000.}, {'warmup': False, 'full_pipeline_ms': 100., 'inference_ms': 80.}]
     self.assertEqual(C.performance_gate(rows, .1)['result'], 'PASS')
     self.assertEqual(C.performance_gate(rows, .10001)['result'], 'FAIL')
-    rows.append({'warmup': False, 'full_pipeline_ms': 101.})
+    rows.append({'warmup': False, 'full_pipeline_ms': 101., 'inference_ms': 82.})
     self.assertEqual(C.performance_gate(rows, .1)['result'], 'FAIL')
     rows[-1]['full_pipeline_ms'] = float('nan')
     self.assertEqual(C.performance_gate(rows, .1)['result'], 'FAIL')
 
   def test_timing_statistics_exclude_warmup(self):
-    rows = [{'warmup': warmup, 'full_pipeline_ms': total,
+    rows = [{'warmup': warmup, 'full_pipeline_ms': total, 'inference_ms': total-5,
              'prediction': {'timings_ms': {'vision': total/4, 'prefill': total/4, 'reasoning': total/8, 'diffusion': total/8}}}
             for warmup, total in ((True, 10000.), (False, 60.), (False, 80.))]
     result = C.performance_gate(rows, .18)
     self.assertEqual(result['result'], 'PASS')
     self.assertEqual(result['full_pipeline_ms'], {'mean': 70., 'p95': 79., 'max': 80.})
-    self.assertEqual(result['model_execution_ms']['mean'], 52.5)
+    self.assertEqual(result['model_execution_ms']['mean'], 65.)
     self.assertEqual(result['stage_ms']['vision']['mean'], 17.5)
 
   def test_half_second_deadline_does_not_claim_ten_hz(self):
-    rows = [{'warmup': True, 'full_pipeline_ms': 10000.}, {'warmup': False, 'full_pipeline_ms': 392.}]
+    rows = [{'warmup': True, 'full_pipeline_ms': 10000.}, {'warmup': False, 'full_pipeline_ms': 392., 'inference_ms': 380.}]
     result = C.performance_gate(rows, .4, 500)
     self.assertEqual((result['result'], result['limit_ms'], result['minimum_hz']), ('PASS', 500, 2.))
     self.assertEqual(C.performance_gate(rows, .4, 100)['result'], 'FAIL')

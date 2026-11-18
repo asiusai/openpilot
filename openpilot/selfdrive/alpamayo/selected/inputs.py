@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Modified: selected resize caching, byte patches, shared adapter, and canonical input validation.
-"""Exact selected CPU inputs, including cached resize and uint8 patch retention."""
+# Modified: cache checked byte patches, rendered prompt token fields, and structural RoPE indices.
+"""Exact selected CPU inputs, with bounded per-adapter caches."""
 from collections import OrderedDict
 import ctypes
 from functools import partial
@@ -36,14 +36,19 @@ class SelectedInputs(InputAdapter):
     self.rope = SimpleNamespace(config=self.config.vlm_config)
     self.rope.get_vision_position_ids = partial(Cosmos3EdgeModel.get_vision_position_ids,self.rope)
     self.resize_cache,self.position_cache = OrderedDict(),{}
+    self.text_cache,self.rope_cache = OrderedDict(),OrderedDict()
     image = self.processor.image_processor
     if (list(image.image_mean) != [.5]*3 or list(image.image_std) != [.5]*3 or
         image.rescale_factor != 1/255 or image.temporal_patch_size != 1):
       raise ValueError('Selected byte inputs require the exact checkpoint pixel palette')
+    if (image.patch_size,image.merge_size,image.temporal_patch_size) != (16,2,1):
+      raise ValueError('Selected byte patches require the checkpoint 16/2/1 layout')
 
   def reset(self):
     self.resize_cache.clear()
     self.position_cache.clear()
+    self.text_cache.clear()
+    self.rope_cache.clear()
 
   def tokenize(self, messages, identities):
     # Tokenization body follows NVIDIA helper._tokenize_messages (Apache-2.0).
@@ -54,7 +59,7 @@ class SelectedInputs(InputAdapter):
     if not text.endswith(CLOSED_THINKING):
       raise ValueError('Unexpected checkpoint chat suffix')
     image_processor = processor.image_processor
-    images = []
+    patches,grids = [],[]
     identity = iter(identities)
     for message in messages:
       for entry in message['content']:
@@ -63,19 +68,38 @@ class SelectedInputs(InputAdapter):
         frame = entry['image'].squeeze(0)
         height,width = smart_resize(*frame.shape[-2:],factor=image_processor.patch_size*image_processor.merge_size,
                                     min_pixels=entry['min_pixels'],max_pixels=entry['max_pixels'])
-        key = (*next(identity),(height,width),(('interpolation',InterpolationMode.BICUBIC),))
+        key = (*next(identity),height,width)
         old = self.resize_cache.get(key)
         if old is not None and same_image(frame,old[0]):
           self.resize_cache.move_to_end(key)
-          image = old[1]
+          packed,grid = old[1:]
         else:
           image = resize(frame,[height,width],interpolation=InterpolationMode.BICUBIC)
-          self.resize_cache[key] = (frame.clone(),image)
+          batch,h,w = image_processor.patchify(image.unsqueeze(0),16,2,1)
+          packed,grid = batch.reshape(-1,3*16**2),(1,h,w)
+          self.resize_cache[key] = (frame.clone(),packed,grid)
           while len(self.resize_cache) > 144:
             self.resize_cache.popitem(last=False)
-        images.append(image)
-    tokens = dict(processor(text=text,images=images,padding=False,return_tensors='pt',return_mm_token_type_ids=True,
-                            do_resize=False,do_rescale=False,do_normalize=False))
+        patches.append(packed)
+        grids.append(grid)
+    grid_tensor = torch.tensor(grids,dtype=torch.int64)
+    # The selected processor expands placeholders using only the ordered grids.
+    # Keep its replacement, tokenization, special-token checks, and modality IDs.
+    prompt_key = (text,tuple(grids))
+    template = self.text_cache.get(prompt_key)
+    if template is None:
+      visual = {'image_grid_thw':grid_tensor}
+      replacements = [processor.replace_image_token(visual,i) for i in range(len(grids))]
+      expanded,_ = processor.get_text_with_replacements([text],replacements)
+      tokens = dict(processor(text=expanded,padding=False,return_tensors='pt',return_mm_token_type_ids=True))
+      if len(text) <= 16384 and tokens['input_ids'].numel() <= 8192:
+        self.text_cache[prompt_key] = {k:v.clone() for k,v in tokens.items()}
+        if len(self.text_cache) > 16:
+          self.text_cache.popitem(last=False)
+    else:
+      self.text_cache.move_to_end(prompt_key)
+      tokens = {k:v.clone() for k,v in template.items()}
+    tokens.update(pixel_values=torch.cat(patches),image_grid_thw=grid_tensor)
     patches = tokens['pixel_values']
     if patches.dtype != torch.uint8 or patches.ndim != 2 or patches.shape[1] != 3*image_processor.patch_size**2:
       raise ValueError('Expected unnormalized uint8 image patches')
@@ -112,10 +136,23 @@ class SelectedInputs(InputAdapter):
     ids = tokens['input_ids'].clone()
     history = self.history.encode(None,None,prepared['ego_history_xyz'][:,0],prepared['ego_history_rot'][:,0])
     ids[ids == self.config.traj_ids['history_pad']] = (history+self.config.traj_ids['history_id0']).flatten()
-    positions,delta = Cosmos3EdgeModel.get_rope_index(self.rope,ids,tokens['mm_token_type_ids'],image_grid_thw=grids)
     key = tuple(map(tuple,grids.tolist()))
+    # Pinned get_rope_index reads ID shape/dtype, ordered modality spans and grids;
+    # it does not inspect the learned IDs. The caller gets a fresh position array.
+    types = tokens['mm_token_type_ids']
+    structure = (tuple(ids.shape),ids.dtype,types.dtype,types.numpy().tobytes(),key,self.rope.config.vision_config.spatial_merge_size)
+    cached = self.rope_cache.get(structure)
+    if cached is None:
+      positions,delta = Cosmos3EdgeModel.get_rope_index(self.rope,ids,types,image_grid_thw=grids)
+      cached = (positions.numpy(),int(delta.item()))
+      if ids.numel() <= 8192:
+        self.rope_cache[structure] = cached
+        if len(self.rope_cache) > 16:
+          self.rope_cache.popitem(last=False)
+    else:
+      self.rope_cache.move_to_end(structure)
     if key not in self.position_cache:
       if len(self.position_cache) >= 4:
         self.position_cache.pop(next(iter(self.position_cache)))
       self.position_cache[key] = Cosmos3EdgeVisionEmbeddings.resize_positional_embeddings(self.position_weight,grids,2).float().numpy()
-    return prepared,(ids.numpy(),positions.numpy(),int(delta.item()),self.position_cache[key])
+    return prepared,(ids.numpy(),cached[0].copy(),cached[1],self.position_cache[key])

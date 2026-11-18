@@ -57,13 +57,15 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Expert | Three Euler steps; restored BF16 action projections; exact scoped 2x2 PV kernel |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
-Group size two limits each encoding call. It does not limit the number of missing images per prediction.
+Each prediction uploads all ten images as byte patches through one fixed graph. The GPU expands them to BF16.
+Only missing image features require encoding. Group size two limits each encoding call.
 At a warmed 500 ms cadence, four missing images require two groups; six older images remain cached.
 At a warmed 100 ms cadence, two missing images require one group; eight older images remain cached.
 Actual reuse follows image content and the capture schedule, including missing or repeated source frames.
 
 The MLP fusion is an explicit prefill method. Expert PV applies only inside trajectory execution.
 Draft attention retains its original QK, softmax, and PV arithmetic.
+Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
 
 ## Required assets and shared code
@@ -74,9 +76,8 @@ Original checkpoint shards, the existing FP8 `weights.bin`/`index.json`, and fix
 `assets/artifacts.json` pins their hashes. Startup verifies complete checkpoint shards and every FP8 upload.
 Changing these artifacts requires a separate numerical qualification.
 
-The 18 exact HIP source/object pairs and expert PV object are included under `assets/gfx1200`.
-`assets/manifest.json` checks their hashes. One historical prefill object remains as a source-generation provenance dependency.
-The selected dispatcher uses the other 17 HIP objects and the exact expert PV object.
+The selected dispatcher uses the 17 HIP source/object pairs and the expert PV object under `assets/gfx1200`.
+Startup checks their hashes against `assets/manifest.json`.
 HIP/COMGR compilation is unnecessary on ARM. Ordinary tinygrad LLVM kernels still require LLVM22.
 The constructor requires existing, hash-checked gfx1200 firmware in the configured persistent cache.
 Inference does not fetch firmware or weights.

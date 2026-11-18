@@ -77,6 +77,32 @@ class InferenceTests(unittest.TestCase):
     np.testing.assert_allclose(result.numpy(), noise*1.1**10, rtol=1e-6)
     np.testing.assert_allclose(seen, np.arange(10)/10, atol=1e-7)
 
+  def test_serial_block_updates_only_its_six_kv_rows(self):
+    from functools import partial
+    from tinygrad import Tensor, TinyJit, dtypes
+    from tinygrad.uop.ops import UOp
+    from openpilot.selfdrive.alpamayo.selected.serial_coordinates import coords_kernel, store_kernel
+
+    @TinyJit
+    def write(cache, keys, values, pos, step):
+      coords = Tensor.custom_kernel(Tensor.empty(2, dtype=dtypes.int32), Tensor(pos), Tensor(step), fxn=coords_kernel)[0].realize()
+      for j in range(6):
+        cache = Tensor.custom_kernel(cache, keys[j], values[j], coords, fxn=partial(store_kernel, delta=j))[0].realize()
+      return cache, coords
+
+    expected = np.zeros((2, 1, 8, 2304, 128), dtype=np.uint16)
+    cache = Tensor(expected.copy()).bitcast(dtypes.bfloat16).realize()
+    rng = np.random.default_rng(1)
+    for start, offset in ((0, 0), (113, 12), (2298, 58)):
+      bits = rng.integers(0, 65536, (2, 6, 1, 8, 1, 128), dtype=np.uint16)
+      keys, values = (Tensor(a.copy()).bitcast(dtypes.bfloat16).realize() for a in bits)
+      pos = UOp.variable('block_position', 0, 2298).bind(start)
+      step = UOp.variable('block_step', 0, 58).bind(offset)
+      updated, coords = write(cache, keys, values, pos, step)
+      expected[:, :, :, start:start+6] = bits[:, :, :, :, 0, :].transpose(0, 2, 3, 1, 4)
+      np.testing.assert_array_equal(coords.numpy(), [start, offset])
+      np.testing.assert_array_equal(updated.bitcast(dtypes.uint16).numpy(), expected)
+
   def test_runtime_fixed_noise_outputs_and_reused_cpu_buffers(self):
     import torch
     from tinygrad import Tensor, TinyJit

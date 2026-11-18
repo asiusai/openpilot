@@ -1,10 +1,12 @@
 """Target-verified nominal/lookup decoding with block-six serial fallback."""
+from functools import partial
 import math
 import numpy as np
 from tinygrad import Tensor, TinyJit
 from tinygrad.uop.ops import UOp
 from .policy import accept_targets, validate_draft
 from .transport import download
+from .serial_coordinates import block_six
 
 
 class Decoder:
@@ -36,13 +38,18 @@ class Decoder:
   def decode(self, logits, cos, sin, position, step, count):
     key = (cos.shape,count,self.model.cache[0].shape[3])
     if key not in self.jits:
-      def run(logits, c, s, pos, offset):
-        tokens = []
-        for i in range(count):
-          logits,token = self.model._greedy_decode(logits,c,s,pos+i,offset+i)
-          tokens.append(token.reshape(1))
-        return logits,Tensor.cat(*tokens).realize()
-      self.jits[key] = TinyJit(run)
+      if (count == 6 and self.model.amd and not self.model.images and len(self.model.cache) == 28
+          and self.model.cache[0].shape == (2,1,8,2304,128) and cos.shape == sin.shape == (1,1,64,128)
+          and logits.shape == (1,1,2112)):
+        self.jits[key] = TinyJit(partial(block_six,self.model))
+      else:
+        def run(logits, c, s, pos, offset):
+          tokens = []
+          for i in range(count):
+            logits,token = self.model._greedy_decode(logits,c,s,pos+i,offset+i)
+            tokens.append(token.reshape(1))
+          return logits,Tensor.cat(*tokens).realize()
+        self.jits[key] = TinyJit(run)
     position = UOp.variable('block_position',0,self.model.cache[0].shape[3]-count).bind(position)
     step = UOp.variable('block_step',0,cos.shape[2]-count).bind(step)
     return self.jits[key](logits,cos,sin,position,step)

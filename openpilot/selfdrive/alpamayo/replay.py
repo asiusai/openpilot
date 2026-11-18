@@ -14,6 +14,36 @@ from openpilot.selfdrive.alpamayo.inference import Runtime, sha
 from openpilot.selfdrive.alpamayo.runtime import private_output, run_prediction, storage_ok
 
 
+def repeat_decoder(runtime, inputs, expected, repeats):
+  """Time advancing six-token blocks from the actual prompt. Do not feed reference tokens back."""
+  from openpilot.selfdrive.alpamayo.selected.transport import download
+  dec = runtime.decoder
+  if dec.statistics['lookup_rounds'] or dec.statistics['serial_tokens'] != len(expected) or len(expected) % 6:
+    raise ValueError('Choose a prediction generated entirely in full six-token serial blocks')
+  history, prefill, first, cos, sin, prompt = inputs
+  lengths = [*sorted({6, min(12, len(expected)), len(expected)}), 'full_generate']
+  timings = {str(n): [] for n in lengths}
+  for trial in range(repeats+2):  # Prime both initial-logit and returned-logit graph bindings.
+    for n in lengths if trial % 2 == 0 else reversed(lengths):
+      logits, tokens = first, []
+      runtime.synchronize()
+      begin = time.monotonic_ns()
+      if n == 'full_generate':
+        dec.history = list(history)
+        tokens = dec.generate(prefill, first, cos, sin, prompt)
+      else:
+        for offset in range(0, n, 6):
+          logits, block = dec.decode(logits, cos, sin, prompt+offset, offset, 6)
+          tokens.extend(download(block).reshape(-1).astype(int).tolist())
+      runtime.synchronize()
+      elapsed = (time.monotonic_ns()-begin)/1e6
+      if tokens != (expected if n == 'full_generate' else expected[:n]):
+        raise ValueError(f'Resident decoder changed greedy tokens for {n}')
+      if trial >= 2:
+        timings[str(n)].append(elapsed)
+  return timings
+
+
 def main(argv=None):
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument('--manifest', type=Path, required=True, help='Prepared schedule with sample directories and frame references')
@@ -24,6 +54,7 @@ def main(argv=None):
   parser.add_argument('--fp8-cache', type=Path)
   parser.add_argument('--prefill-calibration', type=Path)
   parser.add_argument('--cache', type=Path, help='Persistent private compiler and firmware cache')
+  parser.add_argument('--start-index', type=int, default=0, help='First manifest row, including any warmup')
   parser.add_argument('--warmup', type=int, default=5, help='Exclude startup graph capture and image-history priming')
   parser.add_argument('--runs', type=int, required=True)
   parser.add_argument('--period-ms', type=int, choices=(100, 250, 500), default=500,
@@ -31,16 +62,19 @@ def main(argv=None):
   parser.add_argument('--reference', type=Path)
   parser.add_argument('--thresholds', type=Path, help='Optional explicit regression limits')
   parser.add_argument('--no-vision-cache', action='store_true')
+  parser.add_argument('--decoder-repeats', type=int, default=0, help='Repeat serial decoder prefixes on one selected prediction')
   args = parser.parse_args(argv)
-  if args.warmup < 0 or args.runs < 1:
-    parser.error('Require nonnegative warmup and positive measured count')
+  if args.start_index < 0 or args.warmup < 0 or args.runs < 1:
+    parser.error('Require nonnegative start and warmup, and positive measured count')
   if args.variant == 'selected' and (not all((args.fp8_cache, args.prefill_calibration, args.cache)) or args.no_vision_cache):
     parser.error('Selected requires --fp8-cache, --prefill-calibration, --cache, and its complete vision cache')
+  if not 0 <= args.decoder_repeats <= 100 or (args.decoder_repeats and (args.variant != 'selected' or args.runs != 1)):
+    parser.error('--decoder-repeats requires --variant selected, --runs 1, and at most 100 repeats')
   os.environ.setdefault('DEV', 'USB+AMD:LLVM')
   os.environ.setdefault('GMMU', '0')
   os.environ.setdefault('TC_OPT', '2')
   os.environ.setdefault('AM_POWER_LIMIT', '100')
-  schedule = json.loads(args.manifest.read_text())['schedule'][:args.warmup+args.runs]
+  schedule = json.loads(args.manifest.read_text())['schedule'][args.start_index:args.start_index+args.warmup+args.runs]
   if len(schedule) != args.warmup+args.runs:
     raise ValueError('Insufficient advancing samples')
   samples = {}
@@ -75,7 +109,7 @@ def main(argv=None):
   rows = []
   try:
     config = {'kind': 'configuration', 'variant': args.variant, 'warmup': args.warmup, 'runs': args.runs, 'runtime': runtime.manifest,
-              'initialization_ms': initialization_ms, 'period_ms': args.period_ms,
+              'initialization_ms': initialization_ms, 'period_ms': args.period_ms, 'start_index': args.start_index,
               'trajectory': trajectory_config(json.loads((args.checkpoint/'config.json').read_text())),
               'identities': dict(runtime.manifest['identities'], samples=samples)}
     with (args.output/'predictions.jsonl').open('x') as output:
@@ -99,6 +133,7 @@ def main(argv=None):
           return {'query_ns': meta['query_ns'], 'prediction': prediction}
         def synchronize(self):
           runtime.synchronize()
+      decoder_inputs = []
       for index, row in enumerate(schedule):
         begin = time.monotonic_ns()
         if index == args.warmup:
@@ -106,12 +141,24 @@ def main(argv=None):
         data = {key: np.load(Path(row['sample'])/f'{key}.npy', allow_pickle=False) for key in FIELDS}
         data['nav_text'] = [str(data['nav_text'].item())]
         meta = dict(row, navigation_text=data['nav_text'][0])
-        result = run_prediction(Adapter(), data, meta)
+        capture = args.decoder_repeats and index == args.warmup
+        if capture:
+          def capture_prompt(*inputs, generate=runtime.decoder.generate):
+            decoder_inputs.append(tuple(runtime.decoder.history))
+            decoder_inputs.extend(inputs)
+            return generate(*inputs)
+          runtime.decoder.generate = capture_prompt
+        try:
+          result = run_prediction(Adapter(), data, meta)
+        finally:
+          if capture:
+            del runtime.decoder.generate
         result.update(kind='prediction', index=index, warmup=index < args.warmup, sample=row['sample'],
                       full_pipeline_ms=(time.monotonic_ns()-begin)/1e6)
         rows.append(result)
         save(result)
-        print(json.dumps({'index': index, 'warmup': result['warmup'], 'full_pipeline_ms': result['full_pipeline_ms'],
+        print(json.dumps({'manifest_index': args.start_index+index, 'warmup': result['warmup'], 'inference_ms': result['inference_ms'],
+                          'full_pipeline_ms': result['full_pipeline_ms'],
                           'timings_ms': result['prediction']['timings_ms'],
                           'vision_misses': result['prediction'].get('selected_metrics', {}).get('vision_misses')}), flush=True)
       elapsed = (time.monotonic_ns()-measured_start)/1e9
@@ -125,6 +172,9 @@ def main(argv=None):
                               'through_warmup_ms': (measured_start-initialization_start)/1e6},
                   'timing_scope': ('Prepared sample reads, token/position preprocessing, transfers, inference, and trajectory decode; '+
                                    'excludes capture, ISP, video decode, projection, and ego-history construction; not live camera age')}
+      if decoder_inputs:
+        tokens = rows[-1]['prediction']['generated_token_ids']
+        summary['resident_decoder_ms_by_token_count'] = repeat_decoder(runtime, decoder_inputs, tokens, args.decoder_repeats)
       save(summary)
     print(json.dumps(summary, allow_nan=False))
     return int(summary['result'] != 'PASS')

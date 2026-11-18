@@ -17,19 +17,6 @@
       "bytes": 16064
     },
     {
-      "kind": "original_prefill_attention",
-      "args": [
-        16,
-        8,
-        2048,
-        2048,
-        128
-      ],
-      "source_sha256": "3646d1870b8fc081a634b9ffc8ab343a2720ac3535cba8ec88ee1fe44fbc9eb1",
-      "binary_sha256": "5beabe4a34c139596d8a80274c44001640e11a5bbe40f8175e29921a7763ffe7",
-      "bytes": 29224
-    },
-    {
       "kind": "vision_attention",
       "args": [
         16,

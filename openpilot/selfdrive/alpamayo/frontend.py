@@ -13,6 +13,8 @@ import numpy as np
 
 CAMERAS = (1, 6)
 OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
+HALF_SECOND_NS = 500_000_000
+FRAME_TOLERANCE_NS = 150_000_000
 STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
                 'vehicleParameters': 1_000_000_000, 'carParams': 120_000_000_000,
                 'deviceMotion': 100_000_000, 'navInstruction': 2_000_000_000}
@@ -20,6 +22,10 @@ STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
 
 class Unavailable(ValueError):
   """A complete causal input is unavailable."""
+
+
+class Priming(Unavailable):
+  """A real anchor pair was retained, but the two-second history is incomplete."""
 
 
 @dataclass(frozen=True)
@@ -118,14 +124,15 @@ class Store:
       while rows and (len(rows) > self.state_limit or rows[0].stamp < received-horizon):
         rows.pop(0)
 
-  def select(self, now, last_query=0, last_current=None):
+  def select(self, now, last_query=0, last_current=None, *, half_second_slot=None):
     with self.lock:
       rings = {c: tuple(f for f in ring if f.ready_ns <= now) for c, ring in self.frames.items()}
       states = {k: tuple(r for r in rows if r.received <= now) for k, rows in self.states.items()}
       gaps = self.camera_gaps.copy()
     # Wait for the newest matching small-model output, rather than chasing a
     # camera that is always ahead of modeld. The query keeps its actual SOF.
-    matches = [(frame, row) for frame in reversed(rings[6]) for row in reversed(states['modelV2'])
+    matches = [(frame, row) for frame in reversed(rings[6]) if half_second_slot is None or frame.sof_ns <= half_second_slot
+               for row in reversed(states['modelV2'])
                if row.valid and row.value['frameId'] == frame.frame_id and row.value['timestampEof'] == frame.eof_ns]
     if not matches:
       raise Unavailable('No exact small-model frame match')
@@ -133,17 +140,20 @@ class Store:
     query = current.sof_ns
     if query <= last_query or not 0 <= now-query <= 250_000_000:
       raise Unavailable('No fresh query')
+    if half_second_slot is not None and not (query <= half_second_slot <= now and half_second_slot-query <= FRAME_TOLERANCE_NS):
+      raise Unavailable('No fresh half-second anchor')
+    offsets = OFFSETS_NS if half_second_slot is None else OFFSETS_NS[-2:]
     frames = []
     for camera in CAMERAS:
       ring = rings[camera]
       times = [f.sof_ns for f in ring]
-      for offset in OFFSETS_NS:
+      for offset in offsets:
         desired = query+offset
         index = bisect_right(times, desired)-1
-        if index < 0 or desired-times[index] > 150_000_000:
+        if index < 0 or desired-times[index] > FRAME_TOLERANCE_NS:
           raise Unavailable('Missing causal camera history')
         frames.append(ring[index])
-      if len({f.sof_ns for f in frames[-5:]}) != 5 or frames[-1].sof_ns <= (last_current or {}).get(camera, 0):
+      if len({f.sof_ns for f in frames[-len(offsets):]}) != len(offsets) or frames[-1].sof_ns <= (last_current or {}).get(camera, 0):
         raise Unavailable('Repeated or stalled camera history')
     # Only the matched small-model output is consumed. Retain the complete vehicle state history.
     del states['modelV2']
@@ -201,11 +211,13 @@ class Preparer:
     self.geometry = copy.deepcopy(geometry)
     self.cache, self.cache_limit = OrderedDict(), cache_limit
     self.sampler = sampler
+    self.anchors = deque(maxlen=4)
 
-  def prepare(self, selected):
-    from openpilot.selfdrive.alpamayo.geometry import calibrated_image
+  def prepare(self, selected, half_second_slot=None):
     from openpilot.selfdrive.alpamayo.history import ego_history
     query, states = selected.query_ns, selected.states
+    if half_second_slot is not None:
+      views, hits = self.rolling_images(selected, half_second_slot)
     cal, cal_ns = required(states['extrinsicsCalibration'], query, STATE_LIMITS['extrinsicsCalibration'])
     xyz, rot, history = ego_history(states, query, cal['rpyCalib'])
     cp, cp_ns = required(states['carParams'], query, STATE_LIMITS['carParams'])
@@ -217,8 +229,60 @@ class Preparer:
                                             'values': copy.deepcopy(parameters),
                                             'applied_stiffness_factor': max(parameters['stiffnessFactor'], .1),
                                             'applied_steer_ratio': max(parameters['steerRatio'], .1)})
+    if half_second_slot is None:
+      views, hits = self.project(selected.frames, states)
+    images, refs = zip(*views, strict=True)
+    refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
+    nav, nav_meta = navigation(states['navInstruction'], query)
+    arrays = {'image_frames': np.stack(images), 'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
+              'absolute_timestamps': np.array([ref['capture_ns']//1000 for ref in refs], dtype=np.int64),
+              'ego_history_xyz': xyz, 'ego_history_rot': rot, 'nav_text': [nav]}
+    metadata = {'query_ns': query, 'selected_ns': selected.selected_ns, 'frames': refs, 'small_model': selected.small_model,
+                'calibration_rpy': cal['rpyCalib'], 'calibration': copy.deepcopy(cal), 'calibration_log_mono_time': cal_ns,
+                'ego_history_xyz': xyz.tolist(),
+                'ego_history_rot': rot.tolist(), 'vehicle_history': history, 'navigation_text': nav, 'navigation': nav_meta,
+                'camera_profile': 'calibrated_vehicle_history', 'image_cache_hits': hits, 'camera_gaps': selected.camera_gaps}
+    return arrays, metadata
+
+  def rolling_images(self, selected, opening):
+    """Only retain owned, calibrated pixels. The worker unmaps the input after each slot."""
+    query, frames = selected.query_ns, selected.frames
+    if not (opening <= selected.selected_ns < opening+HALF_SECOND_NS and 0 <= opening-query <= FRAME_TOLERANCE_NS and frames[-1].sof_ns == query):
+      raise Unavailable('Front query is outside its slot')
+    reason = 'Priming front-camera anchors'
+    if self.anchors and opening != self.anchors[-1][0]+HALF_SECOND_NS:
+      self.anchors.clear()
+      reason = 'Repriming after a missed slot'
+    for i, camera in enumerate(CAMERAS):
+      prior, current = frames[2*i:2*i+2]
+      if not (prior.camera == current.camera == camera and prior.frame_id < current.frame_id and prior.sof_ns < current.sof_ns and
+              0 <= query-100_000_000-prior.sof_ns <= FRAME_TOLERANCE_NS and 0 <= query-current.sof_ns <= FRAME_TOLERANCE_NS and
+              max(prior.ready_ns, current.ready_ns) <= selected.selected_ns):
+        raise Unavailable('Missing, repeated or stale front exposure')
+      if self.anchors:
+        _, last_pair = self.anchors[-1]
+        _, last = last_pair[i]
+        if last['capture_ns'] >= prior.sof_ns or last['frame_id'] >= prior.frame_id:
+          raise Unavailable('Front exposure did not advance')
+    older = []
+    if len(self.anchors) == 4:
+      older = [[self.anchors[-lag][1][i] for lag in (4, 2, 1)] for i in range(len(CAMERAS))]
+      if any(abs(query+offset-ref['capture_ns']) > FRAME_TOLERANCE_NS for view in older for (_, ref), offset in zip(view, OFFSETS_NS[:3], strict=True)):
+        self.anchors.clear()
+        older = []
+        reason = 'Repriming after a capture gap'
+    fresh, hits = self.project(frames if older else frames[1::2], selected.states)
+    current_views = fresh[1::2] if older else fresh
+    self.anchors.append((opening, [(image, dict(ref, anchor_slot_ns=opening, anchor_query_ns=query, anchor_selected_ns=selected.selected_ns))
+                                  for image, ref in current_views]))
+    if not older:
+      raise Priming(f'{reason} ({len(self.anchors)}/4 slots)')
+    return [frame for i, view in enumerate(older) for frame in (*view, *fresh[2*i:2*i+2])], hits+6
+
+  def project(self, frames, states):
+    from openpilot.selfdrive.alpamayo.geometry import calibrated_image
     refs, keys, missing, hits = [], [], {}, 0
-    for frame, offset in zip(selected.frames, OFFSETS_NS*2, strict=True):
+    for frame in frames:
       calibration, stamp = required(states['extrinsicsCalibration'], frame.sof_ns, STATE_LIMITS['extrinsicsCalibration'])
       # Content identity survives the process boundary and invalidates reused
       # frame IDs, changed pixels, and changed calibration without approximation.
@@ -228,8 +292,7 @@ class Preparer:
       else:
         missing[key] = frame, calibration
       keys.append(key)
-      refs.append({**frame.reference(), 'requested_ns': query+offset, 'image_calibration_ns': stamp,
-                   'image_calibration': copy.deepcopy(calibration)})
+      refs.append({**frame.reference(), 'image_calibration_ns': stamp, 'image_calibration': copy.deepcopy(calibration)})
     def warp(item):
       frame, calibration = item
       pixels = frame.pixels
@@ -237,6 +300,8 @@ class Preparer:
         import av
         pixels = np.ascontiguousarray(av.VideoFrame.from_ndarray(pixels, format='nv12').to_ndarray(format='rgb24').transpose(2, 0, 1))
       image = (self.sampler or calibrated_image)(pixels, frame.camera, self.geometry, calibration)
+      if np.shares_memory(image, frame.pixels):
+        image = image.copy()  # The source mapping closes when this snapshot finishes.
       image.flags.writeable = False
       return image
     if self.sampler is not None and len(missing) > 1:
@@ -250,13 +315,4 @@ class Preparer:
       self.cache.move_to_end(key)
     while len(self.cache) > self.cache_limit:
       self.cache.popitem(last=False)
-    nav, nav_meta = navigation(states['navInstruction'], query)
-    arrays = {'image_frames': np.stack(images), 'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
-              'absolute_timestamps': np.array([f.sof_ns//1000 for f in selected.frames], dtype=np.int64),
-              'ego_history_xyz': xyz, 'ego_history_rot': rot, 'nav_text': [nav]}
-    metadata = {'query_ns': query, 'selected_ns': selected.selected_ns, 'frames': refs, 'small_model': selected.small_model,
-                'calibration_rpy': cal['rpyCalib'], 'calibration': copy.deepcopy(cal), 'calibration_log_mono_time': cal_ns,
-                'ego_history_xyz': xyz.tolist(),
-                'ego_history_rot': rot.tolist(), 'vehicle_history': history, 'navigation_text': nav, 'navigation': nav_meta,
-                'camera_profile': 'calibrated_vehicle_history', 'image_cache_hits': hits, 'camera_gaps': selected.camera_gaps}
-    return arrays, metadata
+    return list(zip(images, refs, strict=True)), hits
