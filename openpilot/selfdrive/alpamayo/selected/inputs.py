@@ -16,6 +16,7 @@ from alpamayo2_edge.chat_template import CLOSED_THINKING, build_conversation
 from alpamayo2_edge.models.delta_tokenizer import DeltaTrajectoryTokenizer
 from alpamayo2_edge.sample import CAMERA_PIXEL_BOUNDS
 from openpilot.selfdrive.alpamayo.inputs import InputAdapter
+from openpilot.selfdrive.alpamayo.segments import FrontImages, IMAGE, IMAGE_BYTES, Patch, PatchRows
 
 _memcmp = ctypes.CDLL(None).memcmp
 _memcmp.argtypes = (ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t)
@@ -31,7 +32,7 @@ def same_image(a, b):
 
 
 class SelectedInputs(InputAdapter):
-  def __init__(self, checkpoint):
+  def __init__(self, checkpoint, *, native_fresh_patches=False):
     super().__init__(checkpoint)
     self.history = DeltaTrajectoryTokenizer(pad_origin_at_beginning=False)
     self.rope = SimpleNamespace(config=self.config.vlm_config)
@@ -49,6 +50,13 @@ class SelectedInputs(InputAdapter):
     self.grids = {c:(1,h//16,w//16) for c,(h,w) in self.sizes.items()}
     if any(h*w != 720*16**2 for h,w in self.sizes.values()):
       raise ValueError('Expected 720 byte patches per calibrated image')
+    self.fresh_kernel = None
+    if native_fresh_patches:
+      from .fresh_patches import library, pack_fresh
+      if any(tuple(hw) != (320,576) for hw in self.sizes.values()):
+        raise ValueError('Fresh patch kernel requires the exact 320x576 output')
+      library()
+      self.fresh_kernel = pack_fresh
     # Process one camera on the calling thread. Propagate the runtime's Torch thread count to the other camera.
     self.worker = ThreadPoolExecutor(max_workers=1,initializer=torch.init_num_threads)
 
@@ -68,16 +76,26 @@ class SelectedInputs(InputAdapter):
     patches = []
     for frame,stamp in entries:
       old = cache.get(stamp)
-      if old is not None and same_image(frame,old[0]):
+      frozen = type(frame) is bytes
+      if old is not None and (frame is old[0] if frozen else isinstance(old[0],torch.Tensor) and same_image(frame,old[0])):
         cache.move_to_end(stamp)
         patches.append(old[1])
         continue
       # Resize the private snapshot itself; a reused timestamp or mutable source cannot poison the cache.
-      source = frame if owned else frame.clone()
-      # Same float32 antialiased resize, clamp, and round as torchvision's uint8 bicubic path.
-      image = interpolate(source.unsqueeze(0).float(),self.sizes[camera],mode='bicubic',align_corners=False,antialias=True)
-      batch,_,_ = self.processor.image_processor.patchify(image.clamp_(0,255).round_().byte(),16,2,1)
-      packed = batch.view(720,768)
+      if frozen and len(frame) != IMAGE_BYTES:
+        raise ValueError('Wrong immutable camera frame size')
+      source = frame if frozen or owned else frame.clone()
+      if self.fresh_kernel is None:
+        # Torch never receives a writable alias to immutable source bytes.
+        floats = (torch.from_numpy(np.frombuffer(source,np.uint8).reshape(IMAGE).astype(np.float32)) if frozen
+                  else source.unsqueeze(0).float())
+        image = interpolate(floats,self.sizes[camera],mode='bicubic',align_corners=False,antialias=True)
+        batch,_,_ = self.processor.image_processor.patchify(image.clamp_(0,255).round_().byte(),16,2,1)
+        packed = batch.view(720,768)
+      else:
+        packed = self.fresh_kernel(source)
+      if frozen:
+        packed = Patch(packed.numpy())  # A cached feature key permanently names exactly these immutable patch bytes.
       cache[stamp] = source,packed
       if len(cache) > 72:
         cache.popitem(last=False)
@@ -91,14 +109,19 @@ class SelectedInputs(InputAdapter):
     finally:
       left = future.result()  # Finish reading both input views even if the calling thread raises.
     grids = [self.grids[1]]*len(left)+[self.grids[6]]*len(right)
-    return torch.cat(left+right),grids
+    return (PatchRows(left+right) if type(left[0]) is Patch else torch.cat(left+right)),grids
 
   def anchor_patches(self, anchors):
     entries = []
     for (image,ref),camera in zip(anchors,(1,6),strict=True):
-      if ref['view'] != camera or image.shape != (1,3,432,768) or image.dtype != np.uint8:
+      if ref['view'] != camera:
         raise ValueError('Expected the calibrated current image from each front camera')
-      frame = torch.from_numpy(image[0].copy())  # The retained NumPy pixels are read-only.
+      if type(image) is bytes and len(image) == IMAGE_BYTES:
+        frame = image
+      elif isinstance(image,np.ndarray) and image.shape == IMAGE and image.dtype == np.uint8:
+        frame = torch.from_numpy(image[0].copy())
+      else:
+        raise ValueError('Invalid calibrated anchor pixels')
       entries.append([(frame,ref['capture_ns']//1000)])
     pixels,grids = self.patch_pair(*entries,owned=True)
     return pixels,torch.tensor(grids,dtype=torch.int64)
@@ -146,7 +169,7 @@ class SelectedInputs(InputAdapter):
       tokens = {k:v.clone() for k,v in template.items()}
     tokens.update(pixel_values=pixels,image_grid_thw=grid_tensor)
     patches = tokens['pixel_values']
-    if patches.dtype != torch.uint8 or patches.ndim != 2 or patches.shape[1] != 3*image_processor.patch_size**2:
+    if (type(patches) is not PatchRows and (patches.dtype != torch.uint8 or patches.ndim != 2)) or patches.shape[1] != 3*image_processor.patch_size**2:
       raise ValueError('Expected unnormalized uint8 image patches')
     if tokens['input_ids'].shape[0] != 1:
       raise ValueError('One sample is required')
@@ -156,11 +179,13 @@ class SelectedInputs(InputAdapter):
     fields = {'image_frames','camera_indices','absolute_timestamps','ego_history_xyz','ego_history_rot','nav_text'}
     if set(arrays) != fields:
       raise ValueError('Expected the six canonical model inputs')
-    data = {k:v if k == 'nav_text' or isinstance(v,torch.Tensor) else torch.from_numpy(np.asarray(v)) for k,v in arrays.items()}
+    data = {k:v if k == 'nav_text' or isinstance(v,torch.Tensor) or (k == 'image_frames' and type(v) is FrontImages)
+            else torch.from_numpy(np.asarray(v)) for k,v in arrays.items()}
     cameras,times,images = data['camera_indices'],data['absolute_timestamps'],data['image_frames']
     if (cameras.dtype != torch.int64 or cameras.tolist() != [1]*5+[6]*5 or times.dtype != torch.int64 or times.shape != (10,)
-        or images.dtype != torch.uint8 or images.shape != (10,1,3,432,768) or not images.is_contiguous()
-        or any(value.device.type != 'cpu' for value in (cameras,times,images))):
+        or images.shape != (10,1,3,432,768) or (type(images) is not FrontImages and
+        (images.dtype != torch.uint8 or not images.is_contiguous() or images.device.type != 'cpu'))
+        or any(value.device.type != 'cpu' for value in (cameras,times))):
       raise ValueError('Require the complete calibrated two-front CPU input')
     if any(not bool(torch.all(times[i+1:i+5] > times[i:i+4])) for i in (0,5)):
       raise ValueError('History timestamps must advance')
@@ -173,7 +198,12 @@ class SelectedInputs(InputAdapter):
       raise ValueError('Require one navigation string; empty means unavailable')
     canonical = dict(data,camera_pixel_bounds=CAMERA_PIXEL_BOUNDS)
     stamps = times.tolist()
-    pixels,grids = self.patch_pair(zip(images[:5,0],stamps[:5],strict=True),zip(images[5:,0],stamps[5:],strict=True))
+    if type(images) is FrontImages:
+      canonical['image_frames'] = images.views()  # Prompt placeholders still carry all ten actual images and original times.
+      entries = images
+    else:
+      entries = images[:,0]
+    pixels,grids = self.patch_pair(zip(entries[:5],stamps[:5],strict=True),zip(entries[5:],stamps[5:],strict=True))
     tokens = self.tokenize(build_conversation(canonical),pixels,grids)
     grids = tokens['image_grid_thw']
     if grids.shape != (10,3) or not torch.all(grids.prod(dim=1) == 720):

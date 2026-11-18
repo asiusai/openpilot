@@ -21,6 +21,7 @@ class Config:
   cache_dir: Path
   initial_noise: Path | None = None
   device_timeout_ms: int = 10000
+  native_fresh_patches: bool = False
 
   def __post_init__(self):
     for name in ('checkpoint','fp8_cache','prefill_calibration','cache_dir','initial_noise'):
@@ -28,6 +29,8 @@ class Config:
         object.__setattr__(self,name,Path(value).resolve())
     if self.device_timeout_ms <= 0:
       raise ValueError('Device timeout must be positive')
+    if type(self.native_fresh_patches) is not bool:
+      raise ValueError('native_fresh_patches must be boolean')
 
 
 @dataclass
@@ -148,7 +151,7 @@ class Runtime:
     if self.noise is not None:
       self.validate_noise(self.noise)
       self.noise.setflags(write=False)
-    self.adapter = SelectedInputs(self.config.checkpoint)
+    self.adapter = SelectedInputs(self.config.checkpoint, native_fresh_patches=self.config.native_fresh_patches)
     self.anchor = self.adapter.config.traj_ids['future_start']
     self.draft = validate_draft(self.adapter.tokenizer.encode(DRAFT_TEXT,add_special_tokens=False),self.anchor)
     if self.draft != CHECKPOINT_DRAFT_IDS:
@@ -169,7 +172,8 @@ class Runtime:
       self.model.synchronize()
       finished('inference_setup')
       self.device = Device.DEFAULT
-      self.manifest = {'variant':'selected','recipe':'fp8-group2-pad2048-nominal6-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
+      self.manifest = {'variant':'selected','native_fresh_patches':self.config.native_fresh_patches,
+                       'recipe':'fp8-group2-pad2048-nominal6-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
                        'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
                        'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2048,
                        'cache_rows':2304,'vision_group_limit':2,'vision_cache_capacity':144,'images':10,'patches_per_image':720,
@@ -195,6 +199,7 @@ class Runtime:
   def prime(self, anchors, deadline_ns):
     """Encode only the two real current exposures. A cold graph may outlive its slot."""
     import numpy as np
+    from openpilot.selfdrive.alpamayo.segments import PatchRows
     from tinygrad import Tensor
     with self.lock:
       if self.closed:
@@ -202,14 +207,14 @@ class Runtime:
       if time.monotonic_ns() >= deadline_ns:
         return False
       patches,grids = self.adapter.anchor_patches(anchors)
-      pixels,layout = patches.numpy(),grids.numpy()
+      pixels,layout = (patches if type(patches) is PatchRows else patches.numpy()),grids.numpy()
       keys = self.vision.patch_keys(pixels,layout)
       missing = self.vision.missing_indices(keys)
       encoded = {}
       if missing:
         batches = self.vision_buffers.batches(layout,1)
         positions = self.adapter.vision_positions(grids)
-        raw = np.concatenate([pixels[batches[i][0]:batches[i][1]] for i in missing])
+        raw = np.concatenate([pixels.rows(*batches[i][:2]) if type(pixels) is PatchRows else pixels[batches[i][0]:batches[i][1]] for i in missing])
         if time.monotonic_ns() >= deadline_ns:
           return False
         positions = self.vision_buffers.position_buffer(layout,positions)

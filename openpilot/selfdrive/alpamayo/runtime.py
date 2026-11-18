@@ -16,6 +16,8 @@ from typing import Protocol
 
 import numpy as np
 
+from openpilot.selfdrive.alpamayo.segments import FrontImages
+
 from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_TOLERANCE_NS, HALF_SECOND_NS, OFFSETS_NS, Frame, Selection, State, Unavailable
 
 INPUT_LIMIT = 32*1024**2
@@ -265,7 +267,8 @@ def validate_input(arrays, meta):
     raise ValueError('Incomplete model inputs')
   for name, (shape, dtype) in shapes.items():
     value = arrays[name]
-    if (value.shape != shape or value.dtype != dtype or not value.flags.c_contiguous or
+    segments = name == 'image_frames' and type(value) is FrontImages
+    if (value.shape != shape or value.dtype != dtype or (not segments and not value.flags.c_contiguous) or
         (np.issubdtype(dtype, np.floating) and not np.isfinite(value).all())):
       raise ValueError(f'Invalid {name}')
   if arrays['camera_indices'].tolist() != [1]*5+[6]*5 or len(meta['frames']) != 10:
@@ -309,9 +312,15 @@ def run_prediction(adapter, arrays, metadata, clock=time.monotonic_ns):
   for name, value in arrays.items():
     array = np.array(value[0]) if name == 'nav_text' else value
     header = io.BytesIO()
-    np.lib.format.write_array_header_1_0(header, np.lib.format.header_data_from_array_1_0(array))
+    desc = ({'descr':array.dtype.str,'shape':array.shape,'fortran_order':False} if type(array) is FrontImages
+            else np.lib.format.header_data_from_array_1_0(array))
+    np.lib.format.write_array_header_1_0(header, desc)
     digest = hashlib.sha256(header.getbuffer())
-    digest.update(array.reshape(-1).view(np.uint8))
+    if type(array) is FrontImages:
+      for owner in array:
+        digest.update(owner)  # One ordered read of all ten: canonical NPY SHA-256 is not a hash of frame hashes.
+    else:
+      digest.update(array.reshape(-1).view(np.uint8))
     hashes[name] = digest.hexdigest()
   metadata = dict(metadata, input_sha256=hashes)
   begin = clock()
@@ -361,7 +370,7 @@ def load_adapter(config):
   if variant == 'default':
     from openpilot.selfdrive.alpamayo.inference import ShadowAdapter
   elif variant == 'selected':
-    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms'}
+    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches'}
     if extra := settings.keys()-allowed:
       raise ValueError(f'Unexpected selected inference fields: {sorted(extra)}')
     settings['cache_dir'] = str(Path(config['cache']).resolve())
@@ -392,7 +401,10 @@ def worker(config, directory, handoff):
       lens_rays(camera, geometry_json)
     library(str(config['cache']))
     sampler = partial(calibrated_image, cache_dir=config['cache'])
-  preparer = Preparer(config['geometry'], sampler=sampler)
+  segmented = config.get('retained_cpu_inputs', False)
+  if type(segmented) is not bool or (segmented and (sampler is None or config.get('period_ms', 500) != 500)):
+    raise ValueError('retained_cpu_inputs requires the selected 500 ms worker')
+  preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented)
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
@@ -404,7 +416,7 @@ def worker(config, directory, handoff):
   previous = signal.signal(signal.SIGTERM, stop)
   try:
     atomic_json(root/'runtime.json', dict(adapter.manifest, geometry=config['geometry'], history_offsets_ns=OFFSETS_NS, period_ms=config.get('period_ms', 500),
-                                         source_sof='Original VisionIPC SOF; estimated from EOF on v0'))
+                                         retained_cpu_inputs=segmented, source_sof='Original VisionIPC SOF; estimated from EOF on v0'))
     ready = time.monotonic_ns()
     atomic_json(root/'ready.json', {'ready': True, 'adapter_load_started_ns': load_started, 'worker_ready_ns': ready,
                                     'adapter_startup_ms': getattr(adapter, 'startup_ms', {})})

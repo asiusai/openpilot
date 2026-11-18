@@ -4,6 +4,7 @@ import hashlib
 import numpy as np
 from tinygrad import Device, Tensor, TinyJit, dtypes
 from tinygrad.uop.ops import UOp
+from openpilot.selfdrive.alpamayo.segments import PatchRows
 
 
 class VisionCache:
@@ -31,13 +32,18 @@ class VisionCache:
 
   @staticmethod
   def patch_keys(pixels, grids):
+    if type(pixels) is PatchRows:
+      if any(np.prod(grid) != 720 for grid in grids):
+        raise ValueError('Wrong grid for immutable byte patches')
+      return tuple((tuple(grid),p[1]) for p,grid in zip(pixels,grids,strict=True))
     offsets = np.concatenate(([0],np.cumsum(grids.prod(axis=1))))
     return tuple((tuple(grid),hashlib.sha256(np.ascontiguousarray(pixels[a:b])).digest())
                  for grid,a,b in zip(grids,offsets[:-1],offsets[1:],strict=True))
 
   def prepare(self, prepared):
     tokens = prepared['tokenized_data']
-    self.keys = self.patch_keys(tokens['pixel_values'].numpy(),tokens['image_grid_thw'].numpy())
+    pixels = tokens['pixel_values']
+    self.keys = self.patch_keys(pixels if type(pixels) is PatchRows else pixels.numpy(),tokens['image_grid_thw'].numpy())
     if len(self.keys) != 10 or any(np.prod(grid) != 720 for grid,_ in self.keys):
       raise ValueError('Require all ten full-resolution images')
 

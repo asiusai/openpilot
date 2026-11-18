@@ -140,10 +140,27 @@ The private JSON configuration contains:
 - `output`: existing output directory, separate from route recordings.
 - `cache`: absolute existing writable persistent cache directory, separate from route recordings and `output`.
 - `period_ms`: fixed live slot period; default `500` for the initial 2 Hz shadow car test. Accepted values are `100`, `250`, and `500`.
+- `retained_cpu_inputs`: optional boolean, default `false`. The selected 500 ms worker can retain immutable calibrated images and byte patches.
 - `geometry`: the qualified source-camera geometry object described below.
 - `inference`: `variant` defaults to `default`, with `checkpoint`, `initial_noise`, and optional `cache_vision`. The selected fields are shown below.
 
 Use absolute paths. No inference settings or model paths are added to normal openpilot dependencies.
+With retained CPU inputs, all ten images still contribute their ordered bytes to the canonical NPY audit hash.
+The selected inference option `native_fresh_patches` independently enables the pinned CPU patch kernel for cache misses. Both options default to `false`.
+The worker packs the four new steady-state exposures and copies only missing patch sets to the upload source.
+
+For `native_fresh_patches`, build the AArch64 library before packaging the worker. Run this from the repository root with the pinned Torch 2.8.0 environment:
+
+```sh
+python -m openpilot.selfdrive.alpamayo.selected.native_patches.build --output-dir "$STAGED_SELECTED_PACKAGE"
+```
+
+`STAGED_SELECTED_PACKAGE` is the staged `openpilot/selfdrive/alpamayo/selected` directory containing `fresh_patches.py`. Include the generated `fresh-aarch64.so` there in the device package.
+The source checkout does not contain the library. The builder requires Linux, GCC 13.3.0 (Ubuntu `13.3.0-6ubuntu2~24.04.1`), GNU binutils 2.42, and AArch64 glibc development files.
+It selects `aarch64-linux-gnu-gcc` for cross compilation or `gcc` on AArch64. Use `--cc` for another path to the same toolchain.
+The build derives the exact filter tables from Torch and checks their hashes. It replaces the output only after matching the qualified library digest.
+The runtime requires AArch64 Linux and Torch `2.8.0+cpu` for this option. Missing or mismatched libraries stop startup. With the option off, no library or compiler is required.
+
 The worker sets `XDG_CACHE_HOME` to `cache`; the baseline uses `cache/compiler-cache.db` and the selected backend uses `cache/tinygrad.db` for `CACHEDB`.
 Reuse this isolated directory across ignition cycles; it is outside session prediction limits and is never automatically deleted.
 Stage the required pinned firmware cache there before hardware use. The installer and CPU tests do not download firmware.

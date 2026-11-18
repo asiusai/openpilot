@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from tinygrad import Device, Tensor, TinyJit, dtypes
 from openpilot.selfdrive.alpamayo.inputs import rotary
+from openpilot.selfdrive.alpamayo.segments import PatchRows
 
 
 class VisionBuffers:
@@ -42,7 +43,8 @@ class CompactInputs:
   @staticmethod
   def arrays(args, prepared, packed):
     ids, positions, delta, vision_positions = packed
-    arrays = [prepared['tokenized_data']['pixel_values'].numpy(), np.zeros(1, dtype=np.uint16),
+    patches = prepared['tokenized_data']['pixel_values']
+    arrays = [patches if type(patches) is PatchRows else patches.numpy(), np.zeros(1, dtype=np.uint16),
               ids.astype(np.int32), *rotary(positions)]
     for length in (args.max_tokens, args.max_tokens+64):
       pos = np.arange(length) + ids.shape[1] + delta
@@ -103,7 +105,7 @@ class CompactInputs:
     buf, dest, transfer = self.uploads[rows]
     offset = 0
     for begin,end in ranges:
-      dest[offset:offset+end-begin] = self.pixels[begin:end]
+      dest[offset:offset+end-begin] = self.pixels.rows(begin,end) if type(self.pixels) is PatchRows else self.pixels[begin:end]
       offset += end-begin
     self.uploaded_pixel_bytes = dest.nbytes if rows else 0
     self.noise[:] = noise

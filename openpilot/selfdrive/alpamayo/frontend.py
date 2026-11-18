@@ -12,6 +12,8 @@ import threading
 
 import numpy as np
 
+from openpilot.selfdrive.alpamayo.segments import FrontImages, IMAGE
+
 CAMERAS = (1, 6)
 _stamp = attrgetter('stamp')
 OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
@@ -220,7 +222,7 @@ def navigation(rows, query):
 
 
 class Preparer:
-  def __init__(self, geometry, cache_limit=48, sampler=None):
+  def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False):
     if cache_limit < 0:
       raise ValueError('Negative image cache capacity')
     if any(tuple(geometry['cameras'][str(c)]['prepared_size']) != (768, 432) for c in CAMERAS):
@@ -228,6 +230,7 @@ class Preparer:
     self.geometry = copy.deepcopy(geometry)
     self.cache, self.cache_limit = OrderedDict(), cache_limit
     self.sampler = sampler
+    self.segmented = segmented
     self.anchors = deque(maxlen=4)
 
   def prepare(self, selected, half_second_slot=None):
@@ -251,7 +254,8 @@ class Preparer:
     images, refs = zip(*views, strict=True)
     refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
     nav, nav_meta = navigation(states['navInstruction'], query)
-    arrays = {'image_frames': np.stack(images), 'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
+    arrays = {'image_frames': FrontImages(images) if self.segmented and half_second_slot is not None else np.stack(images),
+              'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
               'absolute_timestamps': np.array([ref['capture_ns']//1000 for ref in refs], dtype=np.int64),
               'ego_history_xyz': xyz, 'ego_history_rot': rot, 'nav_text': [nav]}
     metadata = {'query_ns': query, 'selected_ns': selected.selected_ns, 'frames': refs, 'small_model': selected.small_model,
@@ -325,6 +329,10 @@ class Preparer:
         import av
         pixels = np.ascontiguousarray(av.VideoFrame.from_ndarray(pixels, format='nv12').to_ndarray(format='rgb24').transpose(2, 0, 1))
       image = (self.sampler or calibrated_image)(pixels, frame.camera, self.geometry, calibration)
+      if self.segmented and not reuse:
+        if image.shape != IMAGE[1:] or image.dtype != np.uint8:
+          raise ValueError('Invalid calibrated exposure')
+        return image.tobytes(order='C')  # Freeze only newly projected pixels, before the source mapping closes.
       if np.shares_memory(image, frame.pixels):
         image = image.copy()  # The source mapping closes when this snapshot finishes.
       image.flags.writeable = False
@@ -343,7 +351,7 @@ class Preparer:
         cache.update(zip(missing, pool.map(warp, missing.values()), strict=True))
     else:
       cache.update((key, warp(item)) for key, item in missing.items())
-    images = [cache[key][None] for key in keys]
+    images = [cache[key] for key in keys] if self.segmented and not reuse else [cache[key][None] for key in keys]
     if reuse:
       for key in keys:
         self.cache.move_to_end(key)
