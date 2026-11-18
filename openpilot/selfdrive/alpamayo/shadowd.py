@@ -21,11 +21,17 @@ class WorkerStopped(RuntimeError):
 
 
 def worker_cpu_ticks(pid):
-  try:
-    fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-    return int(fields[11])+int(fields[12])  # utime + stime, including compiler work in this process.
-  except (OSError, IndexError, ValueError):
-    return None
+  # The worker leads its own process group. An idle parent can be waiting for active compiler processes.
+  ticks, leader = 0, False
+  for path in Path('/proc').glob('[0-9]*/stat'):
+    try:
+      fields = path.read_text().rsplit(')', 1)[1].split()
+      if int(fields[2]) == pid:  # pgrp
+        ticks += sum(map(int, fields[11:15]))  # user/system CPU for this process and reaped children
+        leader |= path.parent.name == str(pid)
+    except (OSError, IndexError, ValueError):
+      continue  # Processes can exit while /proc is being read.
+  return ticks if leader else None
 
 
 def cache_directory(config, output):
