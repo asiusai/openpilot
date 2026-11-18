@@ -84,9 +84,12 @@ class Decoder:
     while len(generated) < max_tokens:
       offset = len(generated)
       remaining = max_tokens-offset
-      first = self.first_token(logits) if next_token is None else next_token
+      proposed = []
+      if self.history and remaining >= 16:
+        first = self.first_token(logits) if next_token is None else next_token
+        proposed = [first]+self.continuation(generated+[first],min(64,remaining)-1)
+      # The serial block chooses its own first token. Only a possible verifier call needs it on the host.
       next_token = None
-      proposed = [first]+self.continuation(generated+[first],min(64,remaining)-1)
       count = ((len(proposed)+15)//16)*16
       if len(proposed) <= 1 or count > remaining:
         if pending_logits is not None:
