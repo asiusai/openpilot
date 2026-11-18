@@ -2,7 +2,7 @@
 from collections import OrderedDict
 import hashlib
 import numpy as np
-from tinygrad import Tensor, TinyJit
+from tinygrad import Device, Tensor, TinyJit, dtypes
 from tinygrad.uop.ops import UOp
 
 
@@ -12,6 +12,12 @@ class VisionCache:
 
   def __init__(self, model):
     self.model = model
+    self.pair_weights = None
+    if getattr(model,'amd',False) and Device.DEFAULT == 'AMD':
+      from .model import SelectedModel
+      if type(model) is SelectedModel and model.dtype == dtypes.bfloat16 and model.config['vlm_config']['vision_config']['num_hidden_layers'] == 27:
+        from .vision_pair import VisionWeights
+        self.pair_weights = VisionWeights(model)
     self.cache,self.encoders,self.stitchers = OrderedDict(),{},OrderedDict()
     self.keys = ()
     self.hits = self.misses = 0
@@ -49,7 +55,23 @@ class VisionCache:
         missing.setdefault(key, i)
     return tuple(missing.values())
 
+  def encoder(self, pairs):
+    shape = tuple(t.shape for t in pairs)
+    if self.pair_weights is not None:
+      from .vision_pair import PAIR, PairEncoder
+      if shape == PAIR and all(t.dtype == dtypes.bfloat16 and b.max_numel() == t.numel() and t.uop is b.reshape(t.shape)
+                               for t in pairs for b in (t.uop.storage_base,)):
+        key = (PairEncoder,shape)
+        if key not in self.encoders:
+          self.encoders[key] = PairEncoder(self.pair_weights)
+        return self.encoders[key]
+    if shape not in self.encoders:
+      self.encoders[shape] = TinyJit(self.model.encode_group)
+    return self.encoders[shape]
+
   def encode_missing(self, keys, pixels, positions, batches, missing):
+    if self.pair_weights is not None:
+      self.pair_weights.check()
     assert len(batches) == len(keys) and all(count == 1 for _,_,count in batches)
     groups,encoded = {},{}
     offset = 0
@@ -63,10 +85,7 @@ class VisionCache:
         chunk = group[start:start+self.group_limit]
         pairs = [view for _,p,a,b in chunk for view in (self.image_view(pixels,p,p+b-a),self.image_view(positions,a,b))]
         Tensor.realize(*pairs)
-        shape = tuple(t.shape for t in pairs)
-        if shape not in self.encoders:
-          self.encoders[shape] = TinyJit(self.model.encode_group)
-        values = [t.clone() for t in self.encoders[shape](*pairs)]
+        values = [t.clone() for t in self.encoder(pairs)(*pairs)]
         Tensor.realize(*values)
         encoded.update(zip((item[0] for item in chunk),values,strict=True))
     return encoded
