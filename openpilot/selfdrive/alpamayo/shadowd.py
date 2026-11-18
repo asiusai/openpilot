@@ -18,6 +18,14 @@ class WorkerStopped(RuntimeError):
   """A fresh worker can recover without restarting modeld or interrupting the local model."""
 
 
+def worker_cpu_ticks(pid):
+  try:
+    fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+    return int(fields[11])+int(fields[12])  # utime + stime, including compiler work in this process.
+  except (OSError, IndexError, ValueError):
+    return None
+
+
 def cache_directory(config, output):
   from openpilot.selfdrive.alpamayo.runtime import private_output
   cache = Path(config['cache'])
@@ -115,6 +123,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   producer = NativeProducer(store)
   child = None
   worker_start = working_since = None
+  next_check, last_ticks = 0., None
   admission = None
   served_plan = False
   last_query, last_current = 0, {}
@@ -143,11 +152,17 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         if not ready and time.monotonic()-worker_start > 600:
           raise WorkerStopped('Inference initialization timed out')
         if (handoff/'working.bin').exists() or (handoff/'pending.bin').exists():
+          elapsed = time.monotonic()
           if working_since is None:
-            working_since = time.monotonic()
-          # Cold JIT captures can take minutes. Drop individual deadline misses without reloading weights.
-          if time.monotonic()-working_since > (10 if served_plan else 600):
+            working_since, next_check, last_ticks = elapsed, elapsed+10, None
+          # A new reasoning shape can compile for minutes even after a timely straight-road plan.
+          if elapsed-working_since > 600:
             raise WorkerStopped('Inference worker stopped completing slots')
+          if served_plan and elapsed >= next_check:
+            ticks = worker_cpu_ticks(child.pid)
+            if ticks is not None and ticks == last_ticks:
+              raise WorkerStopped('Inference worker stopped making progress')
+            last_ticks, next_check = ticks, elapsed+10
         else:
           working_since = None
         latest = handoff/'plan.json'
