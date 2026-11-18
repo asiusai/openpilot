@@ -1,5 +1,4 @@
 """Read-only VisionIPC and service capture. Importing opens no connections."""
-import json
 import threading
 import time
 
@@ -103,11 +102,8 @@ class NativeProducer:
           ready, revision = navigation_ready(params, routes, stamp)
           valid = valid and ready
           value['routeRevision'] = revision
-        try:
-          json.dumps(value, allow_nan=False)
-        except ValueError:
-          valid = False
-        self.store.add_state(kind, stamp, received, value, bool(sm.valid[kind] and valid))
+        # state_value constructs detached Python values. The store can keep them without copying the full modelV2 again.
+        self.store.add_state(kind, stamp, received, value, bool(sm.valid[kind] and valid), owned=True)
       if params.get_bool('ChestnutActive') or params.get_bool('ChestnutLoading'):
         raise RuntimeError('Driving model attempted Chestnut ownership')
       self.health = {'time_ns': received, 'model_alive': bool(sm.alive['modelV2'] and sm.valid['modelV2']),

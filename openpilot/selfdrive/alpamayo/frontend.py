@@ -114,12 +114,20 @@ class Store:
         self.bytes -= oldest.popleft().pixels.nbytes
     return True
 
-  def add_state(self, kind, stamp, received, value, valid=True):
+  def add_state(self, kind, stamp, received, value, valid=True, *, owned=False):
     if kind not in self.states or not 0 < stamp <= received:
       raise ValueError('Invalid state timestamps')
-    if valid and len(json.dumps(value, allow_nan=False).encode()) > 64*1024:
-      raise ValueError('State exceeds 64 KiB')
-    row = State(stamp, received, copy.deepcopy(value) if valid else None, valid)
+    if valid:
+      try:
+        size = len(json.dumps(value, allow_nan=False))  # ensure_ascii=True; one byte per character.
+      except ValueError:
+        if not owned:
+          raise
+        valid = False  # An invalid live update must still supersede the earlier state.
+      else:
+        if size > 64*1024:
+          raise ValueError('State exceeds 64 KiB')
+    row = State(stamp, received, (value if owned else copy.deepcopy(value)) if valid else None, valid)
     with self.lock:
       rows = self.states[kind]
       index = bisect_right(rows, stamp, key=_stamp)
