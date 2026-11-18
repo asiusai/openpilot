@@ -221,12 +221,6 @@ Source frame-ID gaps remain in prediction metadata. No uploader or cloud publica
 
 ## Validation and remaining work
 
-Run the CPU suite in the isolated environment:
-
-```sh
-DEV=CPU python -m unittest discover -s openpilot/selfdrive/alpamayo/tests -v
-```
-
 Use the BF16 replay as the accuracy reference. Also measure every deadline on advancing camera inputs with the local model running.
 The selected two-camera bench implementation still missed 500 ms on a turn. Live timing and vehicle control are unqualified.
 

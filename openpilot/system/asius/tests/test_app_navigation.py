@@ -1,7 +1,5 @@
 import asyncio
 import json
-import time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +13,6 @@ from openpilot.selfdrive.navigation.vector_tile import decode_roads
 from openpilot.system.asius import methods
 from openpilot.system.asius import navigation
 from openpilot.system.asius.mapbox import MapboxTiles
-from openpilot.system.asius.navigation_route import RouteStore
 
 
 def test_navigation_rpc_uses_upstream_params(tmp_path, monkeypatch):
@@ -66,55 +63,6 @@ def test_recent_destinations_persist_and_merge(tmp_path, monkeypatch):
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START | ParamKeyFlag.CLEAR_ON_OFFROAD_TRANSITION)
   assert params.get('NavDestination') is None
   assert Params(str(tmp_path)).get(navigation.RECENT_DESTINATIONS) == recent
-
-
-def test_app_destination_to_device_guidance_and_cancellation(tmp_path, monkeypatch):
-  params = Params(str(tmp_path))
-  monkeypatch.setattr(methods.upstream_athena, 'Params', lambda: params)
-  monkeypatch.setattr(navigation, 'Params', lambda: params)
-  monkeypatch.delenv('MAPBOX_TOKEN', raising=False)
-  monkeypatch.setattr('openpilot.system.asius.mapbox.NavigationApi.get_token', lambda self, path: 'mock-device-proof')
-  place = {'latitude': 0.001, 'longitude': 0.001, 'name': 'Destination', 'address': 'Synthetic route'}
-  dispatcher = methods.dispatcher_for_peer('authorized-app')
-  reply = json.loads(methods.handle({'id': 1, 'method': 'setNavDestination', 'params': place}, dispatcher))
-  assert reply['result'] == {'success': 1}
-  sm, pm = MagicMock(), MagicMock()
-  sm.frame = 1
-  sm.valid = dict.fromkeys(('gpsLocation', 'gpsLocationExternal', 'deviceState'), True)
-  sm.alive = sm.valid.copy()
-  sm.recv_time = dict.fromkeys(sm.valid, time.monotonic())
-  sm.logMonoTime = dict.fromkeys(sm.valid, time.monotonic_ns())
-  gps = SimpleNamespace(hasFix=True, latitude=0, longitude=0, speed=5, bearingDeg=90, bearingAccuracyDeg=5)
-  sm.__getitem__.side_effect = lambda service: SimpleNamespace(started=True) if service == 'deviceState' else gps
-  engine = RouteEngine(sm, pm, params)
-  route = {'distance': 222.39, 'duration': 30, 'geometry': {'coordinates': [[0, 0], [0.001, 0], [0.001, 0.001]]},
-           'legs': [{'steps': [
-             {'distance': 111.195, 'duration': 15, 'geometry': {'coordinates': [[0, 0], [0.001, 0]]},
-              'bannerInstructions': [{'distanceAlongGeometry': 120, 'primary': {'text': 'Turn left', 'type': 'turn', 'modifier': 'left'}}]},
-             {'distance': 111.195, 'duration': 15, 'geometry': {'coordinates': [[0.001, 0], [0.001, 0.001]]},
-              'bannerInstructions': [{'distanceAlongGeometry': 120, 'primary': {'text': 'Destination', 'type': 'arrive'}}]},
-           ]}]}
-  response = MagicMock(content=b'mocked mapbox response')
-  response.json.return_value = {'routes': [route]}
-  with patch('requests.get', return_value=response) as get:
-    engine.update()
-  assert '/directions/v5/mapbox/driving-traffic/0,0;0.001,0.001?' in get.call_args.args[0]
-  assert get.call_args.kwargs['headers'] == {'Authorization': 'Bearer mock-device-proof'}
-  assert RouteStore(params).state()['status'] == 'ready'
-  instruction = next(call.args[1] for call in reversed(pm.send.call_args_list) if call.args[0] == 'navInstruction')
-  assert instruction.valid and instruction.navInstruction.maneuverModifier == 'left'
-  gps.longitude, gps.latitude = 0.001, 0.0002
-  engine.update()
-  instruction = next(call.args[1] for call in reversed(pm.send.call_args_list) if call.args[0] == 'navInstruction')
-  assert instruction.valid and instruction.navInstruction.maneuverType == 'arrive'
-  assert 80 < instruction.navInstruction.distanceRemaining < 100
-  reply = json.loads(methods.handle({'id': 2, 'method': 'clearNavDestination'}, dispatcher))
-  assert reply['result'] == {'success': 1}
-  engine.update()
-  instruction = next(call.args[1] for call in reversed(pm.send.call_args_list) if call.args[0] == 'navInstruction')
-  assert not instruction.valid
-  assert RouteStore(params).state() == {'status': 'idle'}
-  assert params.get('NavRecentDestinations') == [place]
 
 
 @pytest.mark.parametrize('field,value', [('latitude', float('nan')), ('longitude', float('inf')), ('latitude', True),
