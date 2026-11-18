@@ -282,6 +282,24 @@ class HandoffTests(unittest.TestCase):
 
 
 class LiveReviewTests(unittest.TestCase):
+  def test_selected_worker_keeps_planner_after_backend_clears_environment(self):
+    selected = populated().select(BASE+3015*MS)
+    adapter = SimpleNamespace(manifest={}, predict=lambda a, m: {'query_ns': m['query_ns'], 'prediction': prediction()},
+                              synchronize=lambda: None, close=Mock())
+    def initialize(_):
+      del os.environ['ALPAMAYO_PLANNER']
+      return adapter
+    with tempfile.TemporaryDirectory() as directory, runtime.ram_handoff() as handoff:
+      root, slot = Path(directory), Path(handoff)
+      runtime.save_selection(slot/'pending.bin', selected, {})
+      with patch.dict(os.environ, {'ALPAMAYO_PLANNER':'1', 'ALPAMAYO_SHADOW':'0'}), \
+           patch.object(runtime, 'load_adapter', side_effect=initialize), patch.object(runtime, 'storage_ok', return_value=True), \
+           patch.object(runtime.time, 'monotonic_ns', return_value=BASE+3130*MS), patch.object(runtime.time, 'sleep', side_effect=KeyboardInterrupt):
+        with self.assertRaises(KeyboardInterrupt):
+          runtime.worker({'geometry':geometry(), 'inference':{'variant':'selected'}, 'cache':directory}, root, slot)
+      self.assertIsNone(json.loads((slot/'plan.json').read_text()))  # First startup result explicitly invalidates any prior plan.
+      adapter.close.assert_called_once()
+
   def test_selected_worker_injects_native_sampler_and_default_keeps_scipy(self):
     from functools import partial
     from openpilot.selfdrive.alpamayo.selected.camera import calibrated_image

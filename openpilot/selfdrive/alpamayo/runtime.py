@@ -325,6 +325,8 @@ def worker(config, directory, handoff):
     from openpilot.selfdrive.alpamayo.selected.camera import calibrated_image
     sampler = partial(calibrated_image, cache_dir=config['cache'])
   preparer = Preparer(config['geometry'], sampler=sampler)
+  # Selected inference removes ALPAMAYO_* tuning variables during initialization.
+  publish_plans = planner_mode()
   adapter = load_adapter(config)
   written = count = 0
   try:
@@ -350,7 +352,7 @@ def worker(config, directory, handoff):
             raise Unavailable('Input expired during preparation')
           result = run_prediction(adapter, arrays, meta)
           result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
-          if planner_mode():
+          if publish_plans:
             temporary = handoff/'plan.tmp'
             temporary.write_text(json.dumps(packet(result), allow_nan=False))
             temporary.replace(handoff/'plan.json')
