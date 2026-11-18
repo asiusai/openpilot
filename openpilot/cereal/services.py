@@ -27,6 +27,7 @@ _services: dict[str, tuple] = {
   "deviceState": (True, 2., 1),
   "chestnutState": (True, 10., 1),
   "chestnutGpuState": (False, 10.),
+  "alpamayoPlan": (True, 2., 1),
   "touch": (True, 20., 1),
   "can": (True, 100., 2053, QueueSize.BIG),  # decimation gives ~3 msgs in a full segment
   "controlsState": (True, 100., 10, QueueSize.MEDIUM),

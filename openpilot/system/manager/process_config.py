@@ -67,7 +67,12 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
 def alpamayo_shadow(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return started and os.environ.get('ALPAMAYO_SHADOW') == '1'
+  if not started or os.environ.get('ALPAMAYO_SHADOW') == '1':
+    return started
+  if os.environ.get('ALPAMAYO_PLANNER') == '1':
+    from openpilot.selfdrive.modeld.helpers import chestnut_present
+    return chestnut_present()
+  return False
 
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("NavigationEnabled")

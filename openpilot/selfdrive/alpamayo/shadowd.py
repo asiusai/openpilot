@@ -1,4 +1,4 @@
-"""Optional shadow supervisor; the normal model remains the only driving model."""
+"""Supervise the isolated GPU worker and forward plans only in planner mode."""
 import json
 import os
 from pathlib import Path
@@ -7,6 +7,10 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+def planner_mode():
+  return os.environ.get('ALPAMAYO_PLANNER') == '1' and os.environ.get('ALPAMAYO_SHADOW') != '1'
 
 
 def cache_directory(config, output):
@@ -46,11 +50,13 @@ def stop_worker(child):
 
 
 def main():
-  if os.environ.get('ALPAMAYO_SHADOW') != '1':
+  if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
     return
   from openpilot.selfdrive.alpamayo.runtime import private_output, ram_handoff, storage_ok
   config_path = Path(os.environ['ALPAMAYO_CONFIG']).resolve()
   config = json.loads(config_path.read_text())
+  if planner_mode() and (config.get('period_ms', 500) != 500 or config['inference'].get('variant') != 'selected'):
+    raise ValueError('Planner evaluation requires the selected 500 ms configuration')
   python = Path(config['python'])
   if not python.is_file() or python == Path(sys.executable):
     raise ValueError('Configure a separate, pinned Alpamayo Python environment')
@@ -76,6 +82,16 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.selfdrive.alpamayo.frontend import Store, Unavailable
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
   slots = FixedSlots(config.get('period_ms', 500))
+  pm = None
+  if planner_mode():
+    from openpilot.cereal import messaging
+    pm = messaging.PubMaster(['alpamayoPlan'])
+  def publish(payload=None):
+    if pm is not None:
+      msg = messaging.new_message('alpamayoPlan', valid=payload is not None)
+      if payload is not None:
+        msg.alpamayoPlan = payload
+      pm.send('alpamayoPlan', msg)
   store, params = Store(), Params()
   producer = NativeProducer(store)
   child = None
@@ -101,9 +117,16 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
                                    env=worker_environment(config, cache), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         if child.poll() is not None:
           raise RuntimeError(f'Shadow runtime exited ({child.returncode}); see {root / "worker.log"}')
+        latest = handoff/'plan.json'
+        if pm is not None and latest.exists():
+          # Rename before reading: a newer result can replace the mailbox without being unlinked here.
+          reading = latest.replace(handoff/'reading.json')
+          publish(json.loads(reading.read_bytes()))
+          reading.unlink()
         if (handoff/'skipped').exists():
           (handoff/'skipped').unlink()
           slots.skip()
+          publish()
         slot = slots.take(time.monotonic_ns()) if (root/'ready.json').exists() else None
         if slot is not None:
           try:
@@ -120,17 +143,21 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
             last_current = {c: selected.frames[i*5+4].sof_ns for i, c in enumerate((1, 6))}
           except Unavailable:
             slots.skip()
-        producer.stop.wait(.02)
+            publish()
+        producer.stop.wait(.005 if pm is not None else .02)
   finally:
     try:
       stop_worker(child)
     finally:
-      producer.close()
+      try:
+        publish()
+      finally:
+        producer.close()
 
 
 if __name__ == '__main__':
   if len(sys.argv) == 4:
-    if os.environ.get('ALPAMAYO_SHADOW') != '1':
+    if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
       raise RuntimeError('Explicit shadow opt-in is required')
     os.nice(10)
     cpus = {cpu for cpu in os.sched_getaffinity(0) if cpu < 6}

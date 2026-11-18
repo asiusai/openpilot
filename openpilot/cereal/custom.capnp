@@ -10,7 +10,14 @@ $Cxx.namespace("cereal");
 # DO rename the structs
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
-struct CustomReserved0 @0x81c2f05a394cf4af {
+struct AlpamayoPlan @0x81c2f05a394cf4af {
+  queryMonoTime @0 :UInt64;
+  readyMonoTime @1 :UInt64;
+  slotDeadline @2 :UInt64;
+  # Future positions in forward/left metres and yaw in left-positive radians, every 100 ms.
+  x @3 :List(Float32);
+  y @4 :List(Float32);
+  yaw @5 :List(Float32);
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {

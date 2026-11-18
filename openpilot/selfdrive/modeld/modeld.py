@@ -243,7 +243,7 @@ def main(demo=False):
   cloudlog.warning("modeld init")
 
   # A cable can be a Chestnut awaiting enumeration, unless a USB host is connected.
-  CHESTNUT = (os.environ.get('DISABLE_CHESTNUT', '1') == '0' and os.environ.get('ALPAMAYO_SHADOW') != '1' and
+  CHESTNUT = (os.environ.get('DISABLE_CHESTNUT', '1') == '0' and os.environ.get('ALPAMAYO_SHADOW') != '1' and os.environ.get('ALPAMAYO_PLANNER') != '1' and
               chestnut_compiled() and (chestnut_present(timeout=45.) if ASIUS_HARDWARE else
                                       (chestnut_present() or (cable_connected() and not usb_host_connected()))))
   if CHESTNUT:
@@ -317,8 +317,12 @@ def main(demo=False):
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutGpuState"] if CHESTNUT else [])
   pm = PubMaster(pub_socks)
+  planner = None
+  if os.environ.get('ALPAMAYO_PLANNER') == '1' and os.environ.get('ALPAMAYO_SHADOW') != '1':
+    from openpilot.selfdrive.alpamayo.planner import PlanSelector
+    planner = PlanSelector()
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
-                  "carControl", "controlsState", "lateralDelay"])
+                  "carControl", "controlsState", "lateralDelay"] + (['alpamayoPlan'] if planner is not None else []))
 
   publish_state = PublishState()
   params = Params()
@@ -384,6 +388,11 @@ def main(demo=False):
       meta_extra = meta_main
 
     sm.update(0)
+    if planner is not None and sm.updated['alpamayoPlan']:
+      if sm.valid['alpamayoPlan']:
+        planner.receive(sm['alpamayoPlan'], time.monotonic_ns())
+      else:
+        planner.reject()
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
@@ -460,6 +469,13 @@ def main(demo=False):
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
       modelv2_send.modelV2.big = model.chestnut
+      if planner is not None:
+        # Keep the local model recurrent state and perception live, even while the GPU supplies actions.
+        m = modelv2_send.modelV2
+        m.localAction = action
+        now = time.monotonic_ns()
+        if modelv2_send.valid and sm.all_checks(['carState', 'extrinsicsCalibration', 'deviceState']) and not vipc_dropped_frames:
+          planner.apply(m, now, v_ego, lat_delay+action_delay, long_delay+action_delay)
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]

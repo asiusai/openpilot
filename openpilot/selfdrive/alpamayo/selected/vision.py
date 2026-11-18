@@ -28,7 +28,7 @@ class VisionCache:
     grids = prepared['tokenized_data']['image_grid_thw'].numpy()
     pixels = prepared['tokenized_data']['pixel_values'].numpy()
     offsets = np.concatenate(([0],np.cumsum(grids.prod(axis=1))))
-    return tuple((tuple(grid),hashlib.sha256(pixels[a:b].tobytes()).digest())
+    return tuple((tuple(grid),hashlib.sha256(np.ascontiguousarray(pixels[a:b])).digest())
                  for grid,a,b in zip(grids,offsets[:-1],offsets[1:],strict=True))
 
   def prepare(self, prepared):

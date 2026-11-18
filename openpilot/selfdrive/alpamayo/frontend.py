@@ -1,6 +1,7 @@
 """Causal, bounded two-camera inputs shared by live capture and replay."""
 from bisect import bisect_right
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import copy
 import hashlib
@@ -144,6 +145,8 @@ class Store:
         frames.append(ring[index])
       if len({f.sof_ns for f in frames[-5:]}) != 5 or frames[-1].sof_ns <= (last_current or {}).get(camera, 0):
         raise Unavailable('Repeated or stalled camera history')
+    # Only the matched small-model output is consumed. Retain the complete vehicle state history.
+    del states['modelV2']
     return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp, 'model': model.value}, gaps)
 
 
@@ -214,28 +217,39 @@ class Preparer:
                                             'values': copy.deepcopy(parameters),
                                             'applied_stiffness_factor': max(parameters['stiffnessFactor'], .1),
                                             'applied_steer_ratio': max(parameters['steerRatio'], .1)})
-    images, refs, hits = [], [], 0
+    refs, keys, missing, hits = [], [], {}, 0
     for frame, offset in zip(selected.frames, OFFSETS_NS*2, strict=True):
       calibration, stamp = required(states['extrinsicsCalibration'], frame.sof_ns, STATE_LIMITS['extrinsicsCalibration'])
       # Content identity survives the process boundary and invalidates reused
       # frame IDs, changed pixels, and changed calibration without approximation.
       key = (frame.camera, frame.pixels.shape, frame.format, hashlib.sha256(frame.pixels).digest(), json.dumps(calibration, sort_keys=True))
-      if key in self.cache:
+      if key in self.cache or key in missing:
         hits += 1
-        self.cache.move_to_end(key)
       else:
-        pixels = frame.pixels
-        if frame.format == 'nv12':
-          import av
-          pixels = np.ascontiguousarray(av.VideoFrame.from_ndarray(pixels, format='nv12').to_ndarray(format='rgb24').transpose(2, 0, 1))
-        image = (self.sampler or calibrated_image)(pixels, frame.camera, self.geometry, calibration)
-        image.flags.writeable = False
-        self.cache[key] = image
-      images.append(self.cache[key][None])
-      while len(self.cache) > self.cache_limit:
-        self.cache.popitem(last=False)
+        missing[key] = frame, calibration
+      keys.append(key)
       refs.append({**frame.reference(), 'requested_ns': query+offset, 'image_calibration_ns': stamp,
                    'image_calibration': copy.deepcopy(calibration)})
+    def warp(item):
+      frame, calibration = item
+      pixels = frame.pixels
+      if frame.format == 'nv12':
+        import av
+        pixels = np.ascontiguousarray(av.VideoFrame.from_ndarray(pixels, format='nv12').to_ndarray(format='rgb24').transpose(2, 0, 1))
+      image = (self.sampler or calibrated_image)(pixels, frame.camera, self.geometry, calibration)
+      image.flags.writeable = False
+      return image
+    if self.sampler is not None and len(missing) > 1:
+      # Both workers finish before mapped frame storage is released. Only this thread mutates the LRU.
+      with ThreadPoolExecutor(max_workers=2) as pool:
+        self.cache.update(zip(missing, pool.map(warp, missing.values()), strict=True))
+    else:
+      self.cache.update((key, warp(item)) for key, item in missing.items())
+    images = [self.cache[key][None] for key in keys]
+    for key in keys:
+      self.cache.move_to_end(key)
+    while len(self.cache) > self.cache_limit:
+      self.cache.popitem(last=False)
     nav, nav_meta = navigation(states['navInstruction'], query)
     arrays = {'image_frames': np.stack(images), 'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
               'absolute_timestamps': np.array([f.sof_ns//1000 for f in selected.frames], dtype=np.int64),

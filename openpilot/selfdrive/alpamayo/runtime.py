@@ -224,7 +224,8 @@ def validate_input(arrays, meta):
     raise ValueError('Incomplete model inputs')
   for name, (shape, dtype) in shapes.items():
     value = arrays[name]
-    if value.shape != shape or value.dtype != dtype or not value.flags.c_contiguous or not np.isfinite(value).all():
+    if (value.shape != shape or value.dtype != dtype or not value.flags.c_contiguous or
+        (np.issubdtype(dtype, np.floating) and not np.isfinite(value).all())):
       raise ValueError(f'Invalid {name}')
   if arrays['camera_indices'].tolist() != [1]*5+[6]*5 or len(meta['frames']) != 10:
     raise ValueError('Keep both complete front-camera histories')
@@ -245,9 +246,12 @@ def run_prediction(adapter, arrays, metadata, clock=time.monotonic_ns):
   validate_input(arrays, metadata)
   hashes = {}
   for name, value in arrays.items():
-    stream = io.BytesIO()
-    np.save(stream, np.array(value[0]) if name == 'nav_text' else value, allow_pickle=False)
-    hashes[name] = hashlib.sha256(stream.getbuffer()).hexdigest()
+    array = np.array(value[0]) if name == 'nav_text' else value
+    header = io.BytesIO()
+    np.lib.format.write_array_header_1_0(header, np.lib.format.header_data_from_array_1_0(array))
+    digest = hashlib.sha256(header.getbuffer())
+    digest.update(array.reshape(-1).view(np.uint8))
+    hashes[name] = digest.hexdigest()
   metadata = dict(metadata, input_sha256=hashes)
   begin = clock()
   result = adapter.predict(arrays, metadata)
@@ -309,6 +313,8 @@ def load_adapter(config):
 def worker(config, directory, handoff):
   from openpilot.selfdrive.alpamayo.frontend import Preparer, Unavailable
   from openpilot.selfdrive.alpamayo.selected.policy import PromptTooLong
+  from openpilot.selfdrive.alpamayo.shadowd import planner_mode
+  from openpilot.selfdrive.alpamayo.planner import packet
   root = Path(directory)
   handoff = Path(handoff)
   if not input_storage_ok(handoff):
@@ -329,7 +335,7 @@ def worker(config, directory, handoff):
       try:
         (handoff/'pending.bin').replace(handoff/'working.bin')
       except FileNotFoundError:
-        time.sleep(.02)
+        time.sleep(.005)
         continue
       try:
         begin = time.monotonic_ns()
@@ -344,6 +350,10 @@ def worker(config, directory, handoff):
             raise Unavailable('Input expired during preparation')
           result = run_prediction(adapter, arrays, meta)
           result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
+          if planner_mode():
+            temporary = handoff/'plan.tmp'
+            temporary.write_text(json.dumps(packet(result), allow_nan=False))
+            temporary.replace(handoff/'plan.json')
           size = len(json.dumps(result, allow_nan=False).encode())+1
           if written+size > 256*1024**2:
             raise RuntimeError('Shadow session reached its 256 MiB prediction limit')

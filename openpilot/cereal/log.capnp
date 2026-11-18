@@ -1085,6 +1085,8 @@ struct ModelDataV2 {
 
   # e2e lateral planner
   action @26: Action;
+  alpamayoQueryMonoTime @28 :UInt64;  # Nonzero when action comes from this GPU query. Perception remains local.
+  localAction @29 :Action;  # Unmodified small-model action during planner evaluation.
 
   lateralPlannerSolutionDEPRECATED @25: Deprecated.LateralPlannerSolution;
   leadsDEPRECATED @11 :List(LeadDataV2DEPRECATED);
@@ -2644,7 +2646,7 @@ struct Event {
     # DO change the name of the field and struct
     # DON'T change the ID (e.g. @107)
     # DON'T change which struct it points to
-    customReserved0 @107 :Custom.CustomReserved0;
+    alpamayoPlan @107 :Custom.AlpamayoPlan;
     customReserved1 @108 :Custom.CustomReserved1;
     customReserved2 @109 :Custom.CustomReserved2;
     customReserved3 @110 :Custom.CustomReserved3;

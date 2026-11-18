@@ -42,7 +42,10 @@ def state_value(kind, msg):
     value = {k: str(getattr(msg, k)) for k in ('maneuverPrimaryText', 'maneuverSecondaryText', 'maneuverType', 'maneuverModifier')}
     return dict(value, maneuverDistance=float(msg.maneuverDistance)), True
   if kind == 'modelV2':
-    return msg.to_dict(), True
+    value = msg.to_dict()
+    if value.get('alpamayoQueryMonoTime'):
+      value['action'] = value['localAction']  # Preserve the independent small-model comparison.
+    return value, True
   raise ValueError(kind)
 
 

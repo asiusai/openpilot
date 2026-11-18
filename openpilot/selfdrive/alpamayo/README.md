@@ -1,8 +1,17 @@
-# Alpamayo shadow inference
+# Alpamayo inference and planner evaluation
 
-This branch runs the small driving model by default. Alpamayo is an explicit, read-only shadow process.
-It saves predictions and never publishes driving-model or control messages.
-The implementation is not qualified for real-time operation, driving accuracy, or vehicle control.
+The small driving model runs by default. Shadow mode saves GPU predictions without changing driving actions.
+Planner mode lets modeld select GPU actions at its regular cadence. This mode is under bench evaluation. Vehicle control remains unqualified.
+
+`ALPAMAYO_PLANNER=1` selects the 500 ms planner with the same `ALPAMAYO_CONFIG` as selected shadow inference.
+Shadow mode takes precedence if both modes are set. With neither mode set, the existing model selection applies.
+Planner mode reserves Chestnut for Alpamayo and keeps the small model running for perception and immediate fallback.
+The manager attempts GPU inference when Chestnut enumerates at 5 Gbps. The first five completed results are startup samples.
+Two consecutive timely plans are required before modeld can use a GPU action. Age the plan from camera capture before computing the requested action.
+The selector checks local speed, path agreement, stopping, and the difference in desired acceleration and curvature on each model update.
+An absent, expired, invalid, or rejected plan leaves the current small-model action in place. An explicit worker invalidation clears the plan.
+`modelV2.alpamayoQueryMonoTime` identifies the selected plan; zero means the local action was used. `localAction` records the independent small-model action in planner mode.
+The logged `alpamayoPlan` contains the GPU path. `modelV2.position` still describes the small model. Radar, longitudinal limits, and Panda safety keep their usual roles.
 
 The default runtime uses original BF16 weights, greedy reasoning, ten Euler steps, and a fixed diffusion-noise file.
 It retains all five images per front camera: `(-2, -1, -0.5, -0.1, 0)` seconds.
@@ -105,7 +114,7 @@ A comparison command returns failure if numerical or performance limits fail.
 
 Set `ALPAMAYO_SHADOW=1` and `ALPAMAYO_CONFIG` in the manager environment before starting openpilot.
 The manager starts `alpamayod` only onroad. This opt-in forces the small driving model even with `DISABLE_CHESTNUT=0`.
-Without shadow mode, `DISABLE_CHESTNUT=0` explicitly restores the existing large driving-model selection.
+With both Alpamayo modes disabled, `DISABLE_CHESTNUT=0` restores the existing large driving-model selection.
 
 The private JSON configuration contains:
 
@@ -214,7 +223,10 @@ The CPU replay oracle does not establish GPU numerical parity, live color parity
 The selected extraction matched all trajectories, rotations, tokens, and text across ten ARM/gfx1200 replay queries.
 Five measured outputs passed the BF16 regression limits. Prepared replay averaged 389 ms, with one 517 ms maximum; the 500 ms gate failed.
 The native RGB replay averaged 530 ms with the previous copying handoff. All predictions matched the prepared replay exactly.
-The current mapped handoff passes input and output regression tests. Its device latency and live NV12 capture remain unverified.
+With parallel calibrated projection and fewer copies, all five measured native RGB inputs completed in 438–475 ms (nearest millisecond).
+Mean latency was 454 ms; wall throughput including output persistence and BF16 comparison was 2.16 Hz. All five passed the numerical gates.
+This is a short straight replay. A separate prepared right-turn replay missed one deadline. Both selected and original BF16 predictions under-turned before the junction.
+Recorded-message replay selected GPU actions on 33 of 60 measured straight updates and zero of 60 turn updates. It used prepared timings as an optimistic proxy.
 Native camera processing, concurrent small-model operation, and live throughput remain unqualified.
 The default still uploads all image inputs and uses CPU calibrated projection.
 GPU compilation, resource-failure injection, ignition cycles, and simultaneous live small-model operation need separate validation.
