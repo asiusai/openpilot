@@ -1,19 +1,88 @@
 """Checked selected weight loading; no conversion or training jobs."""
 import hashlib
 import json
+import os
+from functools import lru_cache
 from pathlib import Path
 from tinygrad import Device, Tensor, dtypes
 from tinygrad.device import Buffer
 from tinygrad.nn.state import safe_load
-from tinygrad.uop.ops import UOp
+from tinygrad.uop.ops import KernelInfo, Ops, UOp
 from .amd_gemm import pack, unpack
 from .frozen import ASSETS, checked, manifest
 from .transport import upload
 
 
+_LEAF = 4096
+_LANES = 64
+
+
+@lru_cache(maxsize=1)
+def _hash_kernel():
+  stem = ASSETS/'gfx1200/weight_sha256'
+  source = checked(stem.with_suffix('.cpp'), '32ae4eb358f9093bdc756e6787d148bc6440ce63438df71b6576a3862a35f354')
+  binary = checked(stem.with_suffix('.hsaco'), '5122be76107cff16c3e3f5821079400cbd516e7e378a8813f5278e36fd4c4518')
+  return source.decode(), binary
+
+
+def _hash_program(out, data, nonce):
+  source, binary = _hash_kernel()
+  groups, leftover = divmod(data.numel()*4, _LEAF*_LANES)
+  if (not groups or leftover or out.dtype != data.dtype or data.dtype != nonce.dtype or data.dtype != dtypes.uint32
+      or out.numel() != groups*_LANES*8 or nonce.numel() != 4):
+    raise ValueError('Invalid weight digest kernel buffers')
+  sink = UOp.sink(out[0].store(data[0].load() ^ nonce[0].load()), UOp.special(groups, 'gidx0'),
+                  UOp.special(_LANES, 'lidx0'), arg=KernelInfo(name='weight_sha256'))
+  return UOp(Ops.PROGRAM, src=(sink, UOp(Ops.LINEAR, src=tuple(sink.toposort())),
+                               UOp(Ops.SOURCE, arg=source), UOp(Ops.BINARY, arg=binary)))
+
+
+def _check_destination(target, raw):
+  size = len(raw) - len(raw)%(_LEAF*_LANES)
+  if size:
+    if target.device.split(':')[0] != 'AMD' or Device[target.device].arch != 'gfx1200':
+      raise ValueError('Weight digest kernel requires gfx1200')
+    # The expected proof stays on the host. A stale digest read cannot answer a fresh challenge.
+    nonce = os.urandom(16)
+    challenge = Tensor(nonce, device='CPU').bitcast(dtypes.uint32).to(target.device).realize()
+    data = Tensor(UOp.from_buffer(target.view(size, 0).ensure_allocated(), dtypes.uint32))
+    out = Tensor.empty(size//_LEAF*8, device=target.device, dtype=dtypes.uint32)
+    proof = Tensor.custom_kernel(out, data, challenge, fxn=_hash_program)[0].realize()
+    expected = bytearray()
+    for i in range(0, size, _LEAF):
+      h = hashlib.sha256(raw[i:i+_LEAF])
+      h.update(nonce)
+      expected.extend(h.digest())
+    Device[target.device].synchronize()
+    if proof._buffer().as_memoryview() != expected:
+      raise ValueError(f'GPU weight upload digest differs at chunk offset {target.offset}')
+  if size < len(raw) and target.view(len(raw)-size, size).ensure_allocated().as_memoryview() != raw[size:]:
+    raise ValueError(f'GPU weight upload tail differs at offset {target.offset+size}')
+
+
+def _upload_bulk(source, nbytes, expected):
+  if nbytes <= 0 or os.fstat(source.fileno()).st_size != nbytes:
+    raise ValueError('FP8 weight size differs')
+  storage = Buffer(Device.DEFAULT, nbytes).ensure_allocated()
+  staging = memoryview(bytearray(min(16*1024*1024, nbytes)))
+  digest, offset = hashlib.sha256(), 0
+  while count := source.readinto(staging):
+    if offset + count > nbytes:
+      raise ValueError('FP8 weight size differs')
+    raw = staging[:count]
+    target = storage.view(count, offset).ensure_allocated()
+    target.copy_from(Buffer('NPY', count, opaque=raw))
+    Device[target.device].synchronize()
+    _check_destination(target, raw)
+    digest.update(raw)
+    offset += count
+  if offset != nbytes or digest.hexdigest() != expected:
+    raise ValueError('FP8 weight content differs')
+  return storage
+
+
 def load_bulk(model, checkpoint, directory):
   checkpoint, directory = Path(checkpoint), Path(directory)
-  dev = Device[Device.DEFAULT]
   index = json.loads((directory/'index.json').read_text())
   if index['format'] != 1:
     raise ValueError('Unsupported FP8 weight format')
@@ -30,22 +99,8 @@ def load_bulk(model, checkpoint, directory):
       if tensor.reshape(-1).bitcast(dtypes.uint8).numpy().tobytes() != source.read(record['nbytes']):
         raise ValueError(f'Target FP8 conversion/packing differs: {kind}')
   del value, scale
-  storage = Buffer(Device.DEFAULT,index['nbytes']).ensure_allocated()
-  digest = hashlib.sha256()
   with (directory/'weights.bin').open('rb') as source:
-    offset = 0
-    while chunk := source.read(16*1024*1024):
-      raw = memoryview(bytearray(chunk))
-      target = storage.view(len(raw),offset).ensure_allocated()
-      target.copy_from(Buffer('NPY',len(raw),opaque=raw))
-      dev.synchronize()
-      actual = target.as_memoryview()
-      if actual != raw:
-        raise ValueError('GPU weight upload differs')
-      digest.update(actual)
-      offset += len(raw)
-  if offset != index['nbytes'] or digest.hexdigest() != index['sha256']:
-    raise ValueError('FP8 weight content differs')
+    storage = _upload_bulk(source, index['nbytes'], index['sha256'])
   for record in index['records']:
     kind = record['kind']
     dtype = {'scale':dtypes.float32,'fp8':dtypes.fp8e4m3,'bf16':dtypes.bfloat16}[kind]
