@@ -9,7 +9,8 @@ from openpilot.cereal import messaging, log
 from teleoprtc.tracks import VIDEO_CLOCK_RATE
 
 from openpilot.system.webrtc.device.messaging import CerealOutgoingMessageProxy, CerealIncomingMessageProxy
-from openpilot.system.webrtc.webrtcd import ServerState, handle_get_stream
+from openpilot.system.webrtc.helpers import StreamRequestBody
+from openpilot.system.webrtc.webrtcd import ServerState, StreamSession, handle_get_stream
 from openpilot.system.webrtc.device.video import LiveStreamVideoStreamTrack, V4L2_BUF_FLAG_KEYFRAME
 
 
@@ -20,6 +21,20 @@ class TestStreamSession(OpenpilotTestCase):
   def teardown_method(self):
     self.loop.stop()
     self.loop.close()
+
+  def test_dragon_leaves_the_live_encoder_bitrate_at_startup_value(self, mocker):
+    mocker.patch('teleoprtc.builder.WebRTCAnswerBuilder')
+    mocker.patch('openpilot.system.webrtc.device.video.LiveStreamVideoStreamTrack')
+    mocker.patch('openpilot.system.webrtc.webrtcd._default_route_ip', return_value=None)
+    params = mocker.patch('openpilot.system.webrtc.webrtcd.Params').return_value
+    mocker.patch('openpilot.system.webrtc.webrtcd.ASIUS_HARDWARE', True)
+    dragon = StreamSession(StreamRequestBody('offer', ['road'], True))
+    assert dragon.bitrate_controller is None
+    params.put.assert_not_called()
+    mocker.patch('openpilot.system.webrtc.webrtcd.ASIUS_HARDWARE', False)
+    other = StreamSession(StreamRequestBody('offer', ['road'], True))
+    assert other.bitrate_controller is not None
+    params.put.assert_called_once()
 
   def test_outgoing_proxy(self, mocker):
     test_msg = log.Event.new_message()

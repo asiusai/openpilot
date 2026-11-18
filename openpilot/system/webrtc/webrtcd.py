@@ -20,6 +20,7 @@ from openpilot.system.asius.access_policy import ignition_state
 from openpilot.system.webrtc.helpers import StreamRequestBody
 from openpilot.system.webrtc.schema import generate_field
 from openpilot.common.params import Params
+from openpilot.common.hardware import ASIUS_HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.cereal import messaging, log
 
@@ -72,7 +73,9 @@ class StreamSession:
       builder.add_video_stream(camera, track)
     self.stream = builder.stream()
     self.bitrate_controller = None
-    if body.cameras:
+    # Dragon's Venus firmware can abort when the bitrate changes during encoding.
+    # Keep the bitrate set at encoder startup. Other devices retain adaptation.
+    if body.cameras and not ASIUS_HARDWARE:
       self.bitrate_controller = LivestreamBitrateController(self.stream.get_receiver_report_stats, self.params, self.video_enabled)
 
     # start proxies
@@ -509,6 +512,8 @@ def main():
   parser.add_argument("--port", type=int, default=5001, help="Port to listen on")
   args = parser.parse_args()
 
+  if ASIUS_HARDWARE:
+    Params().remove("LivestreamEncoderBitrate")
   webrtcd_thread(args.host, args.port)
 
 
