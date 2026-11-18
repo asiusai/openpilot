@@ -292,7 +292,8 @@ class Preparer:
         older = []
         reason = 'Repriming after a capture gap'
     complete = bool(older) and not anchor_only
-    fresh, hits = self.project(frames if complete else frames[1::2], selected.states)
+    # The six older images come directly from the anchor ring. These exposures must advance, so project their actual bytes once.
+    fresh, hits = self.project(frames if complete else frames[1::2], selected.states, reuse=False)
     current_views = fresh[1::2] if complete else fresh
     self.anchors.append((opening, [(image, dict(ref, anchor_slot_ns=opening, anchor_query_ns=query, anchor_selected_ns=selected.selected_ns))
                                   for image, ref in current_views]))
@@ -302,15 +303,16 @@ class Preparer:
       raise Priming(f'{reason} ({len(self.anchors)}/4 slots)', self.anchors[-1][1])
     return [frame for i, view in enumerate(older) for frame in (*view, *fresh[2*i:2*i+2])], hits+6
 
-  def project(self, frames, states):
+  def project(self, frames, states, *, reuse=True):
     from openpilot.selfdrive.alpamayo.geometry import calibrated_image
     refs, keys, missing, hits = [], [], {}, 0
+    cache = self.cache if reuse else {}
     for frame in frames:
       calibration, stamp = required(states['extrinsicsCalibration'], frame.sof_ns, STATE_LIMITS['extrinsicsCalibration'])
       # Content identity survives the process boundary and invalidates reused
       # frame IDs, changed pixels, and changed calibration without approximation.
-      key = (frame.camera, frame.pixels.shape, frame.format, hashlib.sha256(frame.pixels).digest(), json.dumps(calibration, sort_keys=True))
-      if key in self.cache or key in missing:
+      key = (frame.camera, frame.pixels.shape, frame.format, hashlib.sha256(frame.pixels).digest(), json.dumps(calibration, sort_keys=True)) if reuse else len(keys)
+      if key in cache or key in missing:
         hits += 1
       else:
         missing[key] = frame, calibration
@@ -330,12 +332,13 @@ class Preparer:
     if self.sampler is not None and len(missing) > 1:
       # Both workers finish before mapped frame storage is released. Only this thread mutates the LRU.
       with ThreadPoolExecutor(max_workers=2) as pool:
-        self.cache.update(zip(missing, pool.map(warp, missing.values()), strict=True))
+        cache.update(zip(missing, pool.map(warp, missing.values()), strict=True))
     else:
-      self.cache.update((key, warp(item)) for key, item in missing.items())
-    images = [self.cache[key][None] for key in keys]
-    for key in keys:
-      self.cache.move_to_end(key)
-    while len(self.cache) > self.cache_limit:
-      self.cache.popitem(last=False)
+      cache.update((key, warp(item)) for key, item in missing.items())
+    images = [cache[key][None] for key in keys]
+    if reuse:
+      for key in keys:
+        self.cache.move_to_end(key)
+      while len(self.cache) > self.cache_limit:
+        self.cache.popitem(last=False)
     return list(zip(images, refs, strict=True)), hits
