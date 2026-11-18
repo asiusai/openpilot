@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 
+MATCH_WAIT_NS = 100_000_000
+ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
 
 def planner_mode():
   return (bool(os.environ.get('ALPAMAYO_CONFIG')) and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'
@@ -195,17 +197,23 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
           try:
             selected_ns = time.monotonic_ns()
             busy = (handoff/'pending.bin').exists() or (handoff/'working.bin').exists()
-            if busy and pm is not None and selected_ns < slot['slot_start_ns']+HANDOFF_GRACE:
-              producer.stop.wait(.005)
-              continue  # Allow a nearly finished prediction; never enqueue the old slot.
+            if busy and pm is not None:
+              age = selected_ns-slot['slot_start_ns']
+              if age >= HANDOFF_GRACE:
+                # This slot loses its prediction. Its actual camera pair can still seed the next slot's history.
+                slot['anchor_only'] = True
+              if age < ANCHOR_WAIT_NS:
+                producer.stop.wait(.005)
+                continue
             admission = None
-            if selected_ns >= slot['slot_deadline_ns'] or busy:
+            if selected_ns >= slot['slot_deadline_ns'] or busy or (slot.get('anchor_only') and selected_ns-slot['slot_start_ns'] >= ANCHOR_WAIT_NS):
               raise Unavailable('Busy or late slot')
             try:
               selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if slots.period_ms == 500 else None)
             except AwaitingFrame:
               # The matched modelV2 can arrive after this slot opens. Keep the same opening, cutoff and deadline.
-              if slots.period_ms == 500 and selected_ns < slot['slot_start_ns']+2*HANDOFF_GRACE:
+              wait_ns = ANCHOR_WAIT_NS if slot.get('anchor_only') else MATCH_WAIT_NS
+              if slots.period_ms == 500 and selected_ns < slot['slot_start_ns']+wait_ns:
                 admission = slot
                 producer.stop.wait(.002)
                 continue

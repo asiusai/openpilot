@@ -379,6 +379,8 @@ def worker(config, directory, handoff):
           admitted = time.monotonic_ns()
           if not 0 <= admitted-selected.query_ns <= 500_000_000 or admitted >= context.get('slot_deadline_ns', admitted+1):
             raise Unavailable('Input expired before preparation')
+          if context.get('anchor_only'):
+            preparer.rolling_images(selected, context['slot_start_ns'], anchor_only=True)  # Raises Priming; no prediction for this slot.
           arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 4 else None)
           meta.update(context)
           meta['prepared_ns'] = time.monotonic_ns()

@@ -140,12 +140,12 @@ class Store:
       gaps = self.camera_gaps.copy()
     # Wait for the newest matching small-model output, rather than chasing a
     # camera that is always ahead of modeld. The query keeps its actual SOF.
-    matches = [(frame, row) for frame in reversed(rings[6]) if half_second_slot is None or frame.sof_ns <= half_second_slot
-               for row in reversed(states['modelV2'])
-               if row.valid and row.value['frameId'] == frame.frame_id and row.value['timestampEof'] == frame.eof_ns]
-    if not matches:
+    models = {(row.value['frameId'], row.value['timestampEof']): row for row in states['modelV2'] if row.valid}
+    match = next(((frame, models[(frame.frame_id, frame.eof_ns)]) for frame in reversed(rings[6])
+                  if (half_second_slot is None or frame.sof_ns <= half_second_slot) and (frame.frame_id, frame.eof_ns) in models), None)
+    if match is None:
       raise AwaitingFrame('No exact small-model frame match')
-    current, model = matches[0]
+    current, model = match
     query = current.sof_ns
     if query <= last_query or not 0 <= now-query <= 250_000_000:
       raise AwaitingFrame('No fresh query')
@@ -253,7 +253,7 @@ class Preparer:
                 'camera_profile': 'calibrated_vehicle_history', 'image_cache_hits': hits, 'camera_gaps': selected.camera_gaps}
     return arrays, metadata
 
-  def rolling_images(self, selected, opening):
+  def rolling_images(self, selected, opening, *, anchor_only=False):
     """Only retain owned, calibrated pixels. The worker unmaps the input after each slot."""
     query, frames = selected.query_ns, selected.frames
     if not (len(frames) == 4 and opening <= selected.selected_ns < opening+HALF_SECOND_NS and
@@ -283,10 +283,13 @@ class Preparer:
         self.anchors.clear()
         older = []
         reason = 'Repriming after a capture gap'
-    fresh, hits = self.project(frames if older else frames[1::2], selected.states)
-    current_views = fresh[1::2] if older else fresh
+    complete = bool(older) and not anchor_only
+    fresh, hits = self.project(frames if complete else frames[1::2], selected.states)
+    current_views = fresh[1::2] if complete else fresh
     self.anchors.append((opening, [(image, dict(ref, anchor_slot_ns=opening, anchor_query_ns=query, anchor_selected_ns=selected.selected_ns))
                                   for image, ref in current_views]))
+    if anchor_only:
+      raise Priming('Retaining current camera pair after worker overrun', self.anchors[-1][1])
     if not older:
       raise Priming(f'{reason} ({len(self.anchors)}/4 slots)', self.anchors[-1][1])
     return [frame for i, view in enumerate(older) for frame in (*view, *fresh[2*i:2*i+2])], hits+6
