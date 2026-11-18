@@ -6,24 +6,17 @@ import time
 import requests
 
 from openpilot.system.asius.identity import dongle_id_from_public_key, get_device_public_key
-from openpilot.system.asius.local_video import HELPER
 from openpilot.system.asius.relayd import sign_jwt
 
 TURN_PATH = '/v1/turn/credentials'
 TURN_URL = 'https://api.asius.ai' + TURN_PATH
 
 
-def prepare_live(phone_online: bool = True, local_wifi_supported: bool = False) -> dict:
-  if not isinstance(phone_online, bool) or not isinstance(local_wifi_supported, bool):
-    raise ValueError('Video connectivity flags must be boolean')
-
-  def offline(reason):
-    if local_wifi_supported and HELPER.is_file():
-      return {'mode': 'localWifi'}
-    return {'mode': 'unavailable', 'error': reason}
-
+def prepare_live(phone_online: bool = True) -> dict:
+  if not isinstance(phone_online, bool):
+    raise ValueError('phoneOnline must be boolean')
   if not phone_online:
-    return offline('Connect the phone to the internet or use device Wi-Fi.')
+    return {'mode': 'unavailable', 'error': 'Connect the app to the internet to use Live.'}
 
   token = sign_jwt({'type': 'turn', 'aud': 'asius-turn', 'identity': dongle_id_from_public_key(get_device_public_key()),
                     'method': 'POST', 'path': TURN_PATH}, expiry_seconds=60)
@@ -62,6 +55,6 @@ def prepare_live(phone_online: bool = True, local_wifi_supported: bool = False) 
   except requests.exceptions.SSLError:
     return {'mode': 'unavailable', 'error': 'Cannot verify the video service. Check the device clock.'}
   except (requests.ConnectionError, requests.Timeout):
-    return offline('Device cannot reach the video service. Connect device Wi-Fi and retry.')
+    return {'mode': 'unavailable', 'error': 'Device cannot reach the video service. Check its internet connection and retry.'}
   except (requests.RequestException, ValueError, KeyError, TypeError):
     return {'mode': 'unavailable', 'error': 'Invalid response from the video connection service. Try again.'}

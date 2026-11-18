@@ -100,6 +100,41 @@ def test_bluetooth_snapshot_stays_small_without_losing_status(device):
   assert len(methods._software_update_state(params)['UpdaterCurrentReleaseNotes']) > 100000
 
 
+def test_parked_calibration_survives_restart_and_clears_on_reset(device, monkeypatch, tmp_path):
+  sm, params, values = device
+  params.get_param_path.return_value = str(tmp_path)
+  monkeypatch.setattr(methods, 'ignition_state', lambda: False)
+  msg = methods.messaging.new_message('extrinsicsCalibration', valid=True)
+  msg.extrinsicsCalibration.calStatus = 'recalibrating'
+  msg.extrinsicsCalibration.calPerc = 35
+  msg.extrinsicsCalibration.rpyCalib = [0., .25, -.125]
+  msg.extrinsicsCalibration.height = [1.25]
+  values['CalibrationParams'] = msg.to_bytes()
+  sm.recv_frame['extrinsicsCalibration'] = 0  # no live message since boot
+  sampler = methods.LiveStateSampler(sm, params)
+  parked = sampler.sample()
+  assert parked['ignition'] is False and 'extrinsicsCalibration' not in parked['services']
+  assert parked['savedCalibration'] == {'calStatus': 'recalibrating', 'calPerc': 35, 'rpyCalib': [0., .25, -.125], 'height': [1.25]}
+
+  sm.recv_frame['extrinsicsCalibration'] = 1
+  assert sampler.sample()['services']['extrinsicsCalibration']['calPerc'] == 42
+  sm.alive['extrinsicsCalibration'] = False  # last live message is still in SubMaster
+  del values['CalibrationParams']
+  sampler.updated_at = -1
+  reset = sampler.sample()
+  assert 'extrinsicsCalibration' not in reset['services'] and reset['savedCalibration'] is None
+
+
+@pytest.mark.parametrize('raw', [b'corrupt', b'\0' * 8193, methods.messaging.new_message('deviceState', valid=True).to_bytes()])
+def test_corrupt_saved_calibration_does_not_interrupt_status(device, raw):
+  sm, params, values = device
+  sm.valid['extrinsicsCalibration'] = False
+  values['CalibrationParams'] = raw
+  snapshot = methods._live_state_snapshot(sm, params)
+  assert snapshot['savedCalibration'] is None and 'extrinsicsCalibration' not in snapshot['services']
+  assert snapshot['dongleId'] == 'device'
+
+
 @pytest.mark.parametrize('compact', [False, True])
 def test_usb_and_gpu_state_expire_without_streaming_model_geometry(device, compact):
   sm, params, _ = device
