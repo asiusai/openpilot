@@ -329,7 +329,15 @@ class Preparer:
         image = image.copy()  # The source mapping closes when this snapshot finishes.
       image.flags.writeable = False
       return image
-    if self.sampler is not None and len(missing) > 1:
+    if self.sampler is not None and not reuse and len(missing) > 1:
+      # Each camera owns its two fresh warps. A changed calibration then builds one map per camera.
+      def camera_images(camera):
+        return {key: warp(item) for key, item in missing.items() if item[0].camera == camera}
+      with ThreadPoolExecutor(max_workers=1) as pool:
+        wide = pool.submit(camera_images, CAMERAS[0])
+        cache.update(camera_images(CAMERAS[1]))
+        cache.update(wide.result())
+    elif self.sampler is not None and len(missing) > 1:
       # Both workers finish before mapped frame storage is released. Only this thread mutates the LRU.
       with ThreadPoolExecutor(max_workers=2) as pool:
         cache.update(zip(missing, pool.map(warp, missing.values()), strict=True))
