@@ -50,7 +50,7 @@ def calibrated_image(array, camera, geometry, calibration, *, cache_dir):
   if array.dtype != np.uint8 or array.ndim != 3 or array.shape[0] != 3 or not array.flags.c_contiguous:
     raise ValueError('Native sampler requires contiguous uint8 CHW RGB')
   offsets,fractions = maps(tuple(array.shape[-2:]),camera,json.dumps(geometry,sort_keys=True),
-                          tuple(calibration['rpyCalib']),tuple(calibration['wideFromDeviceEuler']))
+                          tuple(calibration['rpyCalib']),tuple(calibration['wideFromDeviceEuler']) if camera == 1 else ())
   h,w = array.shape[-2:]
   out = np.empty((3,*offsets.shape[:2]),dtype=np.uint8)
   library(str(cache_dir)).warp_u8(array.ctypes.data,out.ctypes.data,offsets.ctypes.data,fractions.ctypes.data,

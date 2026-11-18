@@ -10,13 +10,12 @@ from scipy.spatial.transform import Rotation
 VIEW = np.array([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])
 
 
-@lru_cache(maxsize=8)
-def coordinates(source_shape, camera, geometry_json, rpy, wide_rpy):
+@lru_cache(maxsize=2)
+def lens_rays(camera, geometry_json):
   src = json.loads(geometry_json)['cameras'][str(camera)]
   w, h = src['prepared_size']
   left, top, right, bottom = src['content_box']
   fx, fy = src['focal_pixels']
-  cx, cy = src['principal_point']
   if src['projection'] not in ('equidistant', 'pinhole') or min(fx, fy, right-left, bottom-top) <= 0:
     raise ValueError('Invalid source lens geometry')
   yy, xx = np.mgrid[:h, :w]
@@ -27,6 +26,17 @@ def coordinates(source_shape, camera, geometry_json, rpy, wide_rpy):
   theta = radius if src['projection'] == 'equidistant' else np.arctan(radius)
   scale = np.divide(np.sin(theta), radius, out=np.ones_like(radius), where=radius > 0)
   rays = np.stack([tx*scale, ty*scale, np.cos(theta)], axis=-1)
+  rays.flags.writeable = False
+  return rays
+
+
+@lru_cache(maxsize=8)
+def coordinates(source_shape, camera, geometry_json, rpy, wide_rpy):
+  src = json.loads(geometry_json)['cameras'][str(camera)]
+  left, top, right, bottom = src['content_box']
+  fx, fy = src['focal_pixels']
+  cx, cy = src['principal_point']
+  rays = lens_rays(camera, geometry_json)
   rotation = Rotation.from_euler('xyz', rpy).as_matrix()
   if camera == 1:
     rotation = Rotation.from_euler('xyz', wide_rpy).as_matrix() @ rotation

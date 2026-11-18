@@ -6,12 +6,14 @@ from dataclasses import dataclass, field
 import copy
 import hashlib
 import json
+from operator import attrgetter
 import re
 import threading
 
 import numpy as np
 
 CAMERAS = (1, 6)
+_stamp = attrgetter('stamp')
 OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
 HALF_SECOND_NS = 500_000_000
 FRAME_TOLERANCE_NS = 150_000_000
@@ -22,6 +24,10 @@ STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
 
 class Unavailable(ValueError):
   """A complete causal input is unavailable."""
+
+
+class AwaitingFrame(Unavailable):
+  """The camera and its exact modeld publication have not both arrived yet."""
 
 
 class Priming(Unavailable):
@@ -66,7 +72,7 @@ class Selection:
 
 
 def required(rows, stamp, max_age):
-  index = bisect_right([r.stamp for r in rows], stamp)-1
+  index = bisect_right(rows, stamp, key=_stamp)-1
   if index < 0 or stamp-rows[index].stamp > max_age or not rows[index].valid:
     raise Unavailable('Missing, invalid, or stale state')
   return rows[index].value, rows[index].stamp
@@ -116,7 +122,7 @@ class Store:
     row = State(stamp, received, copy.deepcopy(value) if valid else None, valid)
     with self.lock:
       rows = self.states[kind]
-      index = bisect_right([r.stamp for r in rows], stamp)
+      index = bisect_right(rows, stamp, key=_stamp)
       if index and rows[index-1].stamp == stamp:
         if received <= rows[index-1].received:
           return
@@ -138,13 +144,13 @@ class Store:
                for row in reversed(states['modelV2'])
                if row.valid and row.value['frameId'] == frame.frame_id and row.value['timestampEof'] == frame.eof_ns]
     if not matches:
-      raise Unavailable('No exact small-model frame match')
+      raise AwaitingFrame('No exact small-model frame match')
     current, model = matches[0]
     query = current.sof_ns
     if query <= last_query or not 0 <= now-query <= 250_000_000:
-      raise Unavailable('No fresh query')
+      raise AwaitingFrame('No fresh query')
     if half_second_slot is not None and not (query <= half_second_slot <= now and half_second_slot-query <= FRAME_TOLERANCE_NS):
-      raise Unavailable('No fresh half-second anchor')
+      raise AwaitingFrame('No fresh half-second anchor')
     offsets = OFFSETS_NS if half_second_slot is None else OFFSETS_NS[-2:]
     frames = []
     for camera in CAMERAS:

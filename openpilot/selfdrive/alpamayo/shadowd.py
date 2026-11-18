@@ -100,7 +100,7 @@ def main():
 def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.common.params import Params
   from openpilot.selfdrive.alpamayo.capture import NativeProducer, device_healthy, healthy
-  from openpilot.selfdrive.alpamayo.frontend import Store, Unavailable
+  from openpilot.selfdrive.alpamayo.frontend import AwaitingFrame, Store, Unavailable
   from openpilot.selfdrive.alpamayo.planner import HANDOFF_GRACE, deliverable
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
   slots = FixedSlots(config.get('period_ms', 500))
@@ -201,7 +201,15 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
             admission = None
             if selected_ns >= slot['slot_deadline_ns'] or busy:
               raise Unavailable('Busy or late slot')
-            selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if slots.period_ms == 500 else None)
+            try:
+              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if slots.period_ms == 500 else None)
+            except AwaitingFrame:
+              # The matched modelV2 can arrive after this slot opens. Keep the same opening, cutoff and deadline.
+              if slots.period_ms == 500 and selected_ns < slot['slot_start_ns']+2*HANDOFF_GRACE:
+                admission = slot
+                producer.stop.wait(.002)
+                continue
+              raise
             route = params.get('CurrentRoute')
             if not route:
               raise Unavailable('No current recording route')

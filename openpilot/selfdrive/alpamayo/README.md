@@ -16,6 +16,7 @@ An already active planner can use one isolated overrun published less than one 2
 It still counts as a missed 500 ms deadline. The plan must be newer and fresh from capture.
 Repeated overruns, stale delivery or a missed slot return control to the small model. Two consecutive on-time plans are required to resume.
 The scheduler briefly waits for a nearly finished worker, then admits only current input or skips the slot. A stalled worker restarts with fresh history.
+When the matching camera and modeld message arrive separately, the scheduler can wait up to 100 ms from the slot opening. The 500 ms deadline stays fixed.
 `modelV2.alpamayoQueryMonoTime` identifies the selected plan; zero means the local action was used. `localAction` records the independent small-model action in planner mode.
 The logged `alpamayoPlan` contains the GPU path. `modelV2.position` still describes the small model. Radar, longitudinal limits, and Panda safety keep their usual roles.
 

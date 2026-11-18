@@ -344,15 +344,21 @@ def worker(config, directory, handoff):
   handoff = Path(handoff)
   if not input_storage_ok(handoff):
     raise RuntimeError('Shadow worker requires a RAM-backed input slot')
+  load_started = time.monotonic_ns()
   sampler = None
   if config['inference'].get('variant', 'default') == 'selected':
     from functools import partial
-    from openpilot.selfdrive.alpamayo.selected.camera import calibrated_image
+    from openpilot.selfdrive.alpamayo.geometry import lens_rays
+    from openpilot.selfdrive.alpamayo.selected.camera import calibrated_image, library
+    # The lens grid and sampler binary need no exposure or live calibration. Build them before the first timed camera pair.
+    geometry_json = json.dumps(config['geometry'], sort_keys=True)
+    for camera in CAMERAS:
+      lens_rays(camera, geometry_json)
+    library(str(config['cache']))
     sampler = partial(calibrated_image, cache_dir=config['cache'])
   preparer = Preparer(config['geometry'], sampler=sampler)
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
-  load_started = time.monotonic_ns()
   adapter = load_adapter(config)
   written = count = 0
   try:
