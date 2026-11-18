@@ -315,9 +315,10 @@ class Runtime:
         self.inputs = self.vision = self.decoder = self.prefill = self.model = None
         self.vision_buffers = None
         try:
-          self.backend.close()
+          self.adapter.close()
         finally:
           self.closed = True
+          self.backend.close()
 
 
 class ShadowAdapter:

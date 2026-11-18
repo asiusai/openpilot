@@ -1,14 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Modified: cache checked byte patches, rendered prompt token fields, and structural RoPE indices.
+# Modified: cache checked byte patches, prompt token fields, and structural RoPE indices.
 """Exact selected CPU inputs, with bounded per-adapter caches."""
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from functools import partial
 from types import SimpleNamespace
 import numpy as np
 import torch
-from torchvision.transforms.functional import InterpolationMode, resize
+from torch.nn.functional import interpolate
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
 from transformers.models.cosmos3_edge.modeling_cosmos3_edge import Cosmos3EdgeModel, Cosmos3EdgeVisionEmbeddings
 from alpamayo2_edge.chat_template import CLOSED_THINKING, build_conversation
@@ -35,7 +36,8 @@ class SelectedInputs(InputAdapter):
     self.history = DeltaTrajectoryTokenizer(pad_origin_at_beginning=False)
     self.rope = SimpleNamespace(config=self.config.vlm_config)
     self.rope.get_vision_position_ids = partial(Cosmos3EdgeModel.get_vision_position_ids,self.rope)
-    self.resize_cache,self.position_cache = OrderedDict(),{}
+    self.resize_cache = {camera:OrderedDict() for camera in (1,6)}
+    self.position_cache = {}
     self.text_cache,self.rope_cache = OrderedDict(),OrderedDict()
     image = self.processor.image_processor
     if (list(image.image_mean) != [.5]*3 or list(image.image_std) != [.5]*3 or
@@ -43,77 +45,94 @@ class SelectedInputs(InputAdapter):
       raise ValueError('Selected byte inputs require the exact checkpoint pixel palette')
     if (image.patch_size,image.merge_size,image.temporal_patch_size) != (16,2,1):
       raise ValueError('Selected byte patches require the checkpoint 16/2/1 layout')
+    self.sizes = {c:smart_resize(432,768,factor=32,min_pixels=CAMERA_PIXEL_BOUNDS[c][0],max_pixels=CAMERA_PIXEL_BOUNDS[c][1]) for c in (1,6)}
+    self.grids = {c:(1,h//16,w//16) for c,(h,w) in self.sizes.items()}
+    if any(h*w != 720*16**2 for h,w in self.sizes.values()):
+      raise ValueError('Expected 720 byte patches per calibrated image')
+    # Process one camera on the calling thread. Propagate the runtime's Torch thread count to the other camera.
+    self.worker = ThreadPoolExecutor(max_workers=1,initializer=torch.init_num_threads)
 
   def reset(self):
-    self.resize_cache.clear()
+    for cache in self.resize_cache.values():
+      cache.clear()
     self.position_cache.clear()
     self.text_cache.clear()
     self.rope_cache.clear()
 
-  def patch_image(self, frame, identity, bounds):
-    processor = self.processor.image_processor
-    height,width = smart_resize(*frame.shape[-2:],factor=processor.patch_size*processor.merge_size,
-                                min_pixels=bounds[0],max_pixels=bounds[1])
-    key = (*identity,height,width)
-    old = self.resize_cache.get(key)
-    if old is not None and same_image(frame,old[0]):
-      self.resize_cache.move_to_end(key)
-      return old[1:]
-    image = resize(frame,[height,width],interpolation=InterpolationMode.BICUBIC)
-    batch,h,w = processor.patchify(image.unsqueeze(0),16,2,1)
-    packed,grid = batch.reshape(-1,3*16**2),(1,h,w)
-    self.resize_cache[key] = (frame.clone(),packed,grid)
-    if len(self.resize_cache) > 144:
-      self.resize_cache.popitem(last=False)
-    return packed,grid
+  def close(self):
+    self.worker.shutdown(wait=True)
+    self.reset()
+
+  def camera_patches(self, camera, entries, owned):
+    cache = self.resize_cache[camera]
+    patches = []
+    for frame,stamp in entries:
+      old = cache.get(stamp)
+      if old is not None and same_image(frame,old[0]):
+        cache.move_to_end(stamp)
+        patches.append(old[1])
+        continue
+      # Resize the private snapshot itself; a reused timestamp or mutable source cannot poison the cache.
+      source = frame if owned else frame.clone()
+      # Same float32 antialiased resize, clamp, and round as torchvision's uint8 bicubic path.
+      image = interpolate(source.unsqueeze(0).float(),self.sizes[camera],mode='bicubic',align_corners=False,antialias=True)
+      batch,_,_ = self.processor.image_processor.patchify(image.clamp_(0,255).round_().byte(),16,2,1)
+      packed = batch.view(720,768)
+      cache[stamp] = source,packed
+      if len(cache) > 72:
+        cache.popitem(last=False)
+      patches.append(packed)
+    return patches
+
+  def patch_pair(self, first, second, *, owned=False):
+    future = self.worker.submit(self.camera_patches,1,first,owned)
+    try:
+      right = self.camera_patches(6,second,owned)
+    finally:
+      left = future.result()  # Finish reading both input views even if the calling thread raises.
+    grids = [self.grids[1]]*len(left)+[self.grids[6]]*len(right)
+    return torch.cat(left+right),grids
 
   def anchor_patches(self, anchors):
-    patches,grids = [],[]
+    entries = []
     for (image,ref),camera in zip(anchors,(1,6),strict=True):
       if ref['view'] != camera or image.shape != (1,3,432,768) or image.dtype != np.uint8:
         raise ValueError('Expected the calibrated current image from each front camera')
       frame = torch.from_numpy(image[0].copy())  # The retained NumPy pixels are read-only.
-      packed,grid = self.patch_image(frame,(camera,ref['capture_ns']//1000),CAMERA_PIXEL_BOUNDS[camera])
-      if packed.dtype != torch.uint8 or packed.shape != (720,768):
-        raise ValueError('Expected 720 byte patches per anchor')
-      patches.append(packed)
-      grids.append(grid)
-    return torch.cat(patches),torch.tensor(grids,dtype=torch.int64)
+      entries.append([(frame,ref['capture_ns']//1000)])
+    pixels,grids = self.patch_pair(*entries,owned=True)
+    return pixels,torch.tensor(grids,dtype=torch.int64)
 
   def vision_positions(self, grids):
-    # The checkpoint interpolates its learned grid independently for each image.
+    # The checkpoint interpolates each grid independently. Equal grids have identical position bytes.
     key = tuple(map(tuple,grids.tolist()))
     if key not in self.position_cache:
       if len(self.position_cache) >= 4:
         self.position_cache.pop(next(iter(self.position_cache)))
-      self.position_cache[key] = Cosmos3EdgeVisionEmbeddings.resize_positional_embeddings(self.position_weight,grids,2).float().numpy()
+      chunks = {}
+      for i,grid in enumerate(key):
+        if grid not in chunks:
+          chunks[grid] = Cosmos3EdgeVisionEmbeddings.resize_positional_embeddings(self.position_weight,grids[i:i+1],2).float().numpy()
+      self.position_cache[key] = np.concatenate([chunks[grid] for grid in key])
     return self.position_cache[key]
 
-  def tokenize(self, messages, identities):
+  def tokenize(self, messages, pixels, grids):
     # Tokenization body follows NVIDIA helper._tokenize_messages (Apache-2.0).
     # Only resize reuse and retained unnormalized uint8 patches differ.
     processor = self.processor
-    text = processor.apply_chat_template(messages,tokenize=False,add_generation_prompt=True,add_vision_id=False,
-                                         continue_final_message=False,enable_thinking=False)
-    if not text.endswith(CLOSED_THINKING):
-      raise ValueError('Unexpected checkpoint chat suffix')
     image_processor = processor.image_processor
-    patches,grids = [],[]
-    identity = iter(identities)
-    for message in messages:
-      for entry in message['content']:
-        if entry['type'] != 'image':
-          continue
-        frame = entry['image'].squeeze(0)
-        packed,grid = self.patch_image(frame,next(identity),(entry['min_pixels'],entry['max_pixels']))
-        patches.append(packed)
-        grids.append(grid)
     grid_tensor = torch.tensor(grids,dtype=torch.int64)
     # The selected processor expands placeholders using only the ordered grids.
     # Keep its replacement, tokenization, special-token checks, and modality IDs.
-    prompt_key = (text,tuple(grids))
+    # The pinned driving template renders roles, ordered text (including every time label), and image placeholders.
+    content = tuple((m['role'],tuple(e['text'] if e['type'] == 'text' else None for e in m['content'])) for m in messages)
+    prompt_key = (content,tuple(grids))
     template = self.text_cache.get(prompt_key)
     if template is None:
+      text = processor.apply_chat_template(messages,tokenize=False,add_generation_prompt=True,add_vision_id=False,
+                                           continue_final_message=False,enable_thinking=False)
+      if not text.endswith(CLOSED_THINKING):
+        raise ValueError('Unexpected checkpoint chat suffix')
       visual = {'image_grid_thw':grid_tensor}
       replacements = [processor.replace_image_token(visual,i) for i in range(len(grids))]
       expanded,_ = processor.get_text_with_replacements([text],replacements)
@@ -125,7 +144,7 @@ class SelectedInputs(InputAdapter):
     else:
       self.text_cache.move_to_end(prompt_key)
       tokens = {k:v.clone() for k,v in template.items()}
-    tokens.update(pixel_values=torch.cat(patches),image_grid_thw=grid_tensor)
+    tokens.update(pixel_values=pixels,image_grid_thw=grid_tensor)
     patches = tokens['pixel_values']
     if patches.dtype != torch.uint8 or patches.ndim != 2 or patches.shape[1] != 3*image_processor.patch_size**2:
       raise ValueError('Expected unnormalized uint8 image patches')
@@ -153,7 +172,9 @@ class SelectedInputs(InputAdapter):
     if not isinstance(nav,(list,tuple)) or len(nav) != 1 or not isinstance(nav[0],str):
       raise ValueError('Require one navigation string; empty means unavailable')
     canonical = dict(data,camera_pixel_bounds=CAMERA_PIXEL_BOUNDS)
-    tokens = self.tokenize(build_conversation(canonical),zip(cameras.tolist(),times.tolist(),strict=True))
+    stamps = times.tolist()
+    pixels,grids = self.patch_pair(zip(images[:5,0],stamps[:5],strict=True),zip(images[5:,0],stamps[5:],strict=True))
+    tokens = self.tokenize(build_conversation(canonical),pixels,grids)
     grids = tokens['image_grid_thw']
     if grids.shape != (10,3) or not torch.all(grids.prod(dim=1) == 720):
       raise ValueError('Selected input requires 720 patches for every image')
