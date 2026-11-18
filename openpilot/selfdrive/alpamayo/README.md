@@ -3,15 +3,22 @@
 The small driving model runs by default. Shadow mode saves GPU predictions without changing driving actions.
 Planner mode lets modeld select GPU actions at its regular cadence. This mode is under bench evaluation. Vehicle control remains unqualified.
 
-`ALPAMAYO_PLANNER=1` selects the 500 ms planner with the same `ALPAMAYO_CONFIG` as selected shadow inference.
-Shadow mode takes precedence if both modes are set. With neither mode set, the existing model selection applies.
+Setting `ALPAMAYO_CONFIG` selects the 500 ms planner unless `ALPAMAYO_SHADOW=1` or `ALPAMAYO_PLANNER=0` is set.
+The file must contain a selected-model configuration. With no configuration, the existing openpilot model selection applies.
 Planner mode reserves Chestnut for Alpamayo and keeps the small model running for perception and immediate fallback.
-The manager attempts GPU inference when Chestnut enumerates at 5 Gbps. The first five completed results are startup samples.
+The manager attempts GPU inference onroad when the configuration exists and Chestnut enumerates at 5 Gbps. The first five completed predictions are startup samples.
 Two consecutive timely plans are required before modeld can use a GPU action. Age the plan from camera capture before computing the requested action.
 The selector checks local speed, path agreement, stopping, and the difference in desired acceleration and curvature on each model update.
 An absent, expired, invalid, or rejected plan leaves the current small-model action in place. An explicit worker invalidation clears the plan.
+An already active planner can use one isolated overrun published less than one 20 Hz model frame (50 ms) late.
+It still counts as a missed 500 ms deadline. The plan must be newer, fresh from capture and consistent with the current small-model action.
+Repeated overruns, stale delivery or a missed slot return control to the small model. Two consecutive on-time plans are required to resume.
+The scheduler briefly waits for a nearly finished worker, then admits only current input or skips the slot. A stalled worker restarts with fresh history.
 `modelV2.alpamayoQueryMonoTime` identifies the selected plan; zero means the local action was used. `localAction` records the independent small-model action in planner mode.
 The logged `alpamayoPlan` contains the GPU path. `modelV2.position` still describes the small model. Radar, longitudinal limits, and Panda safety keep their usual roles.
+
+For an isolated command replay, `PlanSelector.candidate_action(now, v_ego, lat_delay, long_delay)` derives steering and acceleration from Alpamayo alone.
+The live selector additionally checks agreement before using the action. Stopping modeld would also stop camera odometry used by localization and calibration.
 
 The default runtime uses original BF16 weights, greedy reasoning, ten Euler steps, and a fixed diffusion-noise file.
 It retains all five images per front camera: `(-2, -1, -0.5, -0.1, 0)` seconds.
@@ -119,9 +126,9 @@ A comparison command returns failure if numerical or performance limits fail.
 
 ## Live configuration
 
-Set `ALPAMAYO_SHADOW=1` and `ALPAMAYO_CONFIG` in the manager environment before starting openpilot.
-The manager starts `alpamayod` only onroad. This opt-in forces the small driving model even with `DISABLE_CHESTNUT=0`.
-With both Alpamayo modes disabled, `DISABLE_CHESTNUT=0` restores the existing large driving-model selection.
+Configure `ALPAMAYO_CONFIG` in the manager environment before starting openpilot. Keep `ALPAMAYO_SHADOW=1` for capture without selecting GPU actions.
+For planner evaluation, unset the shadow flag. Without an available GPU, modeld continues running the local small model.
+With Alpamayo disabled, `DISABLE_CHESTNUT=0` restores the existing large driving-model selection.
 
 The private JSON configuration contains:
 
@@ -183,14 +190,15 @@ Full road names and sign text remain in saved navigation metadata. Unsupported o
 Disabled, replaced, loading, stale, and last-known-position routes are rejected.
 
 The initial car-test cadence is one attempt every 500 ms. Slots align to the monotonic clock once the model worker is ready.
-Each slot has one admission attempt. Busy slots, missing causal inputs, late serialization, and expired worker inputs are skipped without a queue or catch-up run.
-Inference that overruns its deadline finishes in its occupied slot; subsequent busy slots are missed, and the next attempt waits for a future slot.
+Each slot admits at most one snapshot. Planner mode allows one local-model frame for a previous worker call to finish at the slot boundary.
+Skip slots that remain busy or lack causal inputs. Never replay a missed slot. The 500 ms benchmark deadline does not include the grace period.
 `250` ms remains an unqualified diagnostic option. `100` ms / 10 Hz is a later phase after the initial car test.
 The input camera rate and requested slot rate do not establish achieved output throughput; actual completion times and missed slots determine that rate.
 The first five completed outputs are marked startup; graph compilation can overrun multiple slots. Later overruns remain visible in deadline results.
 At 500 ms, the worker retains the calibrated current pair from four consecutive slots. A gap restarts that history.
 For each front camera it reuses the actual current exposures from four, two, and one slot ago, with their original timestamps and calibration.
-Priming retains pixels on the CPU. With distinct images and an empty GPU cache, the first predictions encode ten and six images, then four per slot.
+Selected inference encodes both current anchor images during each priming slot. Late priming or a lost historical feature restarts the two-second history.
+With distinct images, the first complete prediction and each following prediction encode four new images. Priming produces no driving action.
 Other cadences select all five exposures from capture timestamps. Feature reuse always depends on actual image content.
 
 The supervisor monitors small-model health, temperatures, memory, and storage while inference runs in its isolated child.

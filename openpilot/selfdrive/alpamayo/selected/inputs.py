@@ -50,6 +50,45 @@ class SelectedInputs(InputAdapter):
     self.text_cache.clear()
     self.rope_cache.clear()
 
+  def patch_image(self, frame, identity, bounds):
+    processor = self.processor.image_processor
+    height,width = smart_resize(*frame.shape[-2:],factor=processor.patch_size*processor.merge_size,
+                                min_pixels=bounds[0],max_pixels=bounds[1])
+    key = (*identity,height,width)
+    old = self.resize_cache.get(key)
+    if old is not None and same_image(frame,old[0]):
+      self.resize_cache.move_to_end(key)
+      return old[1:]
+    image = resize(frame,[height,width],interpolation=InterpolationMode.BICUBIC)
+    batch,h,w = processor.patchify(image.unsqueeze(0),16,2,1)
+    packed,grid = batch.reshape(-1,3*16**2),(1,h,w)
+    self.resize_cache[key] = (frame.clone(),packed,grid)
+    if len(self.resize_cache) > 144:
+      self.resize_cache.popitem(last=False)
+    return packed,grid
+
+  def anchor_patches(self, anchors):
+    patches,grids = [],[]
+    for (image,ref),camera in zip(anchors,(1,6),strict=True):
+      if ref['view'] != camera or image.shape != (1,3,432,768) or image.dtype != np.uint8:
+        raise ValueError('Expected the calibrated current image from each front camera')
+      frame = torch.from_numpy(image[0].copy())  # The retained NumPy pixels are read-only.
+      packed,grid = self.patch_image(frame,(camera,ref['capture_ns']//1000),CAMERA_PIXEL_BOUNDS[camera])
+      if packed.dtype != torch.uint8 or packed.shape != (720,768):
+        raise ValueError('Expected 720 byte patches per anchor')
+      patches.append(packed)
+      grids.append(grid)
+    return torch.cat(patches),torch.tensor(grids,dtype=torch.int64)
+
+  def vision_positions(self, grids):
+    # The checkpoint interpolates its learned grid independently for each image.
+    key = tuple(map(tuple,grids.tolist()))
+    if key not in self.position_cache:
+      if len(self.position_cache) >= 4:
+        self.position_cache.pop(next(iter(self.position_cache)))
+      self.position_cache[key] = Cosmos3EdgeVisionEmbeddings.resize_positional_embeddings(self.position_weight,grids,2).float().numpy()
+    return self.position_cache[key]
+
   def tokenize(self, messages, identities):
     # Tokenization body follows NVIDIA helper._tokenize_messages (Apache-2.0).
     # Only resize reuse and retained unnormalized uint8 patches differ.
@@ -66,20 +105,7 @@ class SelectedInputs(InputAdapter):
         if entry['type'] != 'image':
           continue
         frame = entry['image'].squeeze(0)
-        height,width = smart_resize(*frame.shape[-2:],factor=image_processor.patch_size*image_processor.merge_size,
-                                    min_pixels=entry['min_pixels'],max_pixels=entry['max_pixels'])
-        key = (*next(identity),height,width)
-        old = self.resize_cache.get(key)
-        if old is not None and same_image(frame,old[0]):
-          self.resize_cache.move_to_end(key)
-          packed,grid = old[1:]
-        else:
-          image = resize(frame,[height,width],interpolation=InterpolationMode.BICUBIC)
-          batch,h,w = image_processor.patchify(image.unsqueeze(0),16,2,1)
-          packed,grid = batch.reshape(-1,3*16**2),(1,h,w)
-          self.resize_cache[key] = (frame.clone(),packed,grid)
-          while len(self.resize_cache) > 144:
-            self.resize_cache.popitem(last=False)
+        packed,grid = self.patch_image(frame,next(identity),(entry['min_pixels'],entry['max_pixels']))
         patches.append(packed)
         grids.append(grid)
     grid_tensor = torch.tensor(grids,dtype=torch.int64)
@@ -151,8 +177,4 @@ class SelectedInputs(InputAdapter):
           self.rope_cache.popitem(last=False)
     else:
       self.rope_cache.move_to_end(structure)
-    if key not in self.position_cache:
-      if len(self.position_cache) >= 4:
-        self.position_cache.pop(next(iter(self.position_cache)))
-      self.position_cache[key] = Cosmos3EdgeVisionEmbeddings.resize_positional_embeddings(self.position_weight,grids,2).float().numpy()
-    return prepared,(ids.numpy(),cached[0].copy(),cached[1],self.position_cache[key])
+    return prepared,(ids.numpy(),cached[0].copy(),cached[1],self.vision_positions(grids))

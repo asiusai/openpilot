@@ -114,6 +114,7 @@ class Runtime:
     import torch
     from tinygrad import Device
     from .backend import Backend
+    from .buffers import VisionBuffers
     from .inputs import SelectedInputs
     from .model import SelectedModel
     from .prefill import SpeculativePrefill
@@ -142,7 +143,7 @@ class Runtime:
       self.prefill = SpeculativePrefill(self.model)
       self.decoder = Decoder(self.model,self.draft,self.anchor)
       self.vision = VisionCache(self.model)
-      self.inputs,self.positions = None,{}
+      self.inputs,self.vision_buffers = None,VisionBuffers()
       self.settings = SimpleNamespace(max_tokens=64,vision_batch=1)
       self.model.synchronize()
       self.device = Device.DEFAULT
@@ -169,15 +170,44 @@ class Runtime:
     if not isinstance(noise,np.ndarray) or noise.shape != (1,64,2) or noise.dtype != np.float32 or not np.isfinite(noise).all():
       raise ValueError('Require finite float32 diffusion noise [1,64,2]')
 
-  def predict(self, sample, noise=None):
+  def prime(self, anchors, deadline_ns):
+    """Encode only the two real current exposures. A cold graph may outlive its slot."""
+    import numpy as np
+    from tinygrad import Tensor
+    with self.lock:
+      if self.closed:
+        raise RuntimeError('Runtime is closed')
+      if time.monotonic_ns() >= deadline_ns:
+        return False
+      patches,grids = self.adapter.anchor_patches(anchors)
+      pixels,layout = patches.numpy(),grids.numpy()
+      keys = self.vision.patch_keys(pixels,layout)
+      missing = self.vision.missing_indices(keys)
+      encoded = {}
+      if missing:
+        batches = self.vision_buffers.batches(layout,1)
+        positions = self.adapter.vision_positions(grids)
+        raw = np.concatenate([pixels[batches[i][0]:batches[i][1]] for i in missing])
+        if time.monotonic_ns() >= deadline_ns:
+          return False
+        positions = self.vision_buffers.position_buffer(layout,positions)
+        expanded = self.vision_buffers.expand(Tensor(raw,device='CPU'))
+        encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
+        self.model.synchronize()
+      if time.monotonic_ns() >= deadline_ns:
+        return False
+      self.vision.retain(keys,encoded)
+      return True
+
+  def predict(self, sample, noise=None, *, retained=()):
     with self.lock:
       if self.closed:
         raise RuntimeError('Runtime is closed')
       noise = self.noise if noise is None else noise
       self.validate_noise(noise)
-      return self._predict(sample,noise)
+      return self._predict(sample,noise,retained)
 
-  def _predict(self, sample, noise):
+  def _predict(self, sample, noise, retained):
     import torch
     from alpamayo2_edge.action_space import UnicycleAccelCurvatureCourseActionSpace
     from .buffers import CompactInputs
@@ -196,10 +226,13 @@ class Runtime:
       prepared,packed = self.adapter.prepare(sample)
       prepared,packed = padded_inputs(prepared,packed,2048,self.draft,self.anchor)
       self.vision.prepare(prepared)
-      missing = self.vision.missing_indices()
+      if any(self.vision.keys[i] not in self.vision.cache for i in retained):
+        from openpilot.selfdrive.alpamayo.frontend import Unavailable
+        raise Unavailable('Lost a retained front-camera feature; restarting two-second history')
+      missing = self.vision.missing_indices(self.vision.keys)
     with timed('cpu_buffers'):
       if self.inputs is None or not self.inputs.update(self.settings,self.adapter.config,prepared,packed):
-        self.inputs = CompactInputs(self.settings,self.adapter.config,prepared,packed,positions_cache=self.positions)
+        self.inputs = CompactInputs(self.settings,self.adapter.config,prepared,packed,vision=self.vision_buffers)
     with timed('input_upload'):
       pixels,vpos,ids,cos,sin,dc,ds,ac,ass,actions = self.inputs.upload(noise,missing)
     with timed('vision'):
@@ -247,7 +280,7 @@ class Runtime:
       self.vision.reset()
       self.adapter.reset()
       self.inputs = None
-      self.positions.clear()
+      self.vision_buffers.positions.clear()
       self.metrics = Metrics()
 
   def close(self):
@@ -258,7 +291,7 @@ class Runtime:
         self.model.synchronize()
       finally:
         self.inputs = self.vision = self.decoder = self.prefill = self.model = None
-        self.positions.clear()
+        self.vision_buffers = None
         try:
           self.backend.close()
         finally:
@@ -275,9 +308,13 @@ class ShadowAdapter:
     self.manifest = self.runtime.manifest
 
   def predict(self, arrays, metadata):
-    prediction = self.runtime.predict(arrays)
+    retained = tuple(i for i,ref in enumerate(metadata['frames']) if 'anchor_slot_ns' in ref)
+    prediction = self.runtime.predict(arrays,retained=retained)
     prediction['selected_metrics'] = asdict(self.runtime.metrics)
     return {'query_ns':metadata['query_ns'],'prediction':prediction}
+
+  def prime(self, anchors, deadline_ns):
+    return self.runtime.prime(anchors,deadline_ns)
 
   def synchronize(self):
     self.runtime.synchronize()

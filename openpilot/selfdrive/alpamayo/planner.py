@@ -2,14 +2,22 @@
 import numpy as np
 
 PERIOD = 500_000_000
+HANDOFF_GRACE = 50_000_000  # One frame of the local 20 Hz driving model.
+MAX_DELIVERY_AGE = PERIOD+250_000_000
 T = np.arange(65) * .1
 CHECK_TIMES = np.arange(1, 6)*.5
 ACTION_TIMES = np.arange(22)*.1
 
 
+def deliverable(query, ready, deadline, now):
+  return (0 < query <= deadline-PERIOD <= ready <= now < deadline+HANDOFF_GRACE
+          and now-query <= MAX_DELIVERY_AGE)
+
+
 def packet(result):
-  """Only completed, in-slot predictions can claim a slot. A rejected slot invalidates the previous plan."""
-  if result['startup'] or result['period_ms'] != 500 or not result['slot_deadline_met']:
+  """Keep the strict benchmark deadline separate from eligibility for live handoff."""
+  q,r,d = result['input']['query_ns'], result['output_ready_ns'], result['slot_deadline_ns']
+  if result['startup'] or result['period_ms'] != 500 or not deliverable(q,r,d,r):
     return None
   xyz = np.asarray(result['prediction']['xyz'])[0]
   rot = np.asarray(result['prediction']['rot'])[0]
@@ -23,13 +31,24 @@ class PlanSelector:
   def __init__(self):
     self.query = self.deadline = self.ready = self.streak = 0
     self.curve = None
+    self.last_on_time = False
 
   def reject(self):
     self.curve, self.streak = None, 0
+    self.last_on_time = False
 
-  def receive(self, plan, now):
+  def receive(self, plan, now, published=None):
     q, r, d = int(plan.queryMonoTime), int(plan.readyMonoTime), int(plan.slotDeadline)
-    if not (self.query < q <= r <= now < d+PERIOD and d-PERIOD <= r <= d and r-q <= PERIOD+250_000_000 and d > self.deadline):
+    if q <= self.query and d <= self.deadline:
+      return  # An older or repeated packet cannot replace a newer result.
+    published = r if published is None else published
+    if not (q > self.query and d > self.deadline and r <= published <= now and deliverable(q,r,d,published)
+            and now-published <= HANDOFF_GRACE and now-q <= MAX_DELIVERY_AGE):
+      self.reject()
+      return
+    on_time = published < d
+    consecutive = d-self.deadline == PERIOD
+    if not on_time and not (consecutive and self.streak >= 2 and self.last_on_time):
       self.reject()
       return
     if any(len(col) != 64 for col in (plan.x, plan.y, plan.yaw)):
@@ -43,18 +62,37 @@ class PlanSelector:
     speed = np.hypot(np.diff(x), np.diff(y)) / .1
     speed = np.interp(T, T[1:]-.05, speed)
     self.curve = x, y, yaw, speed, np.gradient(speed, .1), np.gradient(yaw, .1)
-    self.streak = self.streak+1 if d-self.deadline == PERIOD else 1
+    self.streak = self.streak+1 if consecutive else 1
+    self.last_on_time = on_time
     self.query, self.ready, self.deadline = q, r, d
 
-  def action(self, now, v_ego, lat_delay, long_delay, local_path, local_action):
+  def candidate_action(self, now, v_ego, lat_delay, long_delay):
+    """Time-align the GPU plan without consulting any other model's path or action."""
     from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, get_curvature_from_plan, should_stop
     if self.curve is None or self.streak < 2 or not self.ready <= now < min(self.deadline+PERIOD, self.query+1_000_000_000):
       return None
-    if (not np.isfinite([v_ego, local_action.desiredCurvature, local_action.desiredAcceleration]).all() or
-        not (1. <= v_ego and 0 < lat_delay <= 2. and 0 < long_delay <= 2.) or local_action.shouldStop):
+    if not np.isfinite(v_ego) or not (1. <= v_ego and 0 < lat_delay <= 2. and 0 < long_delay <= 2.):
       return None
     age = (now-self.query)/1e9
-    x, y, yaw, speed, accel, yaw_rate = self.curve
+    _, _, yaw, speed, accel, yaw_rate = self.curve
+    def sample(v):
+      return np.interp(age+ACTION_TIMES, T, v)
+    v = sample(speed)
+    if abs(v[0]-v_ego) > 2.:
+      return None
+    theta = np.interp(age, T, yaw)
+    curvature = get_curvature_from_plan(theta-sample(yaw), -sample(yaw_rate), ACTION_TIMES, v_ego, lat_delay)
+    a = get_accel_from_plan(v, sample(accel), ACTION_TIMES, long_delay)
+    if not np.isfinite([curvature,a]).all():
+      return None
+    return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
+
+  def action(self, now, v_ego, lat_delay, long_delay, local_path, local_action):
+    candidate = self.candidate_action(now, v_ego, lat_delay, long_delay)
+    if candidate is None or local_action.shouldStop or not np.isfinite([local_action.desiredCurvature,local_action.desiredAcceleration]).all():
+      return None
+    age = (now-self.query)/1e9
+    x, y, yaw, *_ = self.curve
     # Compare in the current vehicle frame. A turn starts at the current heading, not the exposure heading.
     theta = np.interp(age, T, yaw)
     future = CHECK_TIMES
@@ -66,16 +104,11 @@ class PlanSelector:
         or np.any(np.diff(ts) <= 0) or ts[0] > future[0] or ts[-1] < future[-1] or
         np.max(abs(gy-np.interp(future, ts, sy))) > 1.25 or np.max(abs(gx-np.interp(future, ts, sx))) > 3.):
       return None
-    at = ACTION_TIMES
-    def sample(v):
-      return np.interp(age+at, T, v)
-    v = sample(speed)
-    curvature = get_curvature_from_plan(theta-sample(yaw), -sample(yaw_rate), at, v_ego, lat_delay)
-    a = get_accel_from_plan(v, sample(accel), at, long_delay)
-    if (abs(v[0]-v_ego) > 2. or abs(curvature-local_action.desiredCurvature)*v_ego**2 > 1. or
+    a,curvature = candidate['desiredAcceleration'],candidate['desiredCurvature']
+    if (abs(curvature-local_action.desiredCurvature)*v_ego**2 > 1. or
         abs(a-local_action.desiredAcceleration) > 1. or (local_action.desiredAcceleration < -.5 and a > local_action.desiredAcceleration)):
       return None
-    return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
+    return candidate
 
   def apply(self, model, now, speed, lat_delay, long_delay):
     """Called on a fresh modelV2 builder; preserve the local action when unavailable."""

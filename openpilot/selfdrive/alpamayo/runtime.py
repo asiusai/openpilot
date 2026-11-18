@@ -313,7 +313,7 @@ def live_timing(selected, worker_started_ns, output_ready_ns, slot=None):
             'input_age_ms': (output_ready_ns-selected.query_ns)/1e6}
   if slot is not None:
     result.update({key: slot[key] for key in ('slot_start_ns', 'slot_deadline_ns', 'period_ms', 'missed_slots')})
-    result.update(slot_deadline_met=output_ready_ns <= slot['slot_deadline_ns'],
+    result.update(slot_deadline_met=output_ready_ns < slot['slot_deadline_ns'],
                   selection_lateness_ms=(selected.selected_ns-slot['slot_start_ns'])/1e6,
                   completion_lateness_ms=max(0, output_ready_ns-slot['slot_deadline_ns'])/1e6)
   return result
@@ -387,6 +387,8 @@ def worker(config, directory, handoff):
           written += atomic_json(root/f'{selected.query_ns}.json', result)
           count += 1
       except (Unavailable, PromptTooLong) as error:
+        if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context['slot_deadline_ns']):
+          error = Unavailable('Front-camera feature priming missed its slot deadline')
         if not isinstance(error, Priming):
           preparer.anchors.clear()
         atomic_json(root/'unavailable.json', {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,

@@ -26,6 +26,9 @@ class Unavailable(ValueError):
 
 class Priming(Unavailable):
   """A real anchor pair was retained, but the two-second history is incomplete."""
+  def __init__(self, reason, anchors):
+    super().__init__(reason)
+    self.anchors = anchors
 
 
 @dataclass(frozen=True)
@@ -247,9 +250,12 @@ class Preparer:
   def rolling_images(self, selected, opening):
     """Only retain owned, calibrated pixels. The worker unmaps the input after each slot."""
     query, frames = selected.query_ns, selected.frames
-    if not (opening <= selected.selected_ns < opening+HALF_SECOND_NS and 0 <= opening-query <= FRAME_TOLERANCE_NS and frames[-1].sof_ns == query):
+    if not (len(frames) == 4 and opening <= selected.selected_ns < opening+HALF_SECOND_NS and
+            0 <= opening-query <= FRAME_TOLERANCE_NS and frames[-1].sof_ns == query):
       raise Unavailable('Front query is outside its slot')
     reason = 'Priming front-camera anchors'
+    if self.anchors and opening <= self.anchors[-1][0]:
+      raise Unavailable('Front slot did not advance')
     if self.anchors and opening != self.anchors[-1][0]+HALF_SECOND_NS:
       self.anchors.clear()
       reason = 'Repriming after a missed slot'
@@ -276,7 +282,7 @@ class Preparer:
     self.anchors.append((opening, [(image, dict(ref, anchor_slot_ns=opening, anchor_query_ns=query, anchor_selected_ns=selected.selected_ns))
                                   for image, ref in current_views]))
     if not older:
-      raise Priming(f'{reason} ({len(self.anchors)}/4 slots)')
+      raise Priming(f'{reason} ({len(self.anchors)}/4 slots)', self.anchors[-1][1])
     return [frame for i, view in enumerate(older) for frame in (*view, *fresh[2*i:2*i+2])], hits+6
 
   def project(self, frames, states):

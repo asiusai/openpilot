@@ -10,7 +10,12 @@ import time
 
 
 def planner_mode():
-  return os.environ.get('ALPAMAYO_PLANNER') == '1' and os.environ.get('ALPAMAYO_SHADOW') != '1'
+  return (bool(os.environ.get('ALPAMAYO_CONFIG')) and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'
+          and os.environ.get('ALPAMAYO_SHADOW') != '1')
+
+
+class WorkerStopped(RuntimeError):
+  """A fresh worker can recover without restarting modeld or interrupting the local model."""
 
 
 def cache_directory(config, output):
@@ -70,16 +75,25 @@ def main():
     raise KeyboardInterrupt
   signal.signal(signal.SIGTERM, stop)
   boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-  root = output/f'{boot}-{time.monotonic_ns()}'
-  root.mkdir()
-  with ram_handoff() as handoff:
-    supervise(config, config_path, python, root, Path(handoff), cache, boot)
+  for attempt in range(3):
+    root = output/f'{boot}-{time.monotonic_ns()}'
+    root.mkdir()
+    try:
+      with ram_handoff() as handoff:
+        supervise(config, config_path, python, root, Path(handoff), cache, boot)
+      return
+    except WorkerStopped as exc:
+      (root/'worker-exit.txt').write_text(str(exc)+'\n')
+      if attempt == 2:
+        raise
+      time.sleep(2**attempt)
 
 
 def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.common.params import Params
   from openpilot.selfdrive.alpamayo.capture import NativeProducer, healthy
   from openpilot.selfdrive.alpamayo.frontend import Store, Unavailable
+  from openpilot.selfdrive.alpamayo.planner import HANDOFF_GRACE, deliverable
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
   slots = FixedSlots(config.get('period_ms', 500))
   pm = None
@@ -91,12 +105,19 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
       msg = messaging.new_message('alpamayoPlan', valid=payload is not None)
       if payload is not None:
         msg.alpamayoPlan = payload
+        published = time.monotonic_ns()
+        if deliverable(payload['queryMonoTime'],payload['readyMonoTime'],payload['slotDeadline'],published):
+          msg.logMonoTime = published
+        else:
+          msg = messaging.new_message('alpamayoPlan', valid=False)
       pm.send('alpamayoPlan', msg)
   store, params = Store(), Params()
   producer = NativeProducer(store)
   child = None
+  worker_start = working_since = None
+  admission = None
+  served_plan = False
   last_query, last_current = 0, {}
-  started = time.monotonic()
   try:
     producer.start()
     with (root/'worker.log').open('xb') as log:
@@ -106,8 +127,8 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         if producer.error is not None:
           raise RuntimeError('Shadow input capture failed') from producer.error
         if not healthy(health, now):
-          if time.monotonic()-started > 10 or child is not None:
-            raise RuntimeError('Small-model or device health stopped shadow inference')
+          if child is not None:
+            raise WorkerStopped('Small-model or device health stopped inference')
           producer.stop.wait(.05)
           continue
         if not memory_ok() or not storage_ok(root, 128*1024**2):
@@ -115,23 +136,46 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         if child is None:
           child = subprocess.Popen([str(python), '-m', 'openpilot.selfdrive.alpamayo.shadowd', str(config_path), str(root), str(handoff)],
                                    env=worker_environment(config, cache), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+          worker_start = time.monotonic()
         if child.poll() is not None:
-          raise RuntimeError(f'Shadow runtime exited ({child.returncode}); see {root / "worker.log"}')
+          raise WorkerStopped(f'Inference worker exited ({child.returncode})')
+        ready = (root/'ready.json').exists()
+        if not ready and time.monotonic()-worker_start > 600:
+          raise WorkerStopped('Inference initialization timed out')
+        if (handoff/'working.bin').exists() or (handoff/'pending.bin').exists():
+          if working_since is None:
+            working_since = time.monotonic()
+          # Cold JIT captures can take minutes. Drop individual deadline misses without reloading weights.
+          if time.monotonic()-working_since > (10 if served_plan else 600):
+            raise WorkerStopped('Inference worker stopped completing slots')
+        else:
+          working_since = None
         latest = handoff/'plan.json'
         if pm is not None and latest.exists():
           # Rename before reading: a newer result can replace the mailbox without being unlinked here.
           reading = latest.replace(handoff/'reading.json')
-          publish(json.loads(reading.read_bytes()))
+          payload = json.loads(reading.read_bytes())
+          publish(payload)
+          served_plan |= payload is not None and time.monotonic_ns() < payload['slotDeadline']
+          working_since = None
           reading.unlink()
         if (handoff/'skipped').exists():
           (handoff/'skipped').unlink()
           slots.skip()
           publish()
-        slot = slots.take(time.monotonic_ns()) if (root/'ready.json').exists() else None
+        slot = slots.take(time.monotonic_ns()) if ready else None
+        if slot is not None:
+          admission = slot
+        slot = admission
         if slot is not None:
           try:
             selected_ns = time.monotonic_ns()
-            if (selected_ns >= slot['slot_deadline_ns'] or (handoff/'pending.bin').exists() or (handoff/'working.bin').exists()):
+            busy = (handoff/'pending.bin').exists() or (handoff/'working.bin').exists()
+            if busy and pm is not None and selected_ns < slot['slot_start_ns']+HANDOFF_GRACE:
+              producer.stop.wait(.005)
+              continue  # Allow a nearly finished prediction; never enqueue the old slot.
+            admission = None
+            if selected_ns >= slot['slot_deadline_ns'] or busy:
               raise Unavailable('Busy or late slot')
             selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if slots.period_ms == 500 else None)
             route = params.get('CurrentRoute')
@@ -147,10 +191,10 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         producer.stop.wait(.005 if pm is not None else .02)
   finally:
     try:
-      stop_worker(child)
+      publish()
     finally:
       try:
-        publish()
+        stop_worker(child)
       finally:
         producer.close()
 

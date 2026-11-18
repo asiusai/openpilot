@@ -24,15 +24,14 @@ class VisionCache:
     self.hits = self.misses = 0
 
   @staticmethod
-  def input_keys(prepared):
-    grids = prepared['tokenized_data']['image_grid_thw'].numpy()
-    pixels = prepared['tokenized_data']['pixel_values'].numpy()
+  def patch_keys(pixels, grids):
     offsets = np.concatenate(([0],np.cumsum(grids.prod(axis=1))))
     return tuple((tuple(grid),hashlib.sha256(np.ascontiguousarray(pixels[a:b])).digest())
                  for grid,a,b in zip(grids,offsets[:-1],offsets[1:],strict=True))
 
   def prepare(self, prepared):
-    self.keys = self.input_keys(prepared)
+    tokens = prepared['tokenized_data']
+    self.keys = self.patch_keys(tokens['pixel_values'].numpy(),tokens['image_grid_thw'].numpy())
     if len(self.keys) != 10 or any(np.prod(grid) != 720 for grid,_ in self.keys):
       raise ValueError('Require all ten full-resolution images')
 
@@ -43,20 +42,19 @@ class VisionCache:
     buffer = tensor._buffer().view((end-begin)*stride,begin*stride).ensure_allocated()
     return Tensor(UOp.from_buffer(buffer,tensor.dtype)).reshape(1,end-begin,tensor.shape[-1])
 
-  def missing_indices(self):
+  def missing_indices(self, keys):
     missing = {}
-    for i,key in enumerate(self.keys):
+    for i,key in enumerate(keys):
       if key not in self.cache:
         missing.setdefault(key, i)
     return tuple(missing.values())
 
-  def encode(self, pixels, positions, ids, batches, spans, missing):
-    assert len(batches) == len(self.keys) and all(count == 1 for _,_,count in batches)
-    self.hits = sum(key in self.cache for key in self.keys)
-    groups = {}
+  def encode_missing(self, keys, pixels, positions, batches, missing):
+    assert len(batches) == len(keys) and all(count == 1 for _,_,count in batches)
+    groups,encoded = {},{}
     offset = 0
     for i in missing:
-      key = self.keys[i]
+      key = keys[i]
       begin,end,_ = batches[i]
       groups.setdefault(key[0],[]).append((key,offset,begin,end))
       offset += end-begin
@@ -70,19 +68,25 @@ class VisionCache:
           self.encoders[shape] = TinyJit(self.model.encode_group)
         values = [t.clone() for t in self.encoders[shape](*pairs)]
         Tensor.realize(*values)
-        self.cache.update(zip((item[0] for item in chunk),values,strict=True))
-    self.misses = len(missing)
-    features = []
-    for key in self.keys:
+        encoded.update(zip((item[0] for item in chunk),values,strict=True))
+    return encoded
+
+  def retain(self, keys, encoded):
+    self.cache.update(encoded)
+    for key in keys:
       self.cache.move_to_end(key)
-      features.append(self.cache[key])
     while len(self.cache) > self.capacity:
       self.cache.popitem(last=False)
+
+  def encode(self, pixels, positions, ids, batches, spans, missing):
+    self.hits = sum(key in self.cache for key in self.keys)
+    self.misses = len(missing)
+    self.retain(self.keys,self.encode_missing(self.keys,pixels,positions,batches,missing))
     unique,indices,layout = [],{},[]
-    for key,feature in zip(self.keys,features,strict=True):
+    for key in self.keys:
       if key not in indices:
         indices[key] = len(unique)
-        unique.append(feature)
+        unique.append(self.cache[key])
       layout.append(indices[key])
     layout = tuple(layout)
     grids = tuple(key[0] for key in self.keys)

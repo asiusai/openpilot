@@ -240,10 +240,12 @@ class ModelState:
 
 
 def main(demo=False):
+  from openpilot.selfdrive.alpamayo.shadowd import planner_mode
   cloudlog.warning("modeld init")
 
   # A cable can be a Chestnut awaiting enumeration, unless a USB host is connected.
-  CHESTNUT = (os.environ.get('DISABLE_CHESTNUT', '1') == '0' and os.environ.get('ALPAMAYO_SHADOW') != '1' and os.environ.get('ALPAMAYO_PLANNER') != '1' and
+  use_alpamayo = planner_mode()
+  CHESTNUT = (os.environ.get('DISABLE_CHESTNUT', '1') == '0' and os.environ.get('ALPAMAYO_SHADOW') != '1' and not use_alpamayo and
               chestnut_compiled() and (chestnut_present(timeout=45.) if ASIUS_HARDWARE else
                                       (chestnut_present() or (cable_connected() and not usb_host_connected()))))
   if CHESTNUT:
@@ -318,7 +320,7 @@ def main(demo=False):
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutGpuState"] if CHESTNUT else [])
   pm = PubMaster(pub_socks)
   planner = None
-  if os.environ.get('ALPAMAYO_PLANNER') == '1' and os.environ.get('ALPAMAYO_SHADOW') != '1':
+  if use_alpamayo:
     from openpilot.selfdrive.alpamayo.planner import PlanSelector
     planner = PlanSelector()
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
@@ -390,7 +392,7 @@ def main(demo=False):
     sm.update(0)
     if planner is not None and sm.updated['alpamayoPlan']:
       if sm.valid['alpamayoPlan']:
-        planner.receive(sm['alpamayoPlan'], time.monotonic_ns())
+        planner.receive(sm['alpamayoPlan'], time.monotonic_ns(), sm.logMonoTime['alpamayoPlan'])
       else:
         planner.reject()
     desire = DH.desire
@@ -476,6 +478,8 @@ def main(demo=False):
         now = time.monotonic_ns()
         if modelv2_send.valid and sm.all_checks(['carState', 'extrinsicsCalibration', 'deviceState']) and not vipc_dropped_frames:
           planner.apply(m, now, v_ego, lat_delay+action_delay, long_delay+action_delay)
+        else:
+          planner.reject()
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
