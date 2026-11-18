@@ -134,6 +134,7 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
     self.engine.peer_devices = {}
     self.engine.tx = MagicMock(send_text=AsyncMock(return_value=True))
     self.engine.approvals = MagicMock()
+    self.engine.approvals.consume.return_value = False
     self.storage_key = public_text(RootIdentity.generate().recording_key())
 
   async def establish(self):
@@ -159,7 +160,9 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
          patch('openpilot.system.asius.bluetoothd.authorize_peer') as authorize:
       await self.deliver({'type': 'ble-pair-request', 'publicKey': self.client.public_key, 'storagePublicKey': self.storage_key, 'requestId': 'pair'})
     authorize.assert_not_called()
-    self.assertEqual(self.response()['type'], 'ble-error')
+    response = self.response()
+    self.assertEqual(response['type'], 'ble-error')
+    self.assertIn("Forget this device in your phone's Bluetooth settings", response['error'])
     self.engine.approvals.consume.assert_called_once_with('/phone')
 
   async def test_approved_peer_enrollment_binds_recording_key_and_closes_mode(self):
@@ -182,7 +185,28 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(self.response(), {'type': 'ble-session', 'ready': True, 'requestId': 'fresh'})
       with self.assertRaises(ValueError):
         await self.engine.handle_encrypted(message.encode(), '/phone')
-    self.engine.approvals.consume.assert_not_called()
+    self.engine.approvals.consume.assert_called_once_with('/phone')
+
+  async def test_saved_app_can_repeat_setup_without_reauthorizing(self):
+    await self.establish()
+    with patch('openpilot.system.asius.bluetoothd.load_authorized_peers', return_value={self.client.public_key: {}}), \
+         patch('openpilot.system.asius.bluetoothd.pairing_mode_active', return_value=False), \
+         patch('openpilot.system.asius.bluetoothd.authorize_peer') as authorize, \
+         patch('openpilot.system.asius.bluetoothd.disable_pairing_mode') as close, \
+         patch('openpilot.system.asius.bluetoothd.methods.getDeviceName', return_value='Asius v0'):
+      await self.deliver({'type': 'ble-pair-request', 'publicKey': self.client.public_key, 'storagePublicKey': self.storage_key, 'requestId': 'repeat'})
+    self.assertEqual(self.response()['type'], 'pair-response')
+    authorize.assert_not_called()
+    close.assert_not_called()
+
+  async def test_saved_app_finishes_a_confirmed_rebond(self):
+    await self.establish()
+    self.engine.approvals.consume.side_effect = lambda device: device == '/phone'
+    with patch('openpilot.system.asius.bluetoothd.load_authorized_peers', return_value={self.client.public_key: {}}), \
+         patch('openpilot.system.asius.bluetoothd.disable_pairing_mode') as close:
+      await self.deliver({'type': 'ble-session', 'requestId': 'rebond'})
+    self.assertTrue(self.response()['ready'])
+    close.assert_called_once_with(completed=True)
 
   async def test_unknown_app_cannot_send_commands(self):
     await self.establish()
