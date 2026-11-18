@@ -32,9 +32,10 @@ class CompactInputs:
     if self.signature(args, config, prepared, packed) != self._signature:
       return False
     arrays = self.arrays(args, prepared, packed) if arrays is None else arrays
-    if any(tuple(a.shape) != old.shape for a, old in zip(arrays, self.cpu, strict=True)):
+    if arrays[0].shape != self.pixels.shape or any(a.shape != old.shape for a, old in zip(arrays[1:], self.cpu, strict=True)):
       return False
-    for a, old in zip(arrays, self.cpu, strict=True):
+    self.pixels = arrays[0]
+    for a, old in zip(arrays[1:], self.cpu, strict=True):
       destination = np.frombuffer(old._buffer().as_memoryview(allow_zero_copy=True), dtype=a.dtype).reshape(a.shape)
       np.copyto(destination, a, casting='no')
     return True
@@ -51,8 +52,9 @@ class CompactInputs:
       self.positions[self.layout_key] = Tensor(value, device='CPU').to(Device.DEFAULT).bitcast(dtypes.bfloat16).realize()
     fixed_positions = self.positions[self.layout_key]
     pixel_table = Tensor(self.pixel_table.copy(), device='CPU').to(Device.DEFAULT).bitcast(dtypes.bfloat16).realize()
-    self.cpu = [Tensor(a, device='CPU').realize() for a in (self.arrays(args, prepared, packed) if arrays is None else arrays)]
-    self.uploaded_pixel_bytes = self.cpu[0].numel()*self.cpu[0].dtype.itemsize
+    self.pixels, *metadata = self.arrays(args, prepared, packed) if arrays is None else arrays
+    self.cpu = [Tensor(a, device='CPU').realize() for a in metadata]
+    self.uploaded_pixel_bytes = 0
     self.noise = np.frombuffer(self.cpu[-1]._buffer().as_memoryview(allow_zero_copy=True), dtype=np.float32).reshape(1, 64, 2)
     grids = prepared['tokenized_data']['image_grid_thw'].numpy()
     offsets = np.concatenate(([0], np.cumsum(grids.prod(axis=1))))
@@ -66,12 +68,27 @@ class CompactInputs:
     self.batches = tuple(batches)
     image_indices = np.flatnonzero(ids[0] == config.vlm_config.image_token_id)
     self.spans = tuple((int(span[0]), int(span[-1])+1) for span in np.split(image_indices, np.flatnonzero(np.diff(image_indices) != 1)+1))
-    self.upload_jit = TinyJit(lambda *xs: tuple(
-      pixel_table[x.to(Device.DEFAULT).cast(dtypes.int32)].contiguous().realize() if i == 0 else
-      fixed_positions if i == 1 else x.to(Device.DEFAULT).bitcast(dtypes.bfloat16).contiguous().realize()
-      if i not in (2, len(xs)-1) else x.to(Device.DEFAULT).contiguous().realize()
-      for i, x in enumerate(xs)))
+    self.uploads = {}
 
-  def upload(self, noise):
+    def transfer(pixels, _position_placeholder, ids, *fields):
+      normalized = None if pixels is None else pixel_table[pixels.to(Device.DEFAULT).cast(dtypes.int32)].contiguous().realize()
+      angles = [x.to(Device.DEFAULT).bitcast(dtypes.bfloat16).contiguous().realize() for x in fields[:-1]]
+      return normalized, fixed_positions, ids.to(Device.DEFAULT).contiguous().realize(), *angles, fields[-1].to(Device.DEFAULT).contiguous().realize()
+
+    self.transfer = transfer
+
+  def upload(self, noise, missing):
+    ranges = [self.batches[i][:2] for i in missing]
+    rows = sum(end-begin for begin,end in ranges)
+    if rows not in self.uploads:
+      buf = Tensor.empty(rows, self.pixels.shape[1], dtype=dtypes.uint8, device='CPU').realize() if rows else None
+      dest = np.frombuffer(buf._buffer().as_memoryview(allow_zero_copy=True), dtype=np.uint8).reshape(buf.shape) if rows else None
+      self.uploads[rows] = buf, dest, TinyJit(self.transfer)
+    buf, dest, transfer = self.uploads[rows]
+    offset = 0
+    for begin,end in ranges:
+      dest[offset:offset+end-begin] = self.pixels[begin:end]
+      offset += end-begin
+    self.uploaded_pixel_bytes = dest.nbytes if rows else 0
     self.noise[:] = noise
-    return self.upload_jit(*self.cpu)
+    return transfer(buf, *self.cpu)

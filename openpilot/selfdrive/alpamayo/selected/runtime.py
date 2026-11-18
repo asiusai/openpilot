@@ -196,13 +196,14 @@ class Runtime:
       prepared,packed = self.adapter.prepare(sample)
       prepared,packed = padded_inputs(prepared,packed,2048,self.draft,self.anchor)
       self.vision.prepare(prepared)
+      missing = self.vision.missing_indices()
     with timed('cpu_buffers'):
       if self.inputs is None or not self.inputs.update(self.settings,self.adapter.config,prepared,packed):
         self.inputs = CompactInputs(self.settings,self.adapter.config,prepared,packed,positions_cache=self.positions)
     with timed('input_upload'):
-      pixels,vpos,ids,cos,sin,dc,ds,ac,ass,actions = self.inputs.upload(noise)
+      pixels,vpos,ids,cos,sin,dc,ds,ac,ass,actions = self.inputs.upload(noise,missing)
     with timed('vision'):
-      embedding = self.vision.encode(pixels,vpos,ids,self.inputs.batches,self.inputs.spans)
+      embedding = self.vision.encode(pixels,vpos,ids,self.inputs.batches,self.inputs.spans,missing)
     prompt = prepared['actual_prompt_length']
     with timed('prefill'):
       logits = self.prefill(embedding,cos,sin,64,prompt)

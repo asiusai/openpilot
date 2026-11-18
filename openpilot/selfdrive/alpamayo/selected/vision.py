@@ -43,31 +43,37 @@ class VisionCache:
     buffer = tensor._buffer().view((end-begin)*stride,begin*stride).ensure_allocated()
     return Tensor(UOp.from_buffer(buffer,tensor.dtype)).reshape(1,end-begin,tensor.shape[-1])
 
-  def encode(self, pixels, positions, ids, batches, spans):
-    assert len(batches) == len(self.keys) and all(count == 1 for _,_,count in batches)
-    self.hits = self.misses = 0
+  def missing_indices(self):
     missing = {}
-    for key,(begin,end,_) in zip(self.keys,batches,strict=True):
+    for i,key in enumerate(self.keys):
       if key not in self.cache:
-        missing.setdefault(key,(begin,end))
+        missing.setdefault(key, i)
+    return tuple(missing.values())
+
+  def encode(self, pixels, positions, ids, batches, spans, missing):
+    assert len(batches) == len(self.keys) and all(count == 1 for _,_,count in batches)
+    self.hits = sum(key in self.cache for key in self.keys)
     groups = {}
-    for item in missing.items():
-      groups.setdefault(item[0][0],[]).append(item)
+    offset = 0
+    for i in missing:
+      key = self.keys[i]
+      begin,end,_ = batches[i]
+      groups.setdefault(key[0],[]).append((key,offset,begin,end))
+      offset += end-begin
     for group in groups.values():
-      for offset in range(0,len(group),self.group_limit):
-        chunk = group[offset:offset+self.group_limit]
-        pairs = [self.image_view(t,a,b) for _,(a,b) in chunk for t in (pixels,positions)]
+      for start in range(0,len(group),self.group_limit):
+        chunk = group[start:start+self.group_limit]
+        pairs = [view for _,p,a,b in chunk for view in (self.image_view(pixels,p,p+b-a),self.image_view(positions,a,b))]
         Tensor.realize(*pairs)
         shape = tuple(t.shape for t in pairs)
         if shape not in self.encoders:
           self.encoders[shape] = TinyJit(self.model.encode_group)
         values = [t.clone() for t in self.encoders[shape](*pairs)]
         Tensor.realize(*values)
-        self.cache.update(zip((key for key,_ in chunk),values,strict=True))
+        self.cache.update(zip((item[0] for item in chunk),values,strict=True))
     self.misses = len(missing)
     features = []
     for key in self.keys:
-      self.hits += int(key not in missing)
       self.cache.move_to_end(key)
       features.append(self.cache[key])
     while len(self.cache) > self.capacity:

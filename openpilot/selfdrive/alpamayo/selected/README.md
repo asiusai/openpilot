@@ -57,8 +57,8 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Expert | Three Euler steps; restored BF16 action projections; exact scoped 2x2 PV kernel |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
-Each prediction uploads all ten images as byte patches through one fixed graph. The GPU expands them to BF16.
-Only missing image features require encoding. Group size two limits each encoding call.
+Each prediction uploads uncached images in one pixel transfer. The GPU expands the byte patches to BF16 and encodes up to two images per call.
+Ten distinct images need 5,529,600 bytes on startup. Four misses need 2,211,840 bytes. A full cache hit sends only metadata.
 At a warmed 500 ms cadence, four missing images require two groups; six older images remain cached.
 At a warmed 100 ms cadence, two missing images require one group; eight older images remain cached.
 Actual reuse follows image content and the capture schedule, including missing or repeated source frames.
