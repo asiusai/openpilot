@@ -324,7 +324,8 @@ def main(demo=False):
     from openpilot.selfdrive.alpamayo.planner import PlanSelector
     planner = PlanSelector()
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
-                  "carControl", "controlsState", "lateralDelay"] + (['alpamayoPlan'] if planner is not None else []))
+                  "carControl", "controlsState", "lateralDelay"] + (['alpamayoPlan'] if planner is not None else []),
+                 frequency=ModelConstants.MODEL_RUN_FREQ)
 
   publish_state = PublishState()
   params = Params()
