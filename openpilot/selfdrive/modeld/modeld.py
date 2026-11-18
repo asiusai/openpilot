@@ -476,7 +476,8 @@ def main(demo=False):
         m = modelv2_send.modelV2
         m.localAction = action
         now = time.monotonic_ns()
-        if modelv2_send.valid and sm.all_checks(['carState', 'extrinsicsCalibration', 'deviceState']) and not vipc_dropped_frames:
+        if (modelv2_send.valid and sm.all_checks(['carState', 'extrinsicsCalibration', 'deviceState']) and not vipc_dropped_frames
+            and not sm['carState'].brakePressed and not sm['carState'].stockAeb):
           planner.apply(m, now, v_ego, lat_delay+action_delay, long_delay+action_delay)
         else:
           planner.reject()

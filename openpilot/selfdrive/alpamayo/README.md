@@ -8,17 +8,18 @@ The file must contain a selected-model configuration. With no configuration, the
 Planner mode reserves Chestnut for Alpamayo and keeps the small model running for perception and immediate fallback.
 The manager attempts GPU inference onroad when the configuration exists and Chestnut enumerates at 5 Gbps. The first five completed predictions are startup samples.
 Two consecutive timely plans are required before modeld can use a GPU action. Age the plan from camera capture before computing the requested action.
-The selector checks local speed, path agreement, stopping, and the difference in desired acceleration and curvature on each model update.
+When eligible, Alpamayo supplies the complete model action. Its planned speed must agree with measured vehicle speed; curvature and acceleration must stay within physical limits.
+Driver braking or stock emergency braking invalidates GPU selection. Normal openpilot engagement, vehicle-specific controls, radar and Panda remain authoritative downstream.
 An absent, expired, invalid, or rejected plan leaves the current small-model action in place. An explicit worker invalidation clears the plan.
 An already active planner can use one isolated overrun published less than one 20 Hz model frame (50 ms) late.
-It still counts as a missed 500 ms deadline. The plan must be newer, fresh from capture and consistent with the current small-model action.
+It still counts as a missed 500 ms deadline. The plan must be newer and fresh from capture.
 Repeated overruns, stale delivery or a missed slot return control to the small model. Two consecutive on-time plans are required to resume.
 The scheduler briefly waits for a nearly finished worker, then admits only current input or skips the slot. A stalled worker restarts with fresh history.
 `modelV2.alpamayoQueryMonoTime` identifies the selected plan; zero means the local action was used. `localAction` records the independent small-model action in planner mode.
 The logged `alpamayoPlan` contains the GPU path. `modelV2.position` still describes the small model. Radar, longitudinal limits, and Panda safety keep their usual roles.
 
-For an isolated command replay, `PlanSelector.candidate_action(now, v_ego, lat_delay, long_delay)` derives steering and acceleration from Alpamayo alone.
-The live selector additionally checks agreement before using the action. Stopping modeld would also stop camera odometry used by localization and calibration.
+`PlanSelector.candidate_action(now, v_ego, lat_delay, long_delay)` derives steering and acceleration from Alpamayo alone for live selection and replay.
+The small model stays running for camera odometry, perception and immediate fallback. Its action does not vote on an eligible Alpamayo plan.
 
 The default runtime uses original BF16 weights, greedy reasoning, ten Euler steps, and a fixed diffusion-noise file.
 It retains all five images per front camera: `(-2, -1, -0.5, -0.1, 0)` seconds.

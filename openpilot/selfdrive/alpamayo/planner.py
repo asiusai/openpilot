@@ -5,7 +5,6 @@ PERIOD = 500_000_000
 HANDOFF_GRACE = 50_000_000  # One frame of the local 20 Hz driving model.
 MAX_DELIVERY_AGE = PERIOD+250_000_000
 T = np.arange(65) * .1
-CHECK_TIMES = np.arange(1, 6)*.5
 ACTION_TIMES = np.arange(22)*.1
 
 
@@ -61,20 +60,21 @@ class PlanSelector:
     yaw = np.unwrap(yaw)
     speed = np.hypot(np.diff(x), np.diff(y)) / .1
     speed = np.interp(T, T[1:]-.05, speed)
-    self.curve = x, y, yaw, speed, np.gradient(speed, .1), np.gradient(yaw, .1)
+    self.curve = yaw, speed, np.gradient(speed, .1), np.gradient(yaw, .1)
     self.streak = self.streak+1 if consecutive else 1
     self.last_on_time = on_time
     self.query, self.ready, self.deadline = q, r, d
 
   def candidate_action(self, now, v_ego, lat_delay, long_delay):
     """Time-align the GPU plan without consulting any other model's path or action."""
-    from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, get_curvature_from_plan, should_stop
+    from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+    from openpilot.selfdrive.controls.lib.drive_helpers import MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL, get_accel_from_plan, get_curvature_from_plan, should_stop
     if self.curve is None or self.streak < 2 or not self.ready <= now < min(self.deadline+PERIOD, self.query+1_000_000_000):
       return None
     if not np.isfinite(v_ego) or not (1. <= v_ego and 0 < lat_delay <= 2. and 0 < long_delay <= 2.):
       return None
     age = (now-self.query)/1e9
-    _, _, yaw, speed, accel, yaw_rate = self.curve
+    yaw, speed, accel, yaw_rate = self.curve
     def sample(v):
       return np.interp(age+ACTION_TIMES, T, v)
     v = sample(speed)
@@ -83,36 +83,14 @@ class PlanSelector:
     theta = np.interp(age, T, yaw)
     curvature = get_curvature_from_plan(theta-sample(yaw), -sample(yaw_rate), ACTION_TIMES, v_ego, lat_delay)
     a = get_accel_from_plan(v, sample(accel), ACTION_TIMES, long_delay)
-    if not np.isfinite([curvature,a]).all():
+    if (not np.isfinite([curvature,a]).all() or not ACCEL_MIN <= a <= ACCEL_MAX or
+        abs(curvature) > MAX_CURVATURE or abs(curvature)*v_ego**2 > MAX_LATERAL_ACCEL_NO_ROLL):
       return None
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
 
-  def action(self, now, v_ego, lat_delay, long_delay, local_path, local_action):
-    candidate = self.candidate_action(now, v_ego, lat_delay, long_delay)
-    if candidate is None or local_action.shouldStop or not np.isfinite([local_action.desiredCurvature,local_action.desiredAcceleration]).all():
-      return None
-    age = (now-self.query)/1e9
-    x, y, yaw, *_ = self.curve
-    # Compare in the current vehicle frame. A turn starts at the current heading, not the exposure heading.
-    theta = np.interp(age, T, yaw)
-    future = CHECK_TIMES
-    dx = np.interp(age+future, T, x)-np.interp(age, T, x)
-    dy = np.interp(age+future, T, y)-np.interp(age, T, y)
-    gx, gy = np.cos(theta)*dx+np.sin(theta)*dy, np.sin(theta)*dx-np.cos(theta)*dy
-    ts, sx, sy = (np.asarray(list(col)) for col in local_path)
-    if (len(ts) < 2 or len(sx) != len(ts) or len(sy) != len(ts) or not np.isfinite([sx, sy, ts]).all()
-        or np.any(np.diff(ts) <= 0) or ts[0] > future[0] or ts[-1] < future[-1] or
-        np.max(abs(gy-np.interp(future, ts, sy))) > 1.25 or np.max(abs(gx-np.interp(future, ts, sx))) > 3.):
-      return None
-    a,curvature = candidate['desiredAcceleration'],candidate['desiredCurvature']
-    if (abs(curvature-local_action.desiredCurvature)*v_ego**2 > 1. or
-        abs(a-local_action.desiredAcceleration) > 1. or (local_action.desiredAcceleration < -.5 and a > local_action.desiredAcceleration)):
-      return None
-    return candidate
-
   def apply(self, model, now, speed, lat_delay, long_delay):
     """Called on a fresh modelV2 builder; preserve the local action when unavailable."""
-    candidate = self.action(now, speed, lat_delay, long_delay, (model.position.t, model.position.x, model.position.y), model.action)
+    candidate = self.candidate_action(now, speed, lat_delay, long_delay)
     if candidate is not None:
       model.action = candidate
       model.alpamayoQueryMonoTime = self.query
