@@ -76,11 +76,11 @@ class Decoder:
             return previous[end:end+limit]
     return []
 
-  def generate_lookup(self, logits, dc, ds, prompt, max_tokens):
+  def generate_lookup(self, logits, dc, ds, prompt, max_tokens, next_token=None):
     model = self.model
     generated = []
     stats = {'lookup_rounds':0,'verified_tokens':0,'serial_tokens':0}
-    next_token,pending_logits = None,None
+    pending_logits = None
     while len(generated) < max_tokens:
       offset = len(generated)
       remaining = max_tokens-offset
@@ -132,6 +132,7 @@ class Decoder:
     if prefill.last_prompt != prompt:
       raise ValueError('Prefill used a stale actual prompt length')
     record = {'eligible':prefill.last_targets is not None,'accepted':False,'actual_prompt':prompt}
+    first = None
     if prefill.last_targets is not None:
       payload = download(prefill.last_targets).reshape(-1)
       if payload.shape != (12,):
@@ -145,6 +146,8 @@ class Decoder:
         self.history = [old for old in self.history if old != generated][-63:]+[generated[:]]
         self.statistics = {'lookup_rounds':0,'verified_tokens':6,'serial_tokens':0,'prefill_draft':record}
         return generated
-    generated = self.generate_lookup(logits,dc,ds,prompt,max_tokens)
+      if finite:
+        first = int(targets[0])  # The prefill already read back the argmax of these exact first logits.
+    generated = self.generate_lookup(logits,dc,ds,prompt,max_tokens,first)
     self.statistics['prefill_draft'] = record
     return generated
