@@ -466,7 +466,11 @@ class BlePeerEngine:
     }
     await self.tx.send_text(json.dumps(response, separators=(",", ":")), initial=True)
 
-  async def handle_pair_request(self, sender: str, body: dict[str, Any], device: str) -> None:
+  def complete_confirmed_rebond(self, device: str) -> None:
+    if self.approvals and self.approvals.consume(device):
+      disable_pairing_mode(completed=True)
+
+  async def handle_pair_request(self, sender: str, body: dict[str, Any], device: str, authorized: bool) -> None:
     request_id = body.get("requestId")
     if body.get("publicKey") != sender:
       raise ValueError("pair request sender mismatch")
@@ -474,8 +478,6 @@ class BlePeerEngine:
       raise ValueError("pair request ID is missing")
     label = body.get("label") if isinstance(body.get("label"), str) else None
 
-    if not pairing_mode_active():
-      raise PermissionError("pairing mode is not active")
     if not is_dongle_id(sender):
       raise ValueError("invalid app public key")
     if not request_id or len(request_id) > 64:
@@ -483,14 +485,27 @@ class BlePeerEngine:
     if label is not None and len(label) > 80:
       raise ValueError("pairing label is too long")
 
-    if self.approvals is None or not self.approvals.consume(device):
-      raise PermissionError("Confirm this phone on the device before authorizing the app")
-    try:
-      authorize_peer(sender, body.get("storagePublicKey"), label)
-    except Exception:
-      self.approvals.failed(device)
-      raise
-    disable_pairing_mode(completed=True)
+    if authorized:
+      # A repeat setup request proves possession of an existing app key. Keep
+      # its saved permissions and recording key, even when Android reused a bond.
+      self.complete_confirmed_rebond(device)
+    else:
+      if not pairing_mode_active():
+        raise PermissionError("pairing mode is not active")
+      if self.approvals is None or not self.approvals.consume(device):
+        cloudlog.event("asius.bluetooth.enrollment_missing_comparison")
+        confirm = ("Match the six digits, then hold the device button for three seconds." if ASIUS_HARDWARE
+                   else "Match the six digits and confirm on both screens.")
+        raise PermissionError("Bluetooth is connected, but this app needs a new pairing. "
+                              "Forget this device in your phone's Bluetooth settings and pair again in Asius. "
+                              + confirm)
+      try:
+        authorize_peer(sender, body.get("storagePublicKey"), label)
+      except Exception:
+        self.approvals.failed(device)
+        raise
+      disable_pairing_mode(completed=True)
+      cloudlog.event("asius.bluetooth.paired", sender=sender, request_id=request_id)
     self.active_peers[sender] = time.monotonic()
     await self.send_body(sender, {
       "type": "pair-response",
@@ -498,7 +513,6 @@ class BlePeerEngine:
       "device-type": DEVICE_TYPE,
       "name": methods.getDeviceName(),
     })
-    cloudlog.event("asius.bluetooth.paired", sender=sender, request_id=request_id)
 
   async def handle_rpc(self, sender: str, body: dict[str, Any]) -> None:
     session = self.sessions.get(self.peer_devices.get(sender, ''))
@@ -565,7 +579,7 @@ class BlePeerEngine:
   async def handle_authenticated(self, sender: str, body: dict[str, Any], device: str) -> None:
     authorized = sender in load_authorized_peers()
     if body.get('type') == 'ble-pair-request':
-      await self.handle_pair_request(sender, body, device)
+      await self.handle_pair_request(sender, body, device, authorized)
       return
     if not authorized:
       raise PermissionError('App is not authorized')
@@ -573,6 +587,7 @@ class BlePeerEngine:
     self.active_peers[sender] = time.monotonic()
     message_type = body.get("type")
     if message_type == "ble-session":
+      self.complete_confirmed_rebond(device)
       await self.send_body(sender, {"type": "ble-session", "ready": True, "requestId": body.get("requestId")})
     elif message_type == "ble-ping":
       await self.send_body(sender, {"type": "ble-pong", "id": body.get("id")})
