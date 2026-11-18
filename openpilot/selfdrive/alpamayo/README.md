@@ -17,8 +17,8 @@ The default runtime uses original BF16 weights, greedy reasoning, ten Euler step
 It retains all five images per front camera: `(-2, -1, -0.5, -0.1, 0)` seconds.
 It retains complete image features, all reasoning tokens, and all 64 future positions and rotations.
 The BF16 default encodes images individually. Exact content and position keys permit bounded feature reuse.
-The explicit `selected` variant uses the fixed mixed FP8/BF16, group-two vision, verified-reasoning, three-Euler-step recipe described in [selected/README.md](selected/README.md).
-Both variants retain the full image grids and history. Ten ARM/gfx1200 replay outputs exactly matched the experimental selected runtime.
+The `selected` variant on this branch uses four-bit serial language MLP weights, mixed FP8/BF16 elsewhere, and three Euler steps. See [selected/README.md](selected/README.md).
+Both variants retain the full image grids and history. The four-bit and FP8 models can produce different reasoning and trajectories.
 
 ## Runtime installation
 

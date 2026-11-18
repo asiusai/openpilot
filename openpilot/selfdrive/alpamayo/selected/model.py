@@ -12,7 +12,7 @@ from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 from . import amd_gemm, amd_decode, weights
 from .serial_attention import direct as serial_cache_attention
 from .serial_coordinates import cache_attention
-from .kernels import bf16_linear, frozen_ops, tiled_gemm, vision_tiles
+from .kernels import bf16_linear, frozen_ops, serial_mlp, tiled_gemm, vision_tiles
 
 
 class PackedActivation:
@@ -56,6 +56,7 @@ class SelectedModel(EdgeModel):
     self.fixed = {key:Tensor([float(value)],dtype=dtypes.float32).reshape(()).realize() for key,value in fixed_scales.items()}
     self.projector_weights = {name:amd_gemm.unpack(amd_gemm.pack(self.weights[name+'.weight']).realize())
                               for name in ('vlm.model.projector.linear_fc1','vlm.model.projector.linear_fc2')}
+    self.w4_weights = serial_mlp.pack_weights(self)
 
   def reset(self):
     self.cache = self.prompt_length = self.greedy_shape = None
@@ -152,6 +153,10 @@ class SelectedModel(EdgeModel):
       quantized,x_scale = self.quantize(x) if quantized_input is None else quantized_input
       return tiled_gemm.gemm(quantized,weight,(x_scale,scale),row_scale=True,bias=bias).reshape(*shape,weight.shape[0])
     rows = x.numel()//x.shape[-1]
+    if (name in self.w4_weights and x.shape == (1,1,weight.shape[1]) and x.dtype == dtypes.bfloat16 and heads is None
+        and not (self.images or self.verifying or self.trajectory_active) and self.prefill_prefix is None):
+      q,x_scale = self.quantize(x.reshape(1,-1)) if quantized_input is None else quantized_input
+      return serial_mlp.gemv(q,self.w4_weights[name],x_scale,scale,weight.shape)
     if self.prefill_prefix is not None and name in self.packed_weights and rows >= 128:
       packed,x_scale = self.quantize(x) if quantized_input is None else quantized_input
       assert isinstance(packed,PackedActivation) and (packed.rows,packed.width) == (rows,x.shape[-1])

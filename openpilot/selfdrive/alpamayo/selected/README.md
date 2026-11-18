@@ -1,9 +1,9 @@
 # Selected Alpamayo inference
 
 This package specializes the shared `openpilot.selfdrive.alpamayo.model.EdgeModel`.
-It implements one fixed selected recipe. The shared default remains BF16 with ten Euler steps.
+This branch implements one selected recipe with four-bit weights in the serial language MLP. The shared default remains BF16 with ten Euler steps.
 The initial shadow scheduler target is 500 ms. A 100 ms target belongs to the next phase.
-Ten ARM/gfx1200 replay outputs exactly matched the experimental selected runtime. Complete live pipeline timing remains unverified.
+Four-bit weights can change reasoning and trajectories relative to the FP8 branch. Live vehicle timing remains unverified.
 
 ## API
 
@@ -52,6 +52,7 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Vision | 144-image content cache; missing images encoded in groups of at most two |
 | Vision precision | BF16 patch embedding and first two layers; dynamic per-image FP8 scales thereafter |
 | Language | Fixed 112 activation scales, packed FP8, 2048-row prefill, 2304-row KV allocation |
+| Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; six independently target-verified nominal tokens |
 | Fallback | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
 | Expert | Three Euler steps; restored BF16 action projections; exact scoped 2x2 PV kernel |
@@ -66,6 +67,7 @@ Actual reuse follows image content and the capture schedule, including missing o
 Prefill schedules long causal attention blocks first and adds the residual in the second MLP projection, preserving both BF16 rounding steps.
 Expert PV applies only inside trajectory execution.
 During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.
+Startup creates the 56 four-bit matrices from the verified FP8 weights. They use 567 MiB of additional GPU memory; prompt processing still uses FP8 weights.
 Draft attention retains its original QK, softmax, and PV arithmetic.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
@@ -78,7 +80,7 @@ Original checkpoint shards, the existing FP8 `weights.bin`/`index.json`, and fix
 `assets/artifacts.json` pins their hashes. Startup verifies complete checkpoint shards and every FP8 upload.
 Changing these artifacts requires a separate numerical qualification.
 
-The selected dispatcher uses the 17 HIP source/object pairs and the expert PV object under `assets/gfx1200`.
+The selected dispatcher uses 21 HIP source/object pairs and the expert PV object under `assets/gfx1200`.
 Startup checks their hashes against `assets/manifest.json`.
 HIP/COMGR compilation is unnecessary on ARM. Ordinary tinygrad LLVM kernels still require LLVM22.
 The constructor requires existing, hash-checked gfx1200 firmware in the configured persistent cache.

@@ -146,7 +146,8 @@ class Runtime:
       self.settings = SimpleNamespace(max_tokens=64,vision_batch=1)
       self.model.synchronize()
       self.device = Device.DEFAULT
-      self.manifest = {'variant':'selected','recipe':'fp8-group2-pad2048-nominal6-euler3','precision':'mixed-fp8-bf16',
+      self.manifest = {'variant':'selected','recipe':'fp8-group2-pad2048-nominal6-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
+                       'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
                        'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2048,
                        'cache_rows':2304,'vision_group_limit':2,'vision_cache_capacity':144,'images':10,'patches_per_image':720,
                        'history_offsets_s':[-2,-1,-.5,-.1,0],'front_fov_degrees':[120,30],'bf16_vision_layers':2,
@@ -155,8 +156,7 @@ class Runtime:
                         'device':self.device,'arch':'gfx1200','cpu_threads':2,'tinygrad_revision':TINYGRAD_REVISION,
                        'nvidia_revision':NVIDIA_REVISION,'identities':identities,
                        'fp8_weights_sha256':self.model.weight_digest,'kernel_manifest':manifest(),
-                       'prefill_calibration_sha256':hashlib.sha256(self.config.prefill_calibration.read_bytes()).hexdigest(),
-                        'extraction_gpu_parity':'ten-query-ARM-gfx1200-replay-bit-exact'}
+                        'prefill_calibration_sha256':hashlib.sha256(self.config.prefill_calibration.read_bytes()).hexdigest()}
     except BaseException:
       if self.backend is not None:
         self.backend.close()
