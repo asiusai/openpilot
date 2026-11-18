@@ -1,6 +1,6 @@
 """2048-row padded prefill, with six independent nominal verification heads."""
-from tinygrad import Tensor, TinyJit, dtypes
-from tinygrad.helpers import round_up
+from tinygrad import Device, Tensor, TinyJit, dtypes
+from tinygrad.helpers import BEAM, JIT, PROFILE, VIZ, round_up
 from tinygrad.uop.ops import UOp
 
 
@@ -51,6 +51,13 @@ class SpeculativePrefill(PaddedPrefill):
     super().__init__(model)
     self.baseline = PaddedPrefill(model)
     self.last_targets = self.last_prompt = None
+    self.graph = self.graph_weights = None
+    if getattr(model, 'amd', False) and Device.DEFAULT == 'AMD':
+      from .model import SelectedModel
+      from .prefill_graph import PrefillWeights, TARGET
+      if (type(model) is SelectedModel and model.dtype == dtypes.bfloat16 and model._bulk_storage.device == 'AMD' and
+          Device['AMD'].renderer.target == TARGET):
+        self.graph_weights = PrefillWeights(model)
 
   def language(self, x, cos, sin, length):
     model = self.model
@@ -69,14 +76,27 @@ class SpeculativePrefill(PaddedPrefill):
   def __call__(self, x, cos, sin, max_tokens, length):
     self.last_targets = None
     self.last_prompt = int(length)
+    if self.graph is not None and (self.model.cache is None or self.model.cache[0].shape[3] != 2304):
+      self.graph = None
     if length+6 > x.shape[1] or max_tokens < 6:
       return self.baseline(x,cos,sin,max_tokens,length)
     self.allocate(x,cos,max_tokens)
     valid = UOp.variable('valid_prefill_draft_length',1,x.shape[1]-6).bind(length)
+    if (self.graph_weights is not None and max_tokens == 64 and JIT and not (BEAM or PROFILE or VIZ) and
+        self.model.config['vlm_config']['text_config']['num_hidden_layers'] == len(self.model.cache) == 28 and
+        not (self.model.images or self.model.verifying or self.model.trajectory_active) and self.model.prefill_prefix is None):
+      from .prefill_graph import PrefillGraph, graph_inputs
+      from .prefill_graph.programs import supported_compiler
+      if supported_compiler() and (inputs := graph_inputs((x, cos, sin), self.graph_weights.bulk.device)) is not None:
+        if self.graph is None:
+          self.graph = PrefillGraph(self.graph_weights, inputs, valid)
+        first_logits, self.last_targets = self.graph(inputs, valid)
+        return first_logits
     first_logits,self.last_targets = self.jit(x,cos,sin,valid)
     return first_logits
 
   def reset(self):
     super().reset()
     self.baseline.reset()
+    self.graph = None
     self.last_targets = self.last_prompt = None
