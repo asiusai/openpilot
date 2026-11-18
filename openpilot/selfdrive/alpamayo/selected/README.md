@@ -76,13 +76,24 @@ No runtime recipe switches or experimental installers are exposed.
 
 Use the shared installer and its pinned dependency lock. Keep normal openpilot tinygrad unchanged.
 NVIDIA code remains at `02f55a7aeabc1a2b9f7a80445c08e40bddc89f5e`.
-Original checkpoint shards, the existing FP8 `weights.bin`/`index.json`, and fixed calibration remain external files.
-`assets/artifacts.json` pins their hashes. Startup verifies complete checkpoint shards and every FP8 upload.
+For a car installation, prepare the BF16 tensors used by this recipe once:
+
+```sh
+python -m openpilot.selfdrive.alpamayo.selected.prepare_checkpoint /path/to/original /path/to/selected-checkpoint
+```
+
+Set `inference.checkpoint` to the resulting directory. It contains the tokenizer, configuration and a 102 MB BF16 shard.
+Preparation verifies the original 5.30 GB of shards. Startup verifies the complete compact shard and index against independently pinned hashes.
+The runtime records both the source checkpoint identity and the hashes of the files actually loaded.
+The full original checkpoint is also supported. The default BF16 reference still requires the full checkpoint.
+The separate FP8 `weights.bin`/`index.json`, fixed calibration, and per-upload verification remain required.
 Changing these artifacts requires a separate numerical qualification.
 
 The selected dispatcher uses 21 HIP source/object pairs and the expert PV object under `assets/gfx1200`.
 Startup checks their hashes against `assets/manifest.json`.
 HIP/COMGR compilation is unnecessary on ARM. Ordinary tinygrad LLVM kernels still require LLVM22.
+The compiler pool uses at most one process per CPU available to the worker. Its SQLite cache persists across production launches.
+The worker reports import, verification, frontend, GPU setup and weight-loading times during startup. Ready does not mean a driving plan is available.
 The constructor requires existing, hash-checked gfx1200 firmware in the configured persistent cache.
 Inference does not fetch firmware or weights.
 

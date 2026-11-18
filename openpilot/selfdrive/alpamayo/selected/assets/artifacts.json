@@ -6,6 +6,10 @@
   "fp8_weights_sha256": "dd6b716a2ade3646eff71d874bef676926422d9aca39358fd3f8b4fe75755052",
   "fp8_bytes": 2929010944,
   "prefill_calibration_sha256": "a8522fab229a3e19574f5faafbe84a51479ce9a5b81f09458e237a911393ffbb",
+  "compact_checkpoint": {
+    "index_sha256": "8abd3fb434eb67039bff84257102e841ad65f3348a7cc683b7caf3f05177dae3",
+    "shards": {"selected-bf16.safetensors": "a0dcb081369afb88ac5bcb82824803e5a99dd8981b8814a046bfdb583c8267a4"}
+  },
   "checkpoint_shards": {
     "00000.safetensors": "d13c1a427218baf7b7d365098c0f5496c0e5e6a6bf662836b8eebbe7eb7cfe7f",
     "00001.safetensors": "cfe424a7320ce729cd927b5ceaab4323a62443b50f461a2f5c0dd0b10634e0b5"

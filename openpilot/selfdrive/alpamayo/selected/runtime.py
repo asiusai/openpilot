@@ -55,6 +55,9 @@ class Prediction(TypedDict):
 
 def environment(cache_dir):
   values = json.loads((ASSETS/'environment.json').read_text())
+  # The compilation pool uses spawn. Avoid importing 32 compiler interpreters on four available Dragon cores.
+  cores = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count() or 1
+  values['PARALLEL'] = str(min(int(values['PARALLEL']), cores))
   values.update(DEV='USB+AMD:LLVM',ALLOW_DEVICE_USAGE='1',HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',
                 TOKENIZERS_PARALLELISM='false',PYTHONDONTWRITEBYTECODE='1',XDG_CACHE_HOME=str(cache_dir),
                 CACHEDB=str(Path(cache_dir)/'tinygrad.db'))
@@ -88,13 +91,20 @@ def artifact_identities(config):
            'checkpoint_weight_index_sha256':config.checkpoint/'model.safetensors.index.json',
            'fp8_index_sha256':config.fp8_cache/'index.json','prefill_calibration_sha256':config.prefill_calibration}
   identities = {key:sha(path) for key,path in paths.items()}
-  if any(identities[key] != expected[key] for key in paths):
+  index_key = 'checkpoint_weight_index_sha256'
+  compact = identities[index_key] == expected['compact_checkpoint']['index_sha256']
+  if any(identities[key] != expected[key] for key in paths if key != index_key or not compact):
     raise ValueError('Selected checkpoint, FP8 index, or fixed calibration differs from the pinned recipe')
-  index = json.loads(paths['checkpoint_weight_index_sha256'].read_text())['weight_map']
+  index = json.loads(paths[index_key].read_text())['weight_map']
   shards = {name:sha(config.checkpoint/name) for name in sorted(set(index.values()))}
-  if shards != expected['checkpoint_shards']:
-    raise ValueError('Original BF16 checkpoint shard bytes changed')
-  identities.update(checkpoint_shards=shards,checkpoint_weights_sha256=hashlib.sha256(json.dumps(shards,sort_keys=True).encode()).hexdigest())
+  if shards != (expected['compact_checkpoint']['shards'] if compact else expected['checkpoint_shards']):
+    raise ValueError('BF16 checkpoint shard bytes changed')
+  # Both pinned representations derive from the same checkpoint. Record exactly which files this process verified.
+  identities.update(loaded_checkpoint_index_sha256=identities[index_key], loaded_checkpoint_shards=shards,
+                    checkpoint_representation='selected-bf16-subset' if compact else 'original')
+  original = expected['checkpoint_shards']
+  identities.update(checkpoint_weight_index_sha256=expected[index_key], checkpoint_shards=original,
+                    checkpoint_weights_sha256=hashlib.sha256(json.dumps(original,sort_keys=True).encode()).hexdigest())
   if config.initial_noise is not None:
     identities['initial_noise_sha256'] = sha(config.initial_noise)
   return expected,identities
@@ -107,6 +117,12 @@ class Runtime:
     self.closed,self.backend = False,None
     self.lock = threading.Lock()
     self.metrics = Metrics()
+    self.startup_ms = {}
+    previous = time.monotonic_ns()
+    def finished(stage):
+      nonlocal previous
+      now = time.monotonic_ns(); self.startup_ms[stage] = (now-previous)/1e6; previous = now
+      print(f'Alpamayo startup: {stage} {self.startup_ms[stage]:.0f} ms', file=sys.stderr, flush=True)
     environment(self.config.cache_dir)
     from openpilot.selfdrive.alpamayo.inference import verify_runtime, NVIDIA_REVISION
     verify_runtime()
@@ -121,9 +137,11 @@ class Runtime:
     from .decode import Decoder
     from .vision import VisionCache
     from .policy import CHECKPOINT_DRAFT_IDS, DRAFT_TEXT, validate_draft
+    finished('runtime_imports')
     verify_assets()
     artifacts,identities = artifact_identities(self.config)
     require_firmware(self.config.cache_dir)
+    finished('asset_verification')
     torch.set_num_threads(2)
     scales = json.loads(self.config.prefill_calibration.read_text())['scales']
     self.noise = None if self.config.initial_noise is None else np.load(self.config.initial_noise,allow_pickle=False)
@@ -135,9 +153,12 @@ class Runtime:
     self.draft = validate_draft(self.adapter.tokenizer.encode(DRAFT_TEXT,add_special_tokens=False),self.anchor)
     if self.draft != CHECKPOINT_DRAFT_IDS:
       raise ValueError('Checkpoint nominal draft token IDs changed')
+    finished('input_adapter')
     try:
       self.backend = Backend(self.config.device_timeout_ms)
+      finished('gpu_backend')
       self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales,self.backend.pv_program())
+      finished('weights_and_packing')
       if self.model.weight_digest != artifacts['fp8_weights_sha256']:
         raise ValueError('Selected FP8 weight bytes changed')
       self.prefill = SpeculativePrefill(self.model)
@@ -146,6 +167,7 @@ class Runtime:
       self.inputs,self.vision_buffers = None,VisionBuffers()
       self.settings = SimpleNamespace(max_tokens=64,vision_batch=1)
       self.model.synchronize()
+      finished('inference_setup')
       self.device = Device.DEFAULT
       self.manifest = {'variant':'selected','recipe':'fp8-group2-pad2048-nominal6-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
                        'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
@@ -306,6 +328,7 @@ class ShadowAdapter:
       raise ValueError('The shared shadow adapter requires an initial_noise file')
     self.runtime = Runtime(config)
     self.manifest = self.runtime.manifest
+    self.startup_ms = self.runtime.startup_ms
 
   def predict(self, arrays, metadata):
     retained = tuple(i for i,ref in enumerate(metadata['frames']) if 'anchor_slot_ns' in ref)

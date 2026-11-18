@@ -131,7 +131,10 @@ class NativeProducer:
       thread.join(timeout=.5)
 
 
-def healthy(health, now):
-  return (health is not None and health['model_alive'] and health['device_valid'] and
-          0 <= health['model_age_ns'] < 250_000_000 and 0 <= now-health['time_ns'] < 500_000_000 and
+def device_healthy(health, now):
+  return (health is not None and health['device_valid'] and 0 <= now-health['time_ns'] < 500_000_000 and
           health['thermal_status'] not in ('red', 'danger'))
+
+
+def healthy(health, now):
+  return device_healthy(health, now) and health['model_alive'] and 0 <= health['model_age_ns'] < 250_000_000

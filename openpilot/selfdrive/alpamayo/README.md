@@ -6,7 +6,8 @@ Planner mode lets modeld select GPU actions at its regular cadence. This mode is
 Setting `ALPAMAYO_CONFIG` selects the 500 ms planner unless `ALPAMAYO_SHADOW=1` or `ALPAMAYO_PLANNER=0` is set.
 The file must contain a selected-model configuration. With no configuration, the existing openpilot model selection applies.
 Planner mode reserves Chestnut for Alpamayo and keeps the small model running for perception and immediate fallback.
-The manager attempts GPU inference onroad when the configuration exists and Chestnut enumerates at 5 Gbps. The first five completed predictions are startup samples.
+The manager starts the GPU worker onroad when Chestnut enumerates at 5 Gbps and the device is healthy. Weights can load alongside modeld startup.
+Input admission still requires a healthy local model. The first five completed predictions are startup samples.
 Two consecutive timely plans are required before modeld can use a GPU action. Age the plan from camera capture before computing the requested action.
 When eligible, Alpamayo supplies the complete model action. Its planned speed must agree with measured vehicle speed; curvature and acceleration must stay within physical limits.
 Driver braking or stock emergency braking invalidates GPU selection. Normal openpilot engagement, vehicle-specific controls, radar and Panda remain authoritative downstream.

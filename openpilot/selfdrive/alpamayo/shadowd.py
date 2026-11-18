@@ -99,7 +99,7 @@ def main():
 
 def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.common.params import Params
-  from openpilot.selfdrive.alpamayo.capture import NativeProducer, healthy
+  from openpilot.selfdrive.alpamayo.capture import NativeProducer, device_healthy, healthy
   from openpilot.selfdrive.alpamayo.frontend import Store, Unavailable
   from openpilot.selfdrive.alpamayo.planner import HANDOFF_GRACE, deliverable
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
@@ -126,6 +126,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   next_check, last_ticks = 0., None
   admission = None
   served_plan = False
+  model_seen = False
   last_query, last_current = 0, {}
   try:
     producer.start()
@@ -135,11 +136,15 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         now = time.monotonic_ns()
         if producer.error is not None:
           raise RuntimeError('Shadow input capture failed') from producer.error
-        if not healthy(health, now):
+        if not device_healthy(health, now):
           if child is not None:
-            raise WorkerStopped('Small-model or device health stopped inference')
+            raise WorkerStopped('Device health stopped inference')
           producer.stop.wait(.05)
           continue
+        model_healthy = healthy(health, now)
+        if model_seen and not model_healthy:
+          raise WorkerStopped('Small-model health stopped inference')
+        model_seen |= model_healthy
         if not memory_ok() or not storage_ok(root, 128*1024**2):
           raise RuntimeError('Shadow resource reserve reached')
         if child is None:
@@ -151,6 +156,10 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         ready = (root/'ready.json').exists()
         if not ready and time.monotonic()-worker_start > 600:
           raise WorkerStopped('Inference initialization timed out')
+        # Load weights alongside small-model startup. No slot or plan can be admitted until the model is healthy.
+        if not model_healthy:
+          producer.stop.wait(.05)
+          continue
         if (handoff/'working.bin').exists() or (handoff/'pending.bin').exists():
           elapsed = time.monotonic()
           if working_since is None:

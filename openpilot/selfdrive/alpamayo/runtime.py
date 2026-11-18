@@ -352,12 +352,15 @@ def worker(config, directory, handoff):
   preparer = Preparer(config['geometry'], sampler=sampler)
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
+  load_started = time.monotonic_ns()
   adapter = load_adapter(config)
   written = count = 0
   try:
     atomic_json(root/'runtime.json', dict(adapter.manifest, geometry=config['geometry'], history_offsets_ns=OFFSETS_NS, period_ms=config.get('period_ms', 500),
                                          source_sof='Original VisionIPC SOF; estimated from EOF on v0'))
-    atomic_json(root/'ready.json', {'ready': True})
+    ready = time.monotonic_ns()
+    atomic_json(root/'ready.json', {'ready': True, 'adapter_load_started_ns': load_started, 'worker_ready_ns': ready,
+                                    'adapter_startup_ms': getattr(adapter, 'startup_ms', {})})
     while True:
       try:
         (handoff/'pending.bin').replace(handoff/'working.bin')
