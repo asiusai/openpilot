@@ -1,4 +1,5 @@
 """Inference contract, process-boundary snapshots, and durable shadow output."""
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import io
@@ -7,6 +8,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import signal
 import struct
 import tempfile
 import time
@@ -95,8 +97,11 @@ def private_output(path):
   return path
 
 
-def atomic_json(path, value):
-  raw = (json.dumps(value, allow_nan=False, separators=(',', ':'))+'\n').encode()
+def json_bytes(value):
+  return (json.dumps(value, allow_nan=False, separators=(',', ':'))+'\n').encode()
+
+
+def atomic_write(path, raw):
   if not storage_ok(path.parent, len(raw)):
     raise RuntimeError('Shadow output reached the recording disk reserve')
   temporary = path.with_suffix('.tmp')
@@ -114,6 +119,37 @@ def atomic_json(path, value):
   finally:
     temporary.unlink(missing_ok=True)
   return len(raw)
+
+
+def atomic_json(path, value):
+  return atomic_write(path, json_bytes(value))
+
+
+class PredictionWriter:
+  """One immutable prediction can be in flight. The worker owns all admission and error checks."""
+  def __init__(self):
+    self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='prediction-log')
+    self.pending = None
+    self.written = 0
+
+  def check(self, wait=False):
+    if self.pending is not None and (wait or self.pending.done()):
+      self.pending.result()
+      self.pending = None
+
+  def submit(self, path, result):
+    self.check(wait=True)
+    raw = json_bytes(result)
+    if self.written+len(raw) > 256*1024**2:
+      raise RuntimeError('Shadow session reached its 256 MiB prediction limit')
+    if not memory_ok(len(raw)) or not storage_ok(path.parent, len(raw)):
+      raise RuntimeError('Shadow prediction reached its memory or disk reserve')
+    self.pending = self.pool.submit(atomic_write, path, raw)
+    self.written += len(raw)
+
+  def close(self):
+    self.pool.shutdown(wait=True)
+    self.check(wait=True)
 
 
 def frame_layout(ref):
@@ -360,14 +396,20 @@ def worker(config, directory, handoff):
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
-  written = count = 0
+  writer, count = PredictionWriter(), 0
+  stopping = False
+  def stop(*_):
+    nonlocal stopping
+    stopping = True  # Normal supervisor SIGTERM must drain the admitted write.
+  previous = signal.signal(signal.SIGTERM, stop)
   try:
     atomic_json(root/'runtime.json', dict(adapter.manifest, geometry=config['geometry'], history_offsets_ns=OFFSETS_NS, period_ms=config.get('period_ms', 500),
                                          source_sof='Original VisionIPC SOF; estimated from EOF on v0'))
     ready = time.monotonic_ns()
     atomic_json(root/'ready.json', {'ready': True, 'adapter_load_started_ns': load_started, 'worker_ready_ns': ready,
                                     'adapter_startup_ms': getattr(adapter, 'startup_ms', {})})
-    while True:
+    while not stopping:
+      writer.check()
       try:
         (handoff/'pending.bin').replace(handoff/'working.bin')
       except FileNotFoundError:
@@ -388,26 +430,32 @@ def worker(config, directory, handoff):
             raise Unavailable('Input expired during preparation')
           result = run_prediction(adapter, arrays, meta)
           result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
+          writer.check(wait=True)  # A failed previous write must stop this plan before publication.
+          if stopping:
+            return
           if publish_plans:
             temporary = handoff/'plan.tmp'
             temporary.write_text(json.dumps(packet(result), allow_nan=False))
             temporary.replace(handoff/'plan.json')
-          size = len(json.dumps(result, allow_nan=False).encode())+1
-          if written+size > 256*1024**2:
-            raise RuntimeError('Shadow session reached its 256 MiB prediction limit')
-          written += atomic_json(root/f'{selected.query_ns}.json', result)
+          writer.submit(root/f'{selected.query_ns}.json', result)
           count += 1
       except (Unavailable, PromptTooLong) as error:
         if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context['slot_deadline_ns']):
           error = Unavailable('Front-camera feature priming missed its slot deadline')
         if not isinstance(error, Priming):
           preparer.anchors.clear()
+        rejected = time.monotonic_ns()
+        writer.check(wait=True)  # Serialize disk reserve checks for predictions and status.
         atomic_json(root/'unavailable.json', {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
                                             'slot_start_ns': context.get('slot_start_ns'), 'slot_deadline_ns': context.get('slot_deadline_ns'),
-                                            'rejected_ns': time.monotonic_ns(), 'type': type(error).__name__, 'reason': str(error)[:1024]})
+                                            'rejected_ns': rejected, 'type': type(error).__name__, 'reason': str(error)[:1024]})
         (handoff/'skipped').touch()
         continue
       finally:
         (handoff/'working.bin').unlink(missing_ok=True)
   finally:
-    adapter.close()
+    try:
+      writer.close()
+    finally:
+      signal.signal(signal.SIGTERM, previous)
+      adapter.close()
