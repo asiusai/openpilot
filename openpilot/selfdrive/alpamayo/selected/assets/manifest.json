@@ -12,9 +12,9 @@
         2048,
         128
       ],
-      "source_sha256": "125ebf94711c7b1496060cf9b68be1538f443df7183b3441ae18e45af8cca50d",
-      "binary_sha256": "25eefe9f887548d55d03387d0dfba6b4f7ae7c4691d4527d4997975bcf4c4440",
-      "bytes": 16064
+      "source_sha256": "9587c44c1dc8476d2372c78c798083186bb37946e2aced0904f5e32334079d11",
+      "binary_sha256": "f5aa5fce3dddcb6c932aa8922bf782d20ea3d7b524e282c90062dd7dd6109b96",
+      "bytes": 16320
     },
     {
       "kind": "vision_attention",
@@ -190,9 +190,9 @@
         9216,
         2048
       ],
-      "source_sha256": "e38f40a279e80482935f3fe78b4f06b57f02aedab92c87a6e967816ff497bd97",
-      "binary_sha256": "979a4758f6018b98466ee4df7ca22fa1327524f8ad2e7820bb7ba24990d3b0e0",
-      "bytes": 40376
+      "source_sha256": "17246f9b0277fdf23dc210f9b4262b6237d58c1e2b58ae26672107ca2c76bdbe",
+      "binary_sha256": "9c0c8c4de1059dc090989b48970d7f450ab5823589ae45872c4ed40605360e49",
+      "bytes": 20408
     }
   ],
   "expert_pv": {

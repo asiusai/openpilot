@@ -63,7 +63,9 @@ At a warmed 500 ms cadence, four missing images require two groups; six older im
 At a warmed 100 ms cadence, two missing images require one group; eight older images remain cached.
 Actual reuse follows image content and the capture schedule, including missing or repeated source frames.
 
-The MLP fusion is an explicit prefill method. Expert PV applies only inside trajectory execution.
+Prefill schedules long causal attention blocks first and adds the residual in the second MLP projection, preserving both BF16 rounding steps.
+Expert PV applies only inside trajectory execution.
+During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.
 Draft attention retains its original QK, softmax, and PV arithmetic.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.

@@ -1,10 +1,41 @@
-from functools import partial
+from functools import partial, reduce
 
 from tinygrad import Tensor, dtypes
 from tinygrad.dtype import AddrSpace
 from tinygrad.uop.ops import AxisType, KernelInfo, Ops, UOp
 from openpilot.selfdrive.alpamayo.amd_attention import _warp_reduce
 from .amd_gemm import pack
+
+
+def _relu_squared_scale(out, raw):
+  wave = UOp.range(8, 0, AxisType.LOCAL)
+  lane = UOp.range(32, -1, AxisType.WARP)
+  tid = wave*32+lane
+
+  def positive_word(i):
+    bits = raw.flatten().index(i).bitcast(dtypes.uint16).cast(dtypes.uint32)
+    return (bits <= 0x7f80).where(bits, 0)
+
+  # Positive BF16 words sort by magnitude. Square and round the maximum once, after reducing all 9,216 activations.
+  peak = reduce(UOp.maximum, (positive_word(base+tid*4+j) for base in range(0,9216,1024) for j in range(4)))
+  swizzle = UOp.custom_function('llvm.amdgcn.ds.swizzle', dtype=dtypes.int32)
+  for shift in (16,8,4,2,1):
+    other = swizzle.call(peak.bitcast(dtypes.int32), UOp.const(0x1f | (shift << 10), dtypes.int32))
+    peak = peak.maximum(other.bitcast(dtypes.uint32))
+  partials = UOp.alloc((8,), dtypes.uint32, addrspace=AddrSpace.LOCAL)
+  stored = partials.index(wave.valid(lane.eq(0))).store(peak)
+  peak = reduce(UOp.maximum, (partials.after(stored).index(i) for i in range(8)))
+  value = (peak << 16).bitcast(dtypes.float32)
+  scale = ((value*value).cast(dtypes.bfloat16).cast(dtypes.float32)*(1.0/448.0)).maximum(1e-12)
+  store = out.flatten().index(UOp.const(0,dtypes.int32).valid(tid.eq(0))).store(scale)
+  return store.end(wave,lane).sink(arg=KernelInfo(name='alpamayo_serial_fc2_scale', opts_to_apply=()))
+
+
+def quantize_relu_squared(raw):
+  assert raw.shape == (1,1,9216) and raw.dtype == dtypes.bfloat16
+  scale = Tensor.custom_kernel(Tensor.empty((),dtype=dtypes.float32,device=raw.device),raw.flatten(),fxn=_relu_squared_scale)[0]
+  values = (raw.relu().square().float()/scale).clamp(-448,448).cast(dtypes.fp8e4m3)
+  return values.reshape(1,9216).contiguous(),scale
 
 
 def _gemv(out, x, weight, x_scale, w_scale, *bias, packed=True):

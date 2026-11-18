@@ -55,6 +55,7 @@ void agent_attention_rowsoftmax(u16 *out,const u16 *q,const u16 *k,const u16 *v
 ) {
   constexpr int H=16, KH=8, R=2048, K=2048, W=128, D=(W+15)/16;
   int thread=__ockl_get_local_id(0), lane=thread%32, wave=thread/32, block=__ockl_get_group_id(0);
+  block = (block % 16) * 16 + 15 - block / 16;
   int group=block%((R+16*8-1)/(16*8));
   int tile=group*8+wave, head=block/((R+16*8-1)/(16*8)), kh=(head/H)*KH+(head%H)/(H/KH);
   int qr=tile*16+lane%16;

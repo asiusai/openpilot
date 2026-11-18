@@ -24,10 +24,14 @@ DEV unsigned short bf(float value) {
   return (unsigned short)(((regular&mask)|(special&~mask))>>16);
 }
 DEV float frombf(unsigned short value) { return __builtin_bit_cast(float,((unsigned)value)<<16); }
+// Input to this helper is nonnegative and not NaN. Positive infinity rounds to itself.
+DEV float round_positive(float v) {
+  unsigned b=__builtin_bit_cast(unsigned,v);
+  return __builtin_bit_cast(float,(b+0x7fffu+((b>>16)&1))&0xffff0000u);
+}
 DEV float activate(float sum,float scale,float inverse_output_scale) {
-  float rounded=frombf(bf(sum*scale));
-  float positive=__builtin_fmaxf(rounded,0.0f);
-  float squared=frombf(bf(positive*positive));
+  float positive=round_positive(__builtin_fmaxf(sum*scale,0.0f));
+  float squared=round_positive(positive*positive);
   // Match actual AMD LLVM lowering of fdiv contract afn: one hardware reciprocal
   // followed by a rounded FP32 multiply. Full HIP division emits different arithmetic.
   float scaled=squared*inverse_output_scale;
@@ -38,12 +42,12 @@ DEV unsigned pack_four(float a,float b,float c,float d) {
   return __builtin_amdgcn_cvt_pk_fp8_f32(c,d,low,true);
 }
 DEV i2 fragment(const unsigned *ptr,unsigned offset) { return (i2){(int)ptr[offset],(int)ptr[offset+32]}; }
-extern "C" __attribute__((global,amdgpu_flat_work_group_size(32,32)))
+extern "C" __attribute__((global,amdgpu_flat_work_group_size(128,128)))
 void agent_packed_epilogue(unsigned *__restrict out,const unsigned *__restrict x,
                           const unsigned *__restrict weight,const float *__restrict xs,
                           const float *__restrict ws,const float *__restrict output_scale) {
-  unsigned lane=__ockl_get_local_id(0),block=__ockl_get_group_id(0);
-  unsigned mt=block/NTILES,nt=block%NTILES;
+  unsigned thread=__ockl_get_local_id(0),lane=thread%32,block=__ockl_get_group_id(0)*4+thread/32;
+  unsigned mt=block/(NTILES*4)*4+block%4,nt=block/4%NTILES;
   f8 accum[TM][TN];
   #pragma unroll
   for(unsigned i=0;i<TM;i++) {
@@ -75,24 +79,17 @@ void agent_packed_epilogue(unsigned *__restrict out,const unsigned *__restrict x
     br=br<N/16?br:N/16-1;
     bo[j]=br*(K/16)*64+lane;
   }
-  i2 a[TM],b[TN];
-  #pragma unroll
-  for(unsigned i=0;i<TM;i++) a[i]=fragment(x,ao[i]);
-  #pragma unroll
-  for(unsigned j=0;j<TN;j++) b[j]=fragment(weight,bo[j]);
-  #pragma clang loop unroll(disable)
+  #pragma clang loop unroll_count(2)
   for(unsigned k=0;k<K/16;k++) {
+    i2 a[TM],b[TN];
+    #pragma unroll
+    for(unsigned i=0;i<TM;i++) a[i]=fragment(x,ao[i]+k*64);
+    #pragma unroll
+    for(unsigned j=0;j<TN;j++) b[j]=fragment(weight,bo[j]+k*64);
     #pragma unroll
     for(unsigned i=0;i<TM;i++) {
       #pragma unroll
-      for(unsigned j=0;j<TN;j++)
-        accum[i][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(b[j],a[i],accum[i][j]);
-    }
-    if(k+1<K/16) {
-      #pragma unroll
-      for(unsigned i=0;i<TM;i++) a[i]=fragment(x,ao[i]+(k+1)*64);
-      #pragma unroll
-      for(unsigned j=0;j<TN;j++) b[j]=fragment(weight,bo[j]+(k+1)*64);
+      for(unsigned j=0;j<TN;j++) accum[i][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(b[j],a[i],accum[i][j]);
     }
   }
 #endif

@@ -17,7 +17,7 @@ def unpack(x):
   return x.reshape(rows//16, width//16, 4, 16, 4).permute(0, 3, 1, 2, 4).reshape(rows, width)
 
 
-def _gemm(out, x, weight, x_scale, w_scale, *bias, packed_input=True):
+def _gemm(out, x, weight, x_scale, w_scale, *bias, packed_input=True, residual=None):
   rows, columns = out.shape
   width = weight.shape[1]
   m, n, k = UOp.range(round_up(rows, 64), 0), UOp.range(round_up(columns, 64), 1), UOp.range(width, 2)
@@ -29,13 +29,23 @@ def _gemm(out, x, weight, x_scale, w_scale, *bias, packed_input=True):
   value = value * (x_scale.flatten().index(0) * w_scale.flatten().index(0))
   if bias:
     value = value + bias[0].flatten().index(n.valid(n < columns)).cast(dtypes.float32)
-  store = out.flatten().index((m*columns+n).valid((m < rows) & (n < columns))).store(value.cast(out.dtype))
+  offset = (m*columns+n).valid((m < rows) & (n < columns))
+  value = value.cast(out.dtype)
+  if residual is not None:
+    # Round the projection to BF16 before the FP32 residual add, then round the sum to BF16.
+    value = (residual.flatten().index(offset).cast(dtypes.float32) + value.cast(dtypes.float32)).cast(out.dtype)
+  store = out.flatten().index(offset).store(value)
   schedule = Scheduler(store.end(m, n).sink(arg=KernelInfo()), Device[Device.DEFAULT].renderer)
   schedule.convert_loop_to_global()
   ranges = schedule.apply_opt(Opt(OptOps.TC, 0, (-1, 0, 1)))
   for i in (1, 0):
     schedule.apply_opt(Opt(OptOps.SPLIT, schedule.rngs.index(ranges[i]), (4, AxisType.UPCAST)))
-  return schedule.get_optimized_ast(name_override='alpamayo_fp8_gemm')
+  return schedule.get_optimized_ast(name_override='alpamayo_fp8_gemm' if residual is None else 'alpamayo_prefill_fc2_residual')
+
+
+def prefill_fc2(out, x, weight, xs, ws, residual):
+  assert residual.shape == out.shape == (2048,2048) and residual.dtype == out.dtype == dtypes.bfloat16
+  return _gemm(out,x,weight,xs,ws,residual=residual)
 
 
 def gemm(x, weight, scales, bias=None, dtype=dtypes.bfloat16, packed_input=True):

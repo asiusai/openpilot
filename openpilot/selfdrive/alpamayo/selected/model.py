@@ -245,19 +245,23 @@ class SelectedModel(EdgeModel):
       h = self.norm(x,f'{prefix}.post_attention_layernorm',rms=True)
       if prefill:
         assert x.shape == (1,2048,2048) and type(cache_pos) is int and cache_pos == 0
-        assert self.quantizer_slot == 2 and self.weights.get(prefix+'.mlp.fc1.bias') is None
+        fc1,fc2 = prefix+'.mlp.fc1',prefix+'.mlp.fc2'
+        assert self.quantizer_slot == 2 and fc1+'.bias' not in self.weights and fc2+'.bias' not in self.weights
         packed,scale = self.quantize(h)
         assert self.quantizer_slot == 3 and isinstance(packed,PackedActivation)
         output_scale = self.fixed[prefix+'/3']
-        output = frozen_ops.fused_mlp(packed.value,self.packed_weights[prefix+'.mlp.fc1'],scale,
-                                     self.weight_scales[prefix+'.mlp.fc1.weight'],output_scale,2048)
+        output = frozen_ops.fused_mlp(packed.value,self.packed_weights[fc1],scale,self.weight_scales[fc1+'.weight'],output_scale,2048)
         # The fused kernel already performed original BF16/ReLU/square/slot-3 conversion.
         self.quantizer_slot += 1
-        h = self.packed_linear(PackedActivation(output,2048,9216),output_scale,prefix+'.mlp.fc2',(1,2048))
+        residual = x.reshape(2048,2048).contiguous()
+        result = Tensor.custom_kernel(Tensor.empty(residual.shape,dtype=x.dtype,device=x.device),output,self.packed_weights[fc2],
+                                      output_scale,self.weight_scales[fc2+'.weight'],residual,fxn=amd_gemm.prefill_fc2)[0]
         self.trace_counts['fused_mlp'] += 1
+        return result.reshape(x.shape).realize()
       else:
-        h = self.linear(h,f'{prefix}.mlp.fc1').relu().square()
-        h = self.linear(h,f'{prefix}.mlp.fc2')
+        raw = self.linear(h,f'{prefix}.mlp.fc1')
+        quantized = amd_decode.quantize_relu_squared(raw) if not self.verifying and raw.shape == (1,1,9216) else None
+        h = self.linear(raw.relu().square(),f'{prefix}.mlp.fc2',quantized_input=quantized)
       return (x+h).realize()
     finally:
       self.prefill_prefix,self.quantizer_slot = previous

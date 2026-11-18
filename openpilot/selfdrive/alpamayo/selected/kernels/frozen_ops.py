@@ -84,8 +84,9 @@ def attention(q, k, v, causal=False):
 def mlp_program(out, x, weight, xs, ws, output_scale, *, rows):
   columns,width = out.shape[-1],weight.shape[-1]
   dependency = x.flatten()[0].load().float()+weight.flatten()[0].load().float()+xs.flatten()[0].load()+ws.flatten()[0].load()+output_scale.flatten()[0].load()
+  # Four waves share each workgroup. Each wave computes one 64 by 64 tile.
   sink = UOp.sink(out.flatten()[0].store(dependency.cast(dtypes.fp8e4m3)),
-                 UOp.special(((rows+63)//64)*((columns+63)//64),'gidx0'), UOp.special(32,'lidx0'),
+                 UOp.special((rows//64)*(columns//64)//4,'gidx0'), UOp.special(128,'lidx0'),
                  arg=KernelInfo(name='agent_packed_epilogue'))
   return frozen_program(sink,'mlp',(rows,columns,width))
 
