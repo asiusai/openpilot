@@ -2,11 +2,14 @@ import pytest
 import json
 import unittest
 import asyncio
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, MagicMock, patch
 from openpilot.system.asius.pqc import RootIdentity
 from openpilot.system.asius.session import SecureSession, wrap_peer, unwrap_peer
 from openpilot.system.asius.bluetooth_wire import encode_message
 from openpilot.system.asius.recording_keys import public_text
+from openpilot.system.asius.pairing_confirmation import Confirmation, ENROLL_SECONDS
 
 from dbus_fast import Message, Variant
 from dbus_fast.errors import DBusError
@@ -207,6 +210,45 @@ class TestBluetoothAuthorization(unittest.IsolatedAsyncioTestCase):
       await self.deliver({'type': 'ble-session', 'requestId': 'rebond'})
     self.assertTrue(self.response()['ready'])
     close.assert_called_once_with(completed=True)
+
+  async def test_confirmed_rebond_of_known_app_finishes_before_enrollment_expiry(self):
+    await self.establish()
+    now = [100.]
+    rejected = MagicMock()
+    with TemporaryDirectory() as root:
+      confirmation = Confirmation(lambda: True, Path(root), clock=lambda: now[0], on_reject=rejected)
+      self.engine.approvals = confirmation
+      request = asyncio.create_task(confirmation.request('/phone', 123456))
+      await asyncio.sleep(0)
+      now[0] += 3.1
+      confirmation.button('hold', 100.)
+      await request
+      with patch('openpilot.system.asius.bluetoothd.load_authorized_peers', return_value={self.client.public_key: {}}), \
+           patch('openpilot.system.asius.bluetoothd.disable_pairing_mode') as close, \
+           patch('openpilot.system.asius.bluetoothd.authorize_peer') as authorize:
+        await self.deliver({'type': 'ble-session', 'requestId': 'rebond'})
+      self.assertTrue(self.response()['ready'])
+      self.assertIsNone(confirmation.approved)
+      close.assert_called_once_with(completed=True)
+      authorize.assert_not_called()
+      now[0] += ENROLL_SECONDS + 1
+      confirmation.expire()
+      rejected.assert_not_called()
+
+  async def test_rebond_confirmation_cannot_be_claimed_by_unknown_app_or_another_phone(self):
+    await self.establish()
+    for known, approved_device in ((False, '/phone'), (True, '/other-phone')):
+      with self.subTest(known=known, approved_device=approved_device), TemporaryDirectory() as root:
+        confirmation = Confirmation(lambda: True, Path(root), clock=lambda: 100.)
+        confirmation.approved = (approved_device, 100. + ENROLL_SECONDS)
+        self.engine.approvals = confirmation
+        with patch('openpilot.system.asius.bluetoothd.load_authorized_peers', return_value={self.client.public_key: {}} if known else {}), \
+             patch('openpilot.system.asius.bluetoothd.disable_pairing_mode') as close:
+          await self.deliver({'type': 'ble-session', 'requestId': 'wrong-peer'})
+        close.assert_not_called()
+        self.assertEqual(confirmation.approved, (approved_device, 100. + ENROLL_SECONDS))
+        self.assertEqual(self.response()['type'], 'ble-session' if known else 'ble-error')
+      await self.establish()
 
   async def test_unknown_app_cannot_send_commands(self):
     await self.establish()
