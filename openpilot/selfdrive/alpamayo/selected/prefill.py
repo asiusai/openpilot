@@ -1,6 +1,6 @@
-"""2048-row padded prefill, with six independent nominal verification heads."""
-from tinygrad import Device, Tensor, TinyJit, dtypes
-from tinygrad.helpers import BEAM, JIT, PROFILE, VIZ, round_up
+"""Padded prefill (2176 rows) with draft verification heads."""
+from tinygrad import Tensor, TinyJit, dtypes
+from tinygrad.helpers import round_up
 from tinygrad.uop.ops import UOp
 
 
@@ -47,56 +47,51 @@ class PaddedPrefill:
 
 
 class SpeculativePrefill(PaddedPrefill):
+  """Prefill that also verifies a draft placed in the padded rows after the prompt.
+
+  With H heads, H-1 draft tokens are placed and head i holds the target after draft token i-1 (head 0 follows the
+  prompt). The decoder accepts the matching draft prefix, whose KV rows this prefill wrote, and continues from the
+  first differing head. Prompts up to 2145 tokens fit 32 heads (31 draft tokens); the frontend caps navigation text.
+  """
+  HEADS = 32
+
   def __init__(self, model):
     super().__init__(model)
-    self.baseline = PaddedPrefill(model)
-    self.last_targets = self.last_prompt = None
-    self.graph = self.graph_weights = None
-    if getattr(model, 'amd', False) and Device.DEFAULT == 'AMD':
-      from .model import SelectedModel
-      from .prefill_graph import PrefillWeights, TARGET
-      if (type(model) is SelectedModel and model.dtype == dtypes.bfloat16 and model._bulk_storage.device == 'AMD' and
-          Device['AMD'].renderer.target == TARGET):
-        self.graph_weights = PrefillWeights(model)
+    self.jits = {}
+    self.last_targets = self.last_prompt = self.last_logits = None
+    self.heads = 0
 
-  def language(self, x, cos, sin, length):
+  def language(self, x, cos, sin, length, heads):
     model = self.model
     for i in range(model.config['vlm_config']['text_config']['num_hidden_layers']):
       x = model.text_layer(x,cos,sin,f'vlm.model.language_model.layers.{i}',model.cache[i],None,cache_pos=0)
-    targets,checks = [],[]
-    for index in range(6):
+    rows,targets,checks = [],[],[]
+    for index in range(heads):
       hidden = model.norm(x[:,length-1+index:length+index],'vlm.model.language_model.norm',rms=True)
       logits = model.linear(hidden,'vlm.lm_head').realize()
-      if index == 0:
-        original_first_logits = logits
+      rows.append(logits)
       targets.append(model.output_token_mapping[logits.reshape(-1).argmax()].reshape(1))
       checks.append(logits.isfinite().all().cast(dtypes.int32).reshape(1))
-    return original_first_logits,Tensor.cat(*targets,*checks).contiguous().realize()
+    return rows[0],Tensor.cat(*rows,dim=1).contiguous().realize(),Tensor.cat(*targets,*checks).contiguous().realize()
 
   def __call__(self, x, cos, sin, max_tokens, length):
-    self.last_targets = None
+    from .policy import PromptTooLong
+    self.last_targets = self.last_logits = None
     self.last_prompt = int(length)
-    if self.graph is not None and (self.model.cache is None or self.model.cache[0].shape[3] != 2304):
-      self.graph = None
-    if length+6 > x.shape[1] or max_tokens < 6:
-      return self.baseline(x,cos,sin,max_tokens,length)
+    heads = self.HEADS
+    if length+heads-1 > x.shape[1] or max_tokens < heads:
+      raise PromptTooLong(f'Prompt uses {length} tokens; the draft prefill holds {x.shape[1]-heads+1}')
     self.allocate(x,cos,max_tokens)
-    valid = UOp.variable('valid_prefill_draft_length',1,x.shape[1]-6).bind(length)
-    if (self.graph_weights is not None and max_tokens == 64 and JIT and not (BEAM or PROFILE or VIZ) and
-        self.model.config['vlm_config']['text_config']['num_hidden_layers'] == len(self.model.cache) == 28 and
-        not (self.model.images or self.model.verifying or self.model.trajectory_active) and self.model.prefill_prefix is None):
-      from .prefill_graph import PrefillGraph, graph_inputs
-      from .prefill_graph.programs import supported_compiler
-      if supported_compiler() and (inputs := graph_inputs((x, cos, sin), self.graph_weights.bulk.device)) is not None:
-        if self.graph is None:
-          self.graph = PrefillGraph(self.graph_weights, inputs, valid)
-        first_logits, self.last_targets = self.graph(inputs, valid)
-        return first_logits
-    first_logits,self.last_targets = self.jit(x,cos,sin,valid)
+    key = (heads,self.shape)
+    if key not in self.jits:
+      from .graph_cache import CachedJit
+      self.jits[key] = CachedJit(lambda x,c,s,n: self.language(x,c,s,n,heads),f'prefill-{heads}-{self.shape}')
+    valid = UOp.variable(f'valid_prefill_heads{heads}_length',1,x.shape[1]-heads+1).bind(length)
+    first_logits,self.last_logits,self.last_targets = self.jits[key](x,cos,sin,valid)
+    self.heads = heads
     return first_logits
 
   def reset(self):
     super().reset()
-    self.baseline.reset()
-    self.graph = None
-    self.last_targets = self.last_prompt = None
+    self.jits.clear()
+    self.last_targets = self.last_prompt = self.last_logits = None

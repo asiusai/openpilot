@@ -205,8 +205,8 @@ Motion admission requires the publisher's input, sensor, pose, orientation, and 
 Learned parameters require both their aggregate validity and the separately published `sensorValid` flag.
 Navigation uses the latest valid causal `navInstruction`; missing guidance remains empty.
 App destinations use the authenticated destination RPC and device-owned Mapbox route.
-Model guidance uses compact maneuver, direction, distance, and roundabout-exit text within the selected prompt budget.
-Full road names and sign text remain in saved navigation metadata. Unsupported oversized prompts are rejected without truncating tokens.
+Model guidance is only maneuver, direction, roundabout exit and distance, for example `Turn right in 100m`.
+An unrecognized maneuver sends no guidance. Full road names and sign text remain in saved navigation metadata.
 Disabled, replaced, loading, stale, and last-known-position routes are rejected.
 
 The initial car-test cadence is one attempt every 500 ms. Slots align to the monotonic clock once the model worker is ready.

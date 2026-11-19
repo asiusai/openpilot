@@ -169,7 +169,9 @@ class EdgeModel:
   def trajectory(self, actions, cos, sin, length, steps, offset=0):
     key = (steps, cos.shape)
     if key not in self.trajectory_jits:
-      self.trajectory_jits[key] = TinyJit(lambda a, c, s, n, p: self._trajectory(a, c, s, n, steps, p))
+      from .selected.graph_cache import CachedJit
+      self.trajectory_jits[key] = CachedJit(lambda a, c, s, n, p: self._trajectory(a, c, s, n, steps, p),
+                                            f'trajectory-{key}-{self.cache[0].shape}')
     length = UOp.variable('cache_length', 1, self.cache[0].shape[3]).bind(length)
     offset = UOp.variable('action_position', 0, cos.shape[2]-64).bind(offset) if cos.shape[2] > 64 else 0
     return self.trajectory_jits[key](actions, cos, sin, length, offset)

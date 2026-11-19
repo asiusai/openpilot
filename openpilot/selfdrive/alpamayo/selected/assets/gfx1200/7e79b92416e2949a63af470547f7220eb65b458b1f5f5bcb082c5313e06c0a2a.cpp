@@ -1,10 +1,10 @@
-#define M 2048
+#define M 2176
 #define N 9216
 #define K 2048
 #define TM 4
 #define TN 4
-#define PADM 2048
-#define MTILES 32
+#define PADM 2176
+#define MTILES 34
 #define NTILES 144
 #define EPILOGUE_ONLY 0
 
@@ -48,6 +48,7 @@ void agent_packed_epilogue(unsigned *__restrict out,const unsigned *__restrict x
                           const float *__restrict ws,const float *__restrict output_scale) {
   unsigned thread=__ockl_get_local_id(0),lane=thread%32,block=__ockl_get_group_id(0)*4+thread/32;
   unsigned mt=block/(NTILES*4)*4+block%4,nt=block/4%NTILES;
+  if(mt>=MTILES) return;  // the grid covers ceil(MTILES/4) groups of four row tiles
   f8 accum[TM][TN];
   #pragma unroll
   for(unsigned i=0;i<TM;i++) {

@@ -1,4 +1,4 @@
-"""Complete current-target verification of the selected six-token draft."""
+"""Prefill draft placement and target verification."""
 import numpy as np
 
 DRAFT_TEXT = '<NOMINAL>\n<|traj_future_start|>'
@@ -16,8 +16,8 @@ def validate_draft(draft, anchor):
   return draft
 
 
-def padded_inputs(prepared, packed, length, draft, anchor):
-  draft = validate_draft(draft,anchor)
+def padded_inputs(prepared, packed, length, draft):
+  """Pad the prompt to `length` rows and place as much of `draft` as fits after it."""
   ids,positions,delta,vision_positions = packed
   actual = ids.shape[1]
   if actual > length:
@@ -27,17 +27,22 @@ def padded_inputs(prepared, packed, length, draft, anchor):
   count = length-actual
   new_ids = np.pad(ids,((0,0),(0,count)))
   new_positions = np.pad(positions,((0,0),(0,0),(0,count)))
-  eligible = count >= len(draft)
-  if eligible:
-    new_ids[0,actual:actual+len(draft)] = draft
-    next_positions = actual+int(delta)+np.arange(len(draft))
-    new_positions[:,:,actual:actual+len(draft)] = next_positions[None,None,:]
-  metadata = dict(prepared,actual_prompt_length=actual,prefill_draft_eligible=eligible)
+  placed = tuple(int(t) for t in draft[:count])
+  if placed:
+    new_ids[0,actual:actual+len(placed)] = placed
+    next_positions = actual+int(delta)+np.arange(len(placed))
+    new_positions[:,:,actual:actual+len(placed)] = next_positions[None,None,:]
+  metadata = dict(prepared,actual_prompt_length=actual,prefill_draft=placed)
   return metadata,(new_ids,new_positions,int(delta)-count,vision_positions)
 
 
-def accept_targets(predicted, draft, anchor, finite=True):
-  draft = validate_draft(draft,anchor)
-  values = np.asarray(predicted)
-  return bool(finite and values.shape == (6,) and np.issubdtype(values.dtype,np.integer)
-              and tuple(int(value) for value in values) == draft)
+def accepted_prefix(targets, finite, draft, anchor):
+  """Draft tokens confirmed by the prefill heads: stop at the first mismatch, a non-finite head, or the anchor."""
+  accepted = []
+  for target,ok,token in zip(targets,finite,draft):
+    if not ok or int(target) != int(token):
+      break
+    accepted.append(int(token))
+    if int(token) == int(anchor):
+      break
+  return accepted

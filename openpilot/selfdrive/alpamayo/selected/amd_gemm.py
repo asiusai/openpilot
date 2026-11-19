@@ -44,7 +44,7 @@ def _gemm(out, x, weight, x_scale, w_scale, *bias, packed_input=True, residual=N
 
 
 def prefill_fc2(out, x, weight, xs, ws, residual):
-  assert residual.shape == out.shape == (2048,2048) and residual.dtype == out.dtype == dtypes.bfloat16
+  assert residual.shape == out.shape and out.shape[1] == 2048 and residual.dtype == out.dtype == dtypes.bfloat16
   return _gemm(out,x,weight,xs,ws,residual=residual)
 
 

@@ -27,7 +27,7 @@ DEV int key_index(int row,int dim) {
   #if 0
   return ((row/16)*((72+15)/16)+dim/16)*256+(dim%16/4)*64+(row%16)*4+dim%4;
   #else
-  return row*(((72+15)/16)*16+4)+dim;
+  return row*(((72+15)/16)*16+8)+dim;
   #endif
 }
 DEV float lane_read(float x, int source) {
@@ -60,7 +60,8 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
   int qr=tile*16+lane%16;
   __attribute__((shared,aligned(16))) short probabilities[8*16*(16+0)];
   #if 1
-  __attribute__((shared,aligned(16))) short shared_k[32*(D*16+4)],shared_v[32*D*16];
+  // K rows and transposed V rows are 16-byte aligned for one vector access per lane.
+  __attribute__((shared,aligned(16))) short shared_k[32*(D*16+8)],shared_vt[D*16*40];
   #endif
   short *prob=probabilities+wave*16*(16+0);
   s8 query[D];
@@ -68,8 +69,8 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
     int dim=d*16+(lane/16)*8+i;
     query[d][i]=qr<R && dim<W?q[(head*R+qr)*W+dim]:0;
   }
-  f8 accum[D]={}; f8 denom={}, maxima;
-  for(int i=0;i<8;i++) maxima[i]=-__builtin_inff();
+  // Row statistics live in the lanes that own a query row: lane%16 (both halves hold the same values).
+  f8 accum[D]={}; float denom=0.0f, maxima=-__builtin_inff();
   int limit=(group+1)*8*16;
   int end=0?(K<limit?K:limit):K;
   for(int start=0;start<end;start+=32) {
@@ -77,57 +78,44 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
     for(int index=thread*8;index<32*D*16;index+=256*8) {
       int row=index/(D*16),dim=index%(D*16);
       u8 loaded_k=load_eight(k,kh,start+row,dim), loaded_v=load_eight(v,kh,start+row,dim);
-      for(int i=0;i<8;i++) { shared_k[key_index(row,dim+i)]=loaded_k[i]; shared_v[index+i]=loaded_v[i]; }
+      *(u8*)(shared_k+key_index(row,dim))=loaded_k;
+      for(int i=0;i<8;i++) shared_vt[(dim+i)*40+row]=loaded_v[i];
     }
     __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
     #endif
     f8 scores[32/16]={};
     for(int sub=0;sub<32/16;sub++) for(int d=0;d<D;d++) {
-      s8 key;
-      for(int i=0;i<8;i++) { int dim=d*16+(lane/16)*8+i;
-        int col=start+sub*16+lane%16;
-        #if 1
-        key[i]=shared_k[key_index(sub*16+lane%16,dim)];
-        #else
-        key[i]=(col<K && dim<W)?k[(kh*K+col)*W+dim]:0;
-        #endif
-      }
-      scores[sub]=mma(query[d],key,scores[sub]);
+      s8 key=*(const s8*)(shared_k+key_index(sub*16+lane%16,d*16+(lane/16)*8));
+      scores[sub]=mma(key,query[d],scores[sub]);
     }
+    // K.Q^T: this lane holds query row tile*16+lane%16 and keys start+sub*16+(lane/16)*8+i, the PV operand layout.
+    float localmax=-__builtin_inff();
+    for(int sub=0;sub<32/16;sub++) for(int i=0;i<8;i++) {
+      int col=start+sub*16+(lane/16)*8+i;
+      scores[sub][i]=col<K?scores[sub][i]*0.11785113019775792f:-__builtin_inff();
+      localmax=__builtin_fmaxf(localmax,scores[sub][i]);
+    }
+    float next=__builtin_fmaxf(maxima,__builtin_fmaxf(localmax,shuffle<0x401f>(localmax)));
+    float scale=next==-__builtin_inff()?1.0f:__builtin_exp2f((maxima-next)*1.4426950408889634f);
+    f8 t;
     for(int i=0;i<8;i++) {
-      int row=tile*16+(lane/16)*8+i;
-      float localmax=-__builtin_inff();
-      for(int sub=0;sub<32/16;sub++) {
-        int col=start+sub*16+lane%16;
-        scores[sub][i]=(col<K && (!0 || col<=row))?scores[sub][i]*0.11785113019775792f:-__builtin_inff();
-        #if 0
-        if(col<K) scores[sub][i]+=mask[col];
-        #endif
-        localmax=__builtin_fmaxf(localmax,scores[sub][i]);
-      }
-      float next=__builtin_fmaxf(maxima[i],maximum(localmax));
-      float scale=next==-__builtin_inff()?1.0f:__builtin_exp2f((maxima[i]-next)*1.4426950408889634f);
-      float sum=0;
-      for(int sub=0;sub<32/16;sub++) {
+      for(int sub=0;sub<32/16;sub++)
         scores[sub][i]=next==-__builtin_inff()?0.0f:__builtin_exp2f((scores[sub][i]-next)*1.4426950408889634f);
-        sum+=scores[sub][i];
-      }
-      for(int d=0;d<D;d++) accum[d][i]*=scale;
-      denom[i]=denom[i]*scale+total(sum); maxima[i]=next;
+      t[i]=scores[0][i]+scores[1][i];
+      // Same tree as the original lane reduction: key c with c^8, then c^4, c^2, c^1.
+      t[i]+=shuffle<0x401f>(t[i]);
     }
+    float total_sum=((t[0]+t[4])+(t[2]+t[6]))+((t[1]+t[5])+(t[3]+t[7]));
+    for(int i=0;i<8;i++) {
+      float row_scale=lane_read(scale,(lane/16)*8+i);
+      for(int d=0;d<D;d++) accum[d][i]*=row_scale;
+    }
+    denom=denom*scale+total_sum; maxima=next;
     for(int sub=0;sub<32/16;sub++) {
     #if 1
-    // Reinterpreting a WMMA accumulator as an input transposes its tile.
-    // Multiplication by identity changes the register layout for the next WMMA.
-    s8 stored, identity={};
-    for(int i=0;i<8;i++) {
-      stored[i]=tobf(scores[sub][i]);
-      identity[i]=lane%16==(lane/16)*8+i?tobf(1.0f):0;
-    }
-    f8 transposed=mma(stored,identity,(f8){});
     s8 probability;
-    for(int i=0;i<8;i++) probability[i]=tobf(transposed[i]);
+    for(int i=0;i<8;i++) probability[i]=tobf(scores[sub][i]);
     #elif 0
     f8 transposed=transpose_probability(scores[sub],lane);
     s8 probability;
@@ -145,14 +133,7 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
     for(int i=0;i<8;i++) probability[i]=prob[(lane%16)*(16+0)+(lane/16)*8+i];
     #endif
     for(int d=0;d<D;d++) {
-      s8 value;
-      for(int i=0;i<8;i++) { int key=start+sub*16+(lane/16)*8+i;
-        #if 1
-        value[i]=shared_v[(sub*16+(lane/16)*8+i)*D*16+d*16+lane%16];
-        #else
-        value[i]=key<K && d*16+lane%16<W?v[(kh*K+key)*W+d*16+lane%16]:0;
-        #endif
-      }
+      s8 value=*(const s8*)(shared_vt+(d*16+lane%16)*40+sub*16+(lane/16)*8);
       accum[d]=mma(probability,value,accum[d]);
     }
     #if !0 && !1
@@ -172,6 +153,7 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
   }
   for(int d=0;d<D;d++) for(int i=0;i<8;i++) {
     int row=tile*16+(lane/16)*8+i;
-    if(row<R && d*16+lane%16<W) out[(head*R+row)*W+d*16+lane%16]=tobf(accum[d][i]/denom[i]);
+    float row_denom=lane_read(denom,(lane/16)*8+i);
+    if(row<R && d*16+lane%16<W) out[(head*R+row)*W+d*16+lane%16]=tobf(accum[d][i]/row_denom);
   }
 }

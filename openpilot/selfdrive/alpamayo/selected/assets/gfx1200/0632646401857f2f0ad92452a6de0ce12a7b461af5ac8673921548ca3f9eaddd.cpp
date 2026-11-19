@@ -1,10 +1,11 @@
+#define ROWS 2176
 
 #define DEV __attribute__((device)) __attribute__((always_inline)) inline
 typedef unsigned short u16;
 typedef unsigned short u8 __attribute__((ext_vector_type(8)));
 DEV u8 load_eight(const u16 *source,int head,int row,int dim) {
-  if(row>=2048 || dim>=128) return (u8){};
-  return *(const volatile u8 *)(source+(head*2048+row)*128+dim);
+  if(row>=ROWS || dim>=128) return (u8){};
+  return *(const volatile u8 *)(source+(head*ROWS+row)*128+dim);
 }
 typedef short s8 __attribute__((ext_vector_type(8)));
 typedef float f8 __attribute__((ext_vector_type(8)));
@@ -27,7 +28,7 @@ DEV int key_index(int row,int dim) {
   #if 0
   return ((row/16)*((128+15)/16)+dim/16)*256+(dim%16/4)*64+(row%16)*4+dim%4;
   #else
-  return row*(((128+15)/16)*16+4)+dim;
+  return row*(((128+15)/16)*16+8)+dim;
   #endif
 }
 DEV float lane_read(float x, int source) {
@@ -53,15 +54,15 @@ void agent_attention_rowsoftmax(u16 *out,const u16 *q,const u16 *k,const u16 *v
 ,const float *mask
 #endif
 ) {
-  constexpr int H=16, KH=8, R=2048, K=2048, W=128, D=(W+15)/16;
+  constexpr int H=16, KH=8, R=ROWS, K=ROWS, W=128, D=(W+15)/16, G=(R+127)/128;
   int thread=__ockl_get_local_id(0), lane=thread%32, wave=thread/32, block=__ockl_get_group_id(0);
-  block = (block % 16) * 16 + 15 - block / 16;
+  block = (block % H) * G + G - 1 - block / H;  // heads interleaved, latest (longest causal) row groups first
   int group=block%((R+16*8-1)/(16*8));
   int tile=group*8+wave, head=block/((R+16*8-1)/(16*8)), kh=(head/H)*KH+(head%H)/(H/KH);
   int qr=tile*16+lane%16;
   __attribute__((shared,aligned(16))) short probabilities[8*16*(16+0)];
   #if 1
-  __attribute__((shared,aligned(16))) short shared_k[32*(D*16+4)],shared_v[32*D*16];
+  __attribute__((shared,aligned(16))) short shared_k[32*(D*16+8)],shared_v[32*D*16];
   #endif
   short *prob=probabilities+wave*16*(16+0);
   s8 query[D];
@@ -82,31 +83,22 @@ void agent_attention_rowsoftmax(u16 *out,const u16 *q,const u16 *k,const u16 *v
       int voffset=((kh*D+vd)*((K+15)/16)+start/16+vk)*256+fragment;
       u8 loaded_k=load_eight(k,kh,start+row,dim);
       u8 loaded_v=start+vk*16<K?*(const volatile u8*)(v+voffset):(u8){};
-      for(int i=0;i<8;i++) { shared_k[key_index(row,dim+i)]=loaded_k[i]; shared_v[index+i]=loaded_v[i]; }
+      *(u8*)(shared_k+key_index(row,dim))=loaded_k; *(u8*)(shared_v+index)=loaded_v;
     }
     __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
     #endif
     f8 scores[32/16]={};
     for(int sub=0;sub<32/16;sub++) for(int d=0;d<D;d++) {
-      s8 key;
-      for(int i=0;i<8;i++) { int dim=d*16+(lane/16)*8+i;
-        int col=start+sub*16+lane%16;
-        #if 1
-        key[i]=shared_k[key_index(sub*16+lane%16,dim)];
-        #else
-        key[i]=(col<K && dim<W)?k[(kh*K+col)*W+dim]:0;
-        #endif
-      }
-      scores[sub]=mma(query[d],key,scores[sub]);
+      s8 key=*(const s8*)(shared_k+key_index(sub*16+lane%16,d*16+(lane/16)*8));
+      scores[sub]=mma(key,query[d],scores[sub]);
     }
 
     for(int sub=0;sub<2;sub++) for(int i=0;i<8;i++) {
-      int row=tile*16+(lane/16)*8+i, col=start+sub*16+lane%16;
+      int row=tile*16+lane%16, col=start+sub*16+(lane/16)*8+i;
       scores[sub][i]=(col<K && (!1 || col<=row))?scores[sub][i]*0.08838834764831845f:-__builtin_inff();
     }
 
-    for(int sub=0;sub<2;sub++) scores[sub]=transpose_probability(scores[sub],lane);
 
     float localmax=-__builtin_inff();
     for(int i=0;i<8;i++) localmax=__builtin_fmaxf(localmax,__builtin_fmaxf(scores[0][i],scores[1][i]));

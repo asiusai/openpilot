@@ -194,7 +194,6 @@ def navigation(rows, query):
     value, stamp = required(rows, query, STATE_LIMITS['navInstruction'])
   except Unavailable:
     return '', {'source': 'unavailable', 'log_mono_time': None}
-  text = ' '.join(value['maneuverPrimaryText'].split())
   secondary = ' '.join(value.get('maneuverSecondaryText', '').split())
   kind, modifier = value.get('maneuverType', ''), value.get('maneuverModifier', '')
   distance = value['maneuverDistance']
@@ -210,9 +209,10 @@ def navigation(rows, query):
             'exit roundabout': 'Exit the roundabout', 'exit rotary': 'Exit the roundabout'}.get(kind, '')
   if modifier == 'uturn':
     action, direction = 'Make a U-turn', ''
+  # The model gets only maneuver, direction, roundabout exit and distance ("Turn right in 100m").
+  # Road names and sign text stay in the audit; an unrecognized maneuver sends no navigation text.
+  text = ''
   if action:
-    # Preserve maneuver, direction, exit and distance within the model's short
-    # navigation budget. Full road names and sign text remain in the audit.
     text = action+(f' {direction}' if direction and kind != 'arrive' else '')
     if kind in ('roundabout', 'rotary', 'roundabout turn'):
       banner = value['maneuverPrimaryText']+' '+secondary
@@ -222,8 +222,6 @@ def navigation(rows, query):
   if not text:
     return '', {'source': 'unavailable', 'log_mono_time': stamp}
   text = f'{text} in {round(distance)}m'
-  if len(text) > 1024:
-    raise Unavailable('Navigation instruction exceeds 1024 characters')
   return text, {'source': 'navInstruction', 'log_mono_time': stamp, 'instruction': value, 'model_instruction': text}
 
 

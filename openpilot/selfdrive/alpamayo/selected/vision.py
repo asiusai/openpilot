@@ -2,7 +2,7 @@
 from collections import OrderedDict
 import hashlib
 import numpy as np
-from tinygrad import Device, Tensor, TinyJit, dtypes
+from tinygrad import Device, Tensor, dtypes
 from tinygrad.uop.ops import Ops, UOp
 from openpilot.selfdrive.alpamayo.segments import PatchRows
 
@@ -25,7 +25,8 @@ class VisionCache:
     def copy_pair(first, second, src):
       flat = src.reshape(2, -1)
       return first.assign(flat[0]).realize(), second.assign(flat[1]).realize()
-    self.copy_jit = TinyJit(copy_pair)
+    from .graph_cache import CachedJit
+    self.copy_jit = CachedJit(copy_pair,'vision-copy')
     self.keys = ()
     self.hits = self.misses = 0
 
@@ -78,7 +79,8 @@ class VisionCache:
           self.encoders[key] = PairEncoder(self.pair_weights)
         return self.encoders[key]
     if shape not in self.encoders:
-      self.encoders[shape] = TinyJit(self.model.encode_group)
+      from .graph_cache import CachedJit
+      self.encoders[shape] = CachedJit(self.model.encode_group,f'vision-{shape}')
     return self.encoders[shape]
 
   def encode_missing(self, keys, pixels, positions, batches, missing):
@@ -144,7 +146,8 @@ class VisionCache:
       def stitch(tokens, *images):
         merged = Tensor.cat(*(images[i] for i in layout),dim=0)
         return self.model.embed(tokens,merged,spans)
-      self.stitchers[shape] = TinyJit(stitch)
+      from .graph_cache import CachedJit
+      self.stitchers[shape] = CachedJit(stitch,f'stitch-{shape}')
     self.stitchers.move_to_end(shape)
     while len(self.stitchers) > 8:
       self.stitchers.popitem(last=False)

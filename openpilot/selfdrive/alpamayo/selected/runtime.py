@@ -163,8 +163,15 @@ class Runtime:
       finished('gpu_backend')
       self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales,self.backend.pv_program())
       finished('weights_and_packing')
+      print(f'Alpamayo startup: weight stages {self.model.load_ms}', file=sys.stderr, flush=True)
       if self.model.weight_digest != artifacts['fp8_weights_sha256']:
         raise ValueError('Selected FP8 weight bytes changed')
+      self.model.allocate_expert_packs()
+      from . import graph_cache
+      from tinygrad.codegen import to_program_config
+      graph_cache.configure(self.config.cache_dir/'graphs',{'model':self.model},
+                            (TINYGRAD_REVISION,self.model.weight_digest,manifest(),[(v.key,v.value) for v in to_program_config],
+                             hashlib.sha256(self.config.prefill_calibration.read_bytes()).hexdigest()))
       self.prefill = SpeculativePrefill(self.model)
       self.decoder = Decoder(self.model,self.draft,self.anchor)
       self.vision = VisionCache(self.model)
@@ -174,13 +181,13 @@ class Runtime:
       finished('inference_setup')
       self.device = Device.DEFAULT
       self.manifest = {'variant':'selected','native_fresh_patches':self.config.native_fresh_patches,
-                       'recipe':'fp8-group2-pad2048-nominal6-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
+                       'recipe':'fp8-group2-pad2176-draft32-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
                        'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
-                       'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2048,
+                       'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2176,
                        'cache_rows':2304,'vision_group_limit':2,'vision_cache_capacity':144,'images':10,'patches_per_image':720,
                        'history_offsets_s':[-2,-1,-.5,-.1,0],'front_fov_degrees':[120,30],'bf16_vision_layers':2,
                        'bf16_expert_projections':True,'vision_scales':'dynamic-per-image','language_scales':'fixed-112',
-                       'reduced_vocabulary':True,'nominal_target_verification':6,'lookup_carry':True,'serial_block':6,
+                       'reduced_vocabulary':True,'prefill_draft_heads':32,'lookup_carry':True,'serial_block':6,
                         'device':self.device,'arch':'gfx1200','cpu_threads':2,'tinygrad_revision':TINYGRAD_REVISION,
                        'nvidia_revision':NVIDIA_REVISION,'identities':identities,
                        'fp8_weights_sha256':self.model.weight_digest,'kernel_manifest':manifest(),
@@ -248,6 +255,7 @@ class Runtime:
     from alpamayo2_edge.action_space import UnicycleAccelCurvatureCourseActionSpace
     from .buffers import CompactInputs
     from .policy import padded_inputs
+    from .model import PREFILL_ROWS
     from .transport import download
     started = time.monotonic_ns()
     metrics = Metrics()
@@ -264,7 +272,7 @@ class Runtime:
       metrics.stages_ms[name] = (time.monotonic_ns()-begin)/1e6
     with timed('preprocess'):
       prepared,packed = self.adapter.prepare(sample)
-      prepared,packed = padded_inputs(prepared,packed,2048,self.draft,self.anchor)
+      prepared,packed = padded_inputs(prepared,packed,PREFILL_ROWS,self.decoder.prefill_draft())
       self.vision.prepare(prepared)
       if any(self.vision.keys[i] not in self.vision.cache for i in retained):
         from openpilot.selfdrive.alpamayo.frontend import Unavailable
@@ -281,7 +289,7 @@ class Runtime:
     with timed('prefill'):
       logits = self.prefill(embedding,cos,sin,64,prompt)
     with timed('reasoning'):
-      generated = self.decoder.generate(self.prefill,logits,dc,ds,prompt)
+      generated = self.decoder.generate(self.prefill,logits,dc,ds,prompt,prepared['prefill_draft'])
     with timed('diffusion'):
       actions = self.model.trajectory(actions,ac,ass,prompt+len(generated),3,len(generated))
       action_array = download(actions)
@@ -295,7 +303,7 @@ class Runtime:
         raise RuntimeError('Invalid decoded trajectory')
     prediction = {'xyz':xyz.numpy().tolist(),'rot':rot.numpy().tolist(),'generated_token_ids':generated,
                   'generated_tokens':len(generated),'reasoning':self.adapter.tokenizer.decode(generated),
-                  'prompt_tokens':prompt,'prefill_tokens':2048,'timings_ms':dict(metrics.stages_ms),
+                  'prompt_tokens':prompt,'prefill_tokens':PREFILL_ROWS,'timings_ms':dict(metrics.stages_ms),
                   'noise_bytes_sha256':hashlib.sha256(noise.tobytes()).hexdigest()}
     metrics.runtime_ms = (time.monotonic_ns()-started)/1e6
     metrics.vision_hits,metrics.vision_misses = self.vision.hits,self.vision.misses
@@ -351,6 +359,11 @@ class Runtime:
         if not self._prime(anchors, time.monotonic_ns()+600_000_000_000):
           raise RuntimeError('Warmup priming failed')
       phase('rolling_shapes')
+      # Navigation text lengthens the prompt; the prefill graph takes the length as a variable.
+      sample['nav_text'] = ['At the roundabout, take exit 2 in 150m']
+      run(0)
+      sample['nav_text'] = ['']
+      phase('navigation_prompts')
       decoder = self.decoder
       generate,first_token = decoder.generate,decoder.first_token
       seen = []
@@ -358,7 +371,7 @@ class Runtime:
         seen.append(first_token(logits))
         return seen[-1]
       # Force the lookup path, then propose drafts of each verifier width from the observed first token.
-      decoder.generate = lambda prefill,logits,dc,ds,prompt,max_tokens=64: decoder.generate_lookup(logits,dc,ds,prompt,max_tokens)
+      decoder.generate = lambda prefill,logits,dc,ds,prompt,placed,max_tokens=64: decoder.generate_lookup(logits,dc,ds,prompt,max_tokens)
       decoder.first_token = first
       filler = self.draft[0]
       try:
@@ -378,7 +391,7 @@ class Runtime:
         self.vision.keys = ()
         self.vision.hits = self.vision.misses = 0
         self.adapter.reset()
-        self.prefill.last_targets = self.prefill.last_prompt = None
+        self.prefill.last_targets = self.prefill.last_prompt = self.prefill.last_logits = None
         self.metrics = Metrics()
       self.startup_ms['warmup'] = (time.monotonic_ns()-started)/1e6
       print(f"Alpamayo startup: warmup {self.startup_ms['warmup']:.0f} ms {phases}", file=sys.stderr, flush=True)

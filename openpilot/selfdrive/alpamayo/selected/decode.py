@@ -1,10 +1,11 @@
-"""Target-verified nominal/lookup decoding with block-six serial fallback."""
+"""Target-verified decoding: prefill-head draft check, lookup verification, block-six serial fallback."""
 from functools import partial
 import math
 import numpy as np
-from tinygrad import Tensor, TinyJit, dtypes
+from tinygrad import Tensor, dtypes
 from tinygrad.uop.ops import UOp
-from .policy import accept_targets, validate_draft
+from .graph_cache import CachedJit
+from .policy import accepted_prefix, validate_draft
 from .transport import download
 from .serial_coordinates import block_six
 
@@ -15,7 +16,7 @@ class Decoder:
     self.draft,self.anchor = validate_draft(draft,anchor),anchor
     self.history,self.statistics = [],{}
     self.jits,self.verifiers,self.select_jits,self.proposals = {},{},{},{}
-    self.choose_jit = TinyJit(lambda logits: model.output_token_mapping[logits.reshape(-1).argmax()].float().realize())
+    self.choose_jit = CachedJit(lambda logits: model.output_token_mapping[logits.reshape(-1).argmax()].float().realize(),'choose')
 
   def reset(self):
     self.history.clear()
@@ -31,7 +32,7 @@ class Decoder:
   def select_logits(self, logits, index):
     count = logits.shape[1]
     if count not in self.select_jits:
-      self.select_jits[count] = TinyJit(lambda values,row: values[:,row:row+1].clone().realize())
+      self.select_jits[count] = CachedJit(lambda values,row: values[:,row:row+1].clone().realize(),f'select-{count}')
     row = UOp.variable('selected_draft_row',0,count-1).bind(index)
     return self.select_jits[count](logits,row)
 
@@ -41,7 +42,7 @@ class Decoder:
       if (count == 6 and self.model.amd and not self.model.images and len(self.model.cache) == 28
           and self.model.cache[0].shape == (2,1,8,2304,128) and cos.shape == sin.shape == (1,1,64,128)
           and logits.shape == (1,1,2112)):
-        self.jits[key] = TinyJit(partial(block_six,self.model))
+        self.jits[key] = CachedJit(partial(block_six,self.model),f'block6-{key}')
       else:
         def run(logits, c, s, pos, offset):
           tokens = []
@@ -49,7 +50,7 @@ class Decoder:
             logits,token = self.model._greedy_decode(logits,c,s,pos+i,offset+i)
             tokens.append(token.reshape(1))
           return logits,Tensor.cat(*tokens).realize()
-        self.jits[key] = TinyJit(run)
+        self.jits[key] = CachedJit(run,f'decode-{key}')
     position = UOp.variable('block_position',0,self.model.cache[0].shape[3]-count).bind(position)
     step = UOp.variable('block_step',0,cos.shape[2]-count).bind(step)
     return self.jits[key](logits,cos,sin,position,step)
@@ -96,11 +97,14 @@ class Decoder:
             return previous[end:end+limit]
     return []
 
-  def generate_lookup(self, logits, dc, ds, prompt, max_tokens, next_token=None):
+  def prefill_draft(self):
+    """Tokens to verify inside the prefill: the latest generated text (consecutive slots usually repeat it)."""
+    return tuple(self.history[-1]) if self.history else self.draft
+
+  def generate_lookup(self, logits, dc, ds, prompt, max_tokens, next_token=None, generated=None, pending_logits=None):
     model = self.model
-    generated = []
+    generated = [] if generated is None else list(generated)
     stats = {'lookup_rounds':0,'verified_tokens':0,'serial_tokens':0}
-    pending_logits = None
     while len(generated) < max_tokens:
       offset = len(generated)
       remaining = max_tokens-offset
@@ -125,7 +129,7 @@ class Decoder:
         step = UOp.variable('draft_step',0,dc.shape[2]-count).bind(offset)
         key = (count,dc.shape,model.cache[0].shape[3])
         if key not in self.verifiers:
-          self.verifiers[key] = TinyJit(self.verify)
+          self.verifiers[key] = CachedJit(self.verify,f'verify-{key}')
         verified,predicted = self.verifiers[key](tokens,dc,ds,pos,step)
         choices = [first,*download(predicted).reshape(-1).astype(int).tolist()]
         accepted = []
@@ -144,31 +148,41 @@ class Decoder:
       for token in accepted:
         generated.append(token)
         if token == self.anchor:
-          self.history = [old for old in self.history if old != generated][-63:]+[generated[:]]
+          self.remember(generated)
           self.statistics = stats
           return generated
     raise RuntimeError(f'No trajectory anchor after {max_tokens} tokens')
 
-  def generate(self, prefill, logits, dc, ds, prompt, max_tokens=64):
+  def remember(self, generated):
+    self.history = [old for old in self.history if old != generated][-63:]+[list(generated)]
+
+  def generate(self, prefill, logits, dc, ds, prompt, placed, max_tokens=64):
     if prefill.last_prompt != prompt:
       raise ValueError('Prefill used a stale actual prompt length')
-    record = {'eligible':prefill.last_targets is not None,'accepted':False,'actual_prompt':prompt}
-    first = None
-    if prefill.last_targets is not None:
-      payload = download(prefill.last_targets).reshape(-1)
-      if payload.shape != (12,):
-        raise ValueError('Incomplete target token and finiteness payload')
-      targets = payload[:6].astype(np.int64)
-      finite = bool(np.all(payload[6:] == 1))
-      accepted = accept_targets(targets,np.asarray(self.draft),self.anchor,finite)
-      record.update(targets=targets.tolist(),draft=list(self.draft),all_targets_finite=finite,accepted=accepted)
-      if accepted:
-        generated = list(self.draft)
-        self.history = [old for old in self.history if old != generated][-63:]+[generated[:]]
-        self.statistics = {'lookup_rounds':0,'verified_tokens':6,'serial_tokens':0,'prefill_draft':record}
-        return generated
-      if finite:
-        first = int(targets[0])  # The prefill already read back the argmax of these exact first logits.
-    generated = self.generate_lookup(logits,dc,ds,prompt,max_tokens,first)
+    heads = prefill.heads
+    record = {'heads':heads,'placed':len(placed),'accepted':0,'actual_prompt':prompt}
+    if heads == 0 or prefill.last_targets is None:
+      generated = self.generate_lookup(logits,dc,ds,prompt,max_tokens)
+      self.statistics['prefill_draft'] = record
+      return generated
+    payload = download(prefill.last_targets).reshape(-1)
+    if payload.shape != (2*heads,):
+      raise ValueError('Incomplete target token and finiteness payload')
+    targets,finite = payload[:heads].astype(np.int64),payload[heads:] == 1
+    # A draft token is usable only where this prefill wrote its KV row (the placed tokens).
+    accepted = accepted_prefix(targets,finite,placed[:heads],self.anchor)
+    if len(accepted) == heads and accepted[-1] != self.anchor:
+      accepted = accepted[:-1]  # keep one head for the next token
+    record.update(accepted=len(accepted),all_targets_finite=bool(finite.all()))
+    if accepted and accepted[-1] == self.anchor:
+      self.remember(accepted)
+      self.statistics = {'lookup_rounds':0,'verified_tokens':len(accepted),'serial_tokens':0,'prefill_draft':record}
+      return accepted
+    j = len(accepted)
+    first = int(targets[j]) if finite[j] else None  # the prefill already read back the argmax of these exact logits
+    pending = (prefill.last_logits,j) if j else None
+    if pending is not None and first is None:
+      logits,pending = self.select_logits(*pending),None
+    generated = self.generate_lookup(logits,dc,ds,prompt,max_tokens,first,accepted,pending)
     self.statistics['prefill_draft'] = record
     return generated

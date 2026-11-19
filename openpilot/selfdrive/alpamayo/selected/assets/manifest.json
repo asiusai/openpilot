@@ -8,13 +8,13 @@
       "args": [
         16,
         8,
-        2048,
-        2048,
+        2176,
+        2176,
         128
       ],
-      "source_sha256": "9587c44c1dc8476d2372c78c798083186bb37946e2aced0904f5e32334079d11",
-      "binary_sha256": "f5aa5fce3dddcb6c932aa8922bf782d20ea3d7b524e282c90062dd7dd6109b96",
-      "bytes": 16320
+      "source_sha256": "0632646401857f2f0ad92452a6de0ce12a7b461af5ac8673921548ca3f9eaddd",
+      "binary_sha256": "b342d19dbf7d067e59c895f97dbb8b9589406af26dd20fb21ca5c1a4740138d9",
+      "bytes": 16576
     },
     {
       "kind": "vision_attention",
@@ -25,9 +25,9 @@
         720,
         72
       ],
-      "source_sha256": "6aad566a05bcd6eb8299cac393bdec66ce7fa7e3d1397a43745377539139bcd4",
-      "binary_sha256": "ad3d75a9f603e6455395e494d0c938dbe39d868b3016539e302c217e304438a9",
-      "bytes": 23592
+      "source_sha256": "62acc6bd9759c30ed752e46cf61fa8115d6fd5d39e5a97c85417e60b23a71cf7",
+      "binary_sha256": "30ec86bf75513b865933555380acc62f750cce00a226d27e03f7e28015ee689a",
+      "bytes": 20648
     },
     {
       "kind": "absmax",
@@ -186,13 +186,13 @@
     {
       "kind": "mlp",
       "args": [
-        2048,
+        2176,
         9216,
         2048
       ],
-      "source_sha256": "17246f9b0277fdf23dc210f9b4262b6237d58c1e2b58ae26672107ca2c76bdbe",
-      "binary_sha256": "9c0c8c4de1059dc090989b48970d7f450ab5823589ae45872c4ed40605360e49",
-      "bytes": 20408
+      "source_sha256": "7e79b92416e2949a63af470547f7220eb65b458b1f5f5bcb082c5313e06c0a2a",
+      "binary_sha256": "7a0d8c4950434f1aa9f429474bcfbef71501da2b89d630b27b1532a036462abb",
+      "bytes": 19640
     },
     {
       "kind": "projection_w4_pack",

@@ -11,6 +11,7 @@ from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 
 PROMPT_TILES = 2304//16  # Expert attention keys: 2304 prompt rows, then 64 action rows.
+PREFILL_ROWS = 2176  # Padded prompt rows: 2025 base tokens plus navigation text and the verified draft (17 x 128).
 from . import amd_gemm, amd_decode, weights
 from .serial_attention import direct as serial_cache_attention
 from .serial_coordinates import cache_attention
@@ -36,12 +37,20 @@ class SelectedModel(EdgeModel):
     self.prefill_prefix,self.quantizer_slot = None,0
     self.pv_program = pv_program
     self.trace_counts = {'pv':0,'qk':0,'fused_mlp':0}
+    import time
+    marks = [('start',time.monotonic())]
+    def mark(name):
+      Device[Device.DEFAULT].synchronize(); marks.append((name,time.monotonic()))
     self.weight_digest = weights.load_bulk(self,checkpoint,fp8_cache)
+    mark('bulk')
     self.restored = weights.restore_bf16(self,checkpoint)
+    mark('restore_bf16')
     self.bf16_weights = {name[:-7]:bf16_linear.pack_weight(value) for name,value in self.weights.items()
                         if name.startswith(('vlm.model.visual.embeddings.','vlm.model.visual.encoder.layers.'))
                         and name.endswith('.weight') and value.ndim == 2 and value.dtype == dtypes.bfloat16}
+    mark('bf16_pack')
     self.vocabulary_size = weights.reduce_head(self)
+    mark('reduce_head')
     self.expert_weights = set()
     for name,value in list(self.weights.items()):
       if name.startswith('expert.') and value.dtype == dtypes.fp8e4m3:
@@ -50,6 +59,7 @@ class SelectedModel(EdgeModel):
     self.packed_weights = {name[:-7]:amd_gemm.pack(value).realize() for name,value in self.weights.items()
                            if name.startswith('vlm.model.language_model.layers.') and name.endswith('.weight')
                            and ('.mlp.' in name or '.self_attn.' in name) and value.dtype == dtypes.fp8e4m3}
+    mark('expert_and_language_pack')
     expected = {f'vlm.model.language_model.layers.{i}/{j}' for i in range(28) for j in range(4)}
     if set(fixed_scales) != expected or not all(math.isfinite(v) and v > 0 for v in fixed_scales.values()):
       raise ValueError('Require all 112 positive finite fixed language scales')
@@ -58,7 +68,10 @@ class SelectedModel(EdgeModel):
     self.fixed = {key:Tensor([float(value)],dtype=dtypes.float32).reshape(()).realize() for key,value in fixed_scales.items()}
     self.projector_weights = {name:amd_gemm.unpack(amd_gemm.pack(self.weights[name+'.weight']).realize())
                               for name in ('vlm.model.projector.linear_fc1','vlm.model.projector.linear_fc2')}
+    mark('projector')
     self.w4_weights = serial_mlp.pack_weights(self)
+    mark('w4_pack')
+    self.load_ms = {b[0]:round((b[1]-a[1])*1e3) for a,b in zip(marks,marks[1:])}
 
   def reset(self):
     self.cache = self.prompt_length = self.greedy_shape = None
@@ -195,8 +208,14 @@ class SelectedModel(EdgeModel):
     assert queries in (16,32,48,64) and mask.shape in ((keys,),(queries,keys))
     packed_k,packed_v = self.expert_kv(k,v) if expert else (_pack(k),None)
     scores = Tensor.empty(batch,heads,queries,keys,device=q.device,dtype=q.dtype)
-    scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
-    scores = (scores.float()+mask).cast(q.dtype).contiguous()
+    if expert:
+      # The expert mask is one FP32 value per key; apply it in the score kernel's epilogue (bit-identical, one launch fewer).
+      assert mask.shape == (keys,)  # 0 or -inf per key: exact in FP32 whatever its weak float dtype
+      scores = Tensor.custom_kernel(scores,_pack(q),packed_k,mask.float().contiguous(),
+                                    fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
+    else:
+      scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
+      scores = (scores.float()+mask).cast(q.dtype).contiguous()
     probs = Tensor.empty(batch,heads,round_up(queries,16),round_up(keys,16),device=q.device,dtype=q.dtype)
     probs = Tensor.custom_kernel(probs,scores,fxn=_softmax)[0]
     out = Tensor.empty(q.shape,device=q.device,dtype=q.dtype)
@@ -262,16 +281,17 @@ class SelectedModel(EdgeModel):
       x = x+self.linear(h,f'{prefix}.self_attn.o_proj')
       h = self.norm(x,f'{prefix}.post_attention_layernorm',rms=True)
       if prefill:
-        assert x.shape == (1,2048,2048) and type(cache_pos) is int and cache_pos == 0
+        rows = x.shape[1]
+        assert x.shape == (1,PREFILL_ROWS,2048) and type(cache_pos) is int and cache_pos == 0
         fc1,fc2 = prefix+'.mlp.fc1',prefix+'.mlp.fc2'
         assert self.quantizer_slot == 2 and fc1+'.bias' not in self.weights and fc2+'.bias' not in self.weights
         packed,scale = self.quantize(h)
         assert self.quantizer_slot == 3 and isinstance(packed,PackedActivation)
         output_scale = self.fixed[prefix+'/3']
-        output = frozen_ops.fused_mlp(packed.value,self.packed_weights[fc1],scale,self.weight_scales[fc1+'.weight'],output_scale,2048)
+        output = frozen_ops.fused_mlp(packed.value,self.packed_weights[fc1],scale,self.weight_scales[fc1+'.weight'],output_scale,rows)
         # The fused kernel already performed original BF16/ReLU/square/slot-3 conversion.
         self.quantizer_slot += 1
-        residual = x.reshape(2048,2048).contiguous()
+        residual = x.reshape(rows,2048).contiguous()
         result = Tensor.custom_kernel(Tensor.empty(residual.shape,dtype=x.dtype,device=x.device),output,self.packed_weights[fc2],
                                       output_scale,self.weight_scales[fc2+'.weight'],residual,fxn=amd_gemm.prefill_fc2)[0]
         self.trace_counts['fused_mlp'] += 1
@@ -290,15 +310,20 @@ class SelectedModel(EdgeModel):
     logits = self._language(x,cos[:,:,step:step+1],sin[:,:,step:step+1],position)
     return logits,token.float().realize()
 
+  def allocate_expert_packs(self):
+    # Persistent packed expert K/V, allocated before any captured or cached diffusion graph binds it.
+    # Not created in __init__: the frozen prefill graph pins that method's source.
+    if getattr(self,'expert_packs',None) is None:
+      self.expert_packs = [(Tensor.empty(1,8,PROMPT_TILES+4,8,4,16,4,dtype=self.dtype).contiguous().realize(),
+                            Tensor.empty(1,8,8,PROMPT_TILES+4,4,16,4,dtype=self.dtype).contiguous().realize())
+                           for _ in range(self.config['vlm_config']['text_config']['num_hidden_layers'])]
+
   def _trajectory(self, actions, cos, sin, length, steps, offset):
     if steps != 3 or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
       raise ValueError('Selected expert requires three Euler steps and 2304 KV rows')
     before = self.trace_counts['pv'],self.trace_counts['qk']
     # The prompt KV cache is constant during diffusion: pack it once per call, not once per Euler step and layer.
-    # Not created in __init__: the frozen prefill graph pins that method's source.
-    if getattr(self,'expert_packs',None) is None:
-      self.expert_packs = [(Tensor.empty(1,8,PROMPT_TILES+4,8,4,16,4,dtype=self.dtype).contiguous().realize(),
-                            Tensor.empty(1,8,8,PROMPT_TILES+4,4,16,4,dtype=self.dtype).contiguous().realize()) for _ in self.cache]
+    self.allocate_expert_packs()
     for (pk,pv),plane in zip(self.expert_packs,self.cache,strict=True):
       Tensor(pk.uop.after(pk[:,:,:PROMPT_TILES].uop.store(_pack(plane[0]).uop))).realize()
       Tensor(pv.uop.after(pv[:,:,:,:PROMPT_TILES].uop.store(_pack(plane[1].transpose(-2,-1)).uop))).realize()

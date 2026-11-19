@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from tinygrad import Device, Tensor, TinyJit, dtypes
+from tinygrad import Device, Tensor, dtypes
 from tinygrad.engine.realize import capturing
 from tinygrad.uop.ops import Ops, UOp
 from ..frozen import ASSETS
@@ -14,7 +14,7 @@ PREFIX = 'vlm.model.visual.encoder.layers.'
 PROJECTIONS = ('self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.out_proj', 'mlp.fc1', 'mlp.fc2')
 BULK_LAYOUT = 'f052598ec86566ec63f98908ecf412b6e20e3f5cb4f5de5d47137dc02ade9fb0'
 CHECKPOINT = 'f0471a81f8a1b191eb92c12639660a7bbcf831ff379d1b0d724fba23c533785d'
-ORDERED_PROGRAMS = '6280e699d953e8809e5a48b6b6326a578d709a125829396b8e0baf42d1c6013e'
+ORDERED_PROGRAMS = 'fe6b9236df41a97ce82f817af511cd5e1e61169c030df2cf421c03b00e886a68'
 
 
 def root(t):
@@ -176,12 +176,13 @@ class PairEncoder:
   def __init__(self, weights):
     weights.check_layout()
     capture = PairCapture(weights.model, PairPrograms(Device[Device.DEFAULT].renderer))
-    self.jit = TinyJit(capture.encode_group)
-    self.jit.cnt = 1  # capture, link, and execute the first real pair
+    from ..graph_cache import CachedJit
+    self.jit = CachedJit(capture.encode_group,'vision-pair')
+    self.jit.jit.cnt = 1  # capture, link, and execute the first real pair (or load the cached graph)
 
   def __call__(self, *pairs):
     require(all(t.device == 'AMD' and t.uop.base.realized is not None for t in pairs), 'Require resident AMD camera pair inputs')
     result = self.jit(*pairs)
-    if self.jit.cnt == 2:
-      self.jit.fxn = None  # warm replay owns the linked graph; release capture-only state
+    if self.jit.jit.cnt == 2:
+      self.jit.jit.fxn = None  # warm replay owns the linked graph; release capture-only state
     return result

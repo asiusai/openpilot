@@ -17,7 +17,7 @@ def _pack(x):
   return x.reshape(batch, heads, padded_rows//16, 16, padded_width//16, 4, 4).permute(0, 1, 2, 4, 5, 3, 6).contiguous()
 
 
-def _matmul(out, a, b, shape, causal=False, scaled=False):
+def _matmul(out, a, b, *mask, shape, causal=False, scaled=False):
   batch, heads, kv_heads, rows, columns, width = shape
   padded_rows, padded_columns, padded_width = (round_up(n, 16) for n in (rows, columns, width))
   head = UOp.range(batch*heads, 0)
@@ -32,6 +32,9 @@ def _matmul(out, a, b, shape, causal=False, scaled=False):
     value = value*UOp.const(width**-.5, out.dtype)
   if causal:
     value = (n <= m).where(value, UOp.const(-math.inf, out.dtype))
+  if mask:
+    # Same rounding as storing the BF16 score, adding the FP32 key mask, and rounding again in a separate kernel.
+    value = (value.cast(dtypes.float32)+mask[0].flatten().index(n.valid(n < columns))).cast(out.dtype)
   store = out.flatten().index(((head*rows+m)*columns+n).valid((m < rows) & (n < columns))).store(value)
   schedule = Scheduler(store.end(head, m, n).sink(arg=KernelInfo()), Device[Device.DEFAULT].renderer)
   schedule.convert_loop_to_global()
