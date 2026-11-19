@@ -245,12 +245,12 @@ def test_voice_volume_preserves_comma_volume(device, expected, tmp_path, monkeyp
   np.testing.assert_allclose(daemon.get_sound_data(10), expected)
   daemon.voice.current = np.full(10, .5, dtype=np.float32)
   daemon.voice.frame = 0
-  daemon.update_alert(soundd.AudibleAlert.warningImmediate)
-  expected_siren = daemon.loaded_sounds[soundd.AudibleAlert.warningImmediate][:10] * gain
+  daemon.update_alert(soundd.AudibleAlert.warningImmediateSystem)
+  expected_siren = daemon.loaded_sounds[soundd.AudibleAlert.warningImmediateSystem][:10] * gain
   np.testing.assert_array_equal(daemon.get_sound_data(10), expected_siren)
   assert not daemon.voice.playing
   # Completing the last siren loop must not mix speech into its final buffer.
-  samples = daemon.loaded_sounds[soundd.AudibleAlert.warningImmediate]
+  samples = daemon.loaded_sounds[soundd.AudibleAlert.warningImmediateSystem]
   daemon.current_sound_frame = len(samples) - 10
   daemon.pending_stop = True
   daemon.voice.current = np.full(10, .5, dtype=np.float32)
