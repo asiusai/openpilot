@@ -458,7 +458,7 @@ def test_runtime_brightness_reaches_requested_peak():
 
 def test_status_colors_use_all_four_rgb_packages(monkeypatch):
   for camera_num in ledd.CAM_LED_STATUS_CAMERAS:
-    board = ledd.CameraLedBoard("test", camera_num=camera_num, bus_num=0)
+    board = ledd.CameraLedBoard("test", camera_num=camera_num)
     sent = []
     monkeypatch.setattr(board, "set_channels", sent.append)
     for state in (ledd.BLUE, ledd.GREEN, ledd.ORANGE, ledd.RED, ledd.DM_WARNING, ledd.OFF):
@@ -467,23 +467,41 @@ def test_status_colors_use_all_four_rgb_packages(monkeypatch):
       assert sent[-1] == rgb * 4
 
 
-@pytest.mark.parametrize('kernel_leds', [False, True])
-def test_direct_channel_writes_reach_all_rgb_outputs(monkeypatch, tmp_path, kernel_leds):
+def test_channel_writes_reach_all_rgb_outputs(monkeypatch, tmp_path):
   monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
-  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0, initialized=True, kernel_leds=kernel_leds,
+  board = ledd.CameraLedBoard("test", camera_num=2, initialized=True,
                              channel_maxima=(65535,) * 12)
-  writes = {}
-  monkeypatch.setattr(board, 'write', lambda register, value: writes.update({register: value}))
-  if kernel_leds:
-    for path in board.channel_paths:
-      path.mkdir()
-      (path / 'brightness').write_text('99')
+  for path in board.channel_paths:
+    path.mkdir()
+    (path / 'brightness').write_text('99')
   board.set_channels([255] * 12)
-  actual = ([int((path / 'brightness').read_text()) for path in board.channel_paths] if kernel_leds else
-            [writes[ledd.AW21024_RGB_BASE + i] for i in range(12)])
-  assert actual == [65535 if kernel_leds else 255] * 12
-  if not kernel_leds:
-    assert writes[ledd.AW21024_UPDATE] == 0
+  assert [int((path / 'brightness').read_text()) for path in board.channel_paths] == [65535] * 12
+
+
+@pytest.mark.parametrize('connected', [2, 3])
+def test_one_road_board_works_when_other_boards_are_missing(monkeypatch, tmp_path, connected):
+  from openpilot.common import i2c
+  from openpilot.selfdrive.v0.led_patterns import startup_channels
+  monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
+  errors, probes = [], []
+  monkeypatch.setattr(ledd, 'cloudlog_exception', errors.append)
+  monkeypatch.setattr(i2c, 'SMBus', probes.append)
+  lights = ledd.CameraLeds()
+  board = lights.boards[connected - 1]
+  for path in board.channel_paths:
+    path.mkdir()
+    (path / 'brightness').write_text('0')
+    (path / 'max_brightness').write_text('65535')
+  lights.set(ledd.BLUE, brightness=5)
+  assert [int((path / 'brightness').read_text()) for path in board.channel_paths] == [0, 0, 1285] * 4
+  assert all(other.next_retry > 0 for other in lights.boards if other is not board)
+  channels = startup_channels(1.)
+  lights.set_channels(channels)
+  expected = [max(1, round(value * 257)) if value else 0 for value in channels[connected]]
+  assert [int((path / 'brightness').read_text()) for path in board.channel_paths] == expected
+  lights.clear()
+  assert all((path / 'brightness').read_text() == '0' for path in board.channel_paths)
+  assert not errors and not probes
 
 
 def test_offroad_fault_is_red_and_engaged_fault_blinks(monkeypatch):
@@ -533,67 +551,38 @@ def test_pending_setup_is_solid_magenta_with_fault_priority(monkeypatch):
   assert ledd.led_state(sm, setup_complete=False) == ledd.RED
 
 
-def test_aw21024_initialization_preserves_ir_registers(monkeypatch):
-  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0)
-  writes = []
-  bus = SimpleNamespace(read_byte_data=lambda addr, register: 0x18)
-  def connect():
-    board.bus = bus
-    return bus
-  monkeypatch.setattr(board, 'connect', connect)
-  monkeypatch.setattr(board, 'write', lambda register, value: writes.append((register, value)))
+def test_initialization_takes_over_rgb_triggers_and_preserves_ir(monkeypatch, tmp_path):
+  monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
+  board = ledd.CameraLedBoard("test", camera_num=2)
+  for path in board.channel_paths:
+    path.mkdir()
+    (path / 'max_brightness').write_text('65535')
+    (path / 'trigger').write_text('pattern')
+  ir = tmp_path / 'asius:cam2:ir'
+  ir.mkdir()
+  (ir / 'brightness').write_text('20')
   board.set(ledd.BLUE)
-  assert writes[:24] == [pair for i in range(12) for pair in ((13 + i, 0), (0x56 + i, 255))]
-  assert writes[24:27] == [(0x49, 0), (0x6e, 255), (0, 1)]
-  registers = dict(writes)
-  assert [registers[13 + i] for i in range(12)] == [0, 0, 255] * 4
-  assert [registers[0x56 + i] for i in range(12)] == [6, 6, 180] * 4
-  assert writes[-1] == (0x49, 0)
-  assert not any(1 <= register <= 12 for register, _ in writes)
+  assert all((path / 'trigger').read_text() == 'none' for path in board.channel_paths)
+  assert [int((path / 'brightness').read_text()) for path in board.channel_paths] == [0, 0, 46260] * 4
+  assert (ir / 'brightness').read_text() == '20'
 
 
-@pytest.mark.parametrize('kernel_leds', [False, True])
-def test_dim_calibration_keeps_green_and_breath_has_fine_steps(monkeypatch, tmp_path, kernel_leds):
+def test_dim_calibration_keeps_green_and_breath_has_fine_steps(monkeypatch, tmp_path):
   from openpilot.selfdrive.v0.led_patterns import calibration_channels, startup_channels
   monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
-  board = ledd.CameraLedBoard('test', 3, 0, initialized=True, kernel_leds=kernel_leds, channel_maxima=(65535,) * 12)
-  writes = {}
-  monkeypatch.setattr(board, 'write', lambda register, value: writes.update({register: value}))
+  board = ledd.CameraLedBoard('test', 3, initialized=True, channel_maxima=(65535,) * 12)
   for path in board.channel_paths:
     path.mkdir()
     (path / 'brightness').write_text('0')
   for percent in (12.501, 12.6, 13, 14, 15, 18, 20):
     board.set_channels(calibration_channels(percent, 5)[3])
     # The second LED must retain green even at the beginning of its fade.
-    values = ([int((p / 'brightness').read_text()) for p in board.channel_paths] if kernel_leds else
-              [writes[13 + i] for i in range(12)])
+    values = [int((p / 'brightness').read_text()) for p in board.channel_paths]
     assert values[6] > 0 and values[7] > 0 and values[8] == 0
   steps = set()
   for frame in range(180):
     board.set_channels(startup_channels(frame / 60)[3])
-    steps.add(int((board.channel_paths[2] / 'brightness').read_text()) if kernel_leds else writes[15])
+    steps.add(int((board.channel_paths[2] / 'brightness').read_text()))
   assert len(steps) > 100
   board.set_channels([0] * 12)
-  assert (int((board.channel_paths[2] / 'brightness').read_text()) if kernel_leds else writes[15]) == 0
-
-
-def test_pwm_changes_do_not_rewrite_current_scale(monkeypatch):
-  board = ledd.CameraLedBoard('test', 2, 0, initialized=True)
-  writes = []
-  monkeypatch.setattr(board, 'write', lambda *args: writes.append(args))
-  board.set_channels([0, 0, 1] * 4)
-  writes.clear()
-  board.set_channels([0, 0, 1.1] * 4)
-  assert all(register not in range(0x56, 0x62) for register, _ in writes)
-  assert len(writes) == 13
-
-
-def test_aw21024_rejects_wrong_chip_before_writes(monkeypatch):
-  board = ledd.CameraLedBoard("test", camera_num=2, bus_num=0)
-  board.bus = SimpleNamespace(read_byte_data=lambda addr, register: 0)
-  monkeypatch.setattr(board, 'connect', lambda: board.bus)
-  writes = []
-  monkeypatch.setattr(board, 'write', lambda *args: writes.append(args))
-  with pytest.raises(OSError, match='AW21024'):
-    board.init()
-  assert not writes
+  assert int((board.channel_paths[2] / 'brightness').read_text()) == 0

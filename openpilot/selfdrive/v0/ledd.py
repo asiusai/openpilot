@@ -3,7 +3,7 @@ import math
 import signal
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from openpilot.selfdrive.v0.buttond import ButtonAction, DeviceButtons
@@ -17,8 +17,6 @@ STARTUP_GRACE = 30.
 OFFROAD_SLEEP_TIMEOUT = 30.
 RUNTIME_HZ = 60.
 STARTED_AT = time.monotonic()
-CAM_LED_ADDR = 0x30
-CAM_LED_BUSES = (16, 18, 20)
 CAM_LED_STATUS_CAMERAS = (2, 3)
 CAM_LED_RETRY_INTERVAL = 5.
 CAM_LED_SYSFS_ROOT = Path("/sys/class/leds")
@@ -36,16 +34,6 @@ CAM_LED_CHANNELS = (
   ("red", 2), ("green", 2), ("blue", 2),
   ("red", 3), ("green", 3), ("blue", 3),
 )
-
-AW21024_RGB_BASE = 0x0d  # BR12: physical OUT13, first RGB red output.
-AW21024_UPDATE = 0x49
-
-
-def rgb_registers(value: float) -> tuple[int, int]:
-  """Use low RGB current and the full PWM range for fractional brightness."""
-  current = max(6, math.ceil(value))
-  pwm = max(1, round(value * 255 / current)) if value else 0
-  return current, pwm
 
 Ratekeeper: Any = None
 log: Any = None
@@ -120,13 +108,9 @@ def max_brightness(state: LedState, brightness: int = 255) -> LedState:
 class CameraLedBoard:
   name: str
   camera_num: int
-  bus_num: int
-  bus: Any = None
-  kernel_leds: bool = False
   initialized: bool = False
   next_retry: float = 0.
   channel_maxima: tuple[int, ...] = ()
-  color_scales: list[int] = field(default_factory=lambda: [255] * 12)
 
   @property
   def channel_paths(self) -> list[Path]:
@@ -138,47 +122,15 @@ class CameraLedBoard:
   def kernel_leds_available(self) -> bool:
     return all((path / "brightness").exists() for path in self.channel_paths)
 
-  def connect(self):
-    if self.kernel_leds_available():
-      if self.bus is not None:
-        self.bus.close()
-        self.bus = None
-      self.kernel_leds = True
-      return None
-    if self.bus is None:
-      from openpilot.common.i2c import SMBus
-      self.bus = SMBus(self.bus_num)
-    return self.bus
-
-  def write(self, register: int, value: int) -> None:
-    self.connect().write_byte_data(CAM_LED_ADDR, register, value)
-
   def close(self) -> None:
-    if self.bus is not None:
-      self.bus.close()
-      self.bus = None
-    self.kernel_leds = False
     self.initialized = False
 
   def init(self) -> None:
-    self.connect()
-    if self.kernel_leds:
-      self.channel_maxima = tuple(int((path / "max_brightness").read_text()) for path in self.channel_paths)
-      for path in self.channel_paths:
-        trigger = path / "trigger"
-        if trigger.exists():
-          trigger.write_text("none")
-    else:
-      if self.bus.read_byte_data(CAM_LED_ADDR, 0x7f) != 0x18:
-        raise OSError("AW21024 camera LED controller not detected")
-      # Preserve IR state; initialize only the twelve RGB outputs.
-      for channel in range(12):
-        self.write(AW21024_RGB_BASE + channel, 0)
-        self.write(0x4a + 12 + channel, 255)
-      self.write(AW21024_UPDATE, 0)
-      self.write(0x6e, 255)  # RSET sets nominal full scale to 18.52 mA.
-      self.write(0x00, 1)
-      self.color_scales = [255] * 12
+    self.channel_maxima = tuple(int((path / "max_brightness").read_text()) for path in self.channel_paths)
+    for path in self.channel_paths:
+      trigger = path / "trigger"
+      if trigger.exists():
+        trigger.write_text("none")
     self.initialized = True
 
   def set_channels(self, channels: list[float]) -> None:
@@ -189,21 +141,8 @@ class CameraLedBoard:
     if not self.initialized:
       self.init()
 
-    rgb = channels
-    if self.kernel_leds:
-      for path, value, maximum in zip(self.channel_paths, rgb, self.channel_maxima, strict=True):
-        (path / "brightness").write_text(str(max(1, round(value * maximum / 255)) if value else 0))
-      return
-
-    for channel, value in enumerate(rgb):
-      current, pwm = rgb_registers(value)
-      if self.color_scales[channel] != current:
-        self.write(AW21024_RGB_BASE + channel, 0)
-        self.write(AW21024_UPDATE, 0)
-        self.write(0x4a + 12 + channel, current)
-        self.color_scales[channel] = current
-      self.write(AW21024_RGB_BASE + channel, pwm)
-    self.write(AW21024_UPDATE, 0)
+    for path, value, maximum in zip(self.channel_paths, channels, self.channel_maxima, strict=True):
+      (path / "brightness").write_text(str(max(1, round(value * maximum / 255)) if value else 0))
 
   def set(self, state: LedState) -> None:
     self.set_channels([state.red, state.green, state.blue] * 4)
@@ -212,9 +151,9 @@ class CameraLedBoard:
 class CameraLeds:
   def __init__(self) -> None:
     self.boards = [
-      CameraLedBoard("driver", camera_num=1, bus_num=CAM_LED_BUSES[0]),
-      CameraLedBoard("road", camera_num=2, bus_num=CAM_LED_BUSES[1]),
-      CameraLedBoard("wide", camera_num=3, bus_num=CAM_LED_BUSES[2]),
+      CameraLedBoard("driver", camera_num=1),
+      CameraLedBoard("road", camera_num=2),
+      CameraLedBoard("wide", camera_num=3),
     ]
     self.last_state: LedState | None = None
     self.last_channels: dict[int, list[float]] | None = None
@@ -229,6 +168,9 @@ class CameraLeds:
     any_success = False
     for board in self.boards:
       if now < board.next_retry:
+        continue
+      if not board.initialized and not board.kernel_leds_available():
+        board.next_retry = now + CAM_LED_RETRY_INTERVAL
         continue
       try:
         board.set(state if board.camera_num in CAM_LED_STATUS_CAMERAS else OFF)
@@ -253,6 +195,9 @@ class CameraLeds:
     for board in self.boards:
       channels = camera_channels.get(board.camera_num)
       if channels is None or now < board.next_retry:
+        continue
+      if not board.initialized and not board.kernel_leds_available():
+        board.next_retry = now + CAM_LED_RETRY_INTERVAL
         continue
       try:
         board.set_channels(channels)
