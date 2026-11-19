@@ -83,7 +83,8 @@ OFF = LedState("off", 0, 0, 0)
 
 WARNING_ALERT_SOUNDS = {
   "warningSoft",
-  "warningImmediate",
+  "warningImmediateSystem",
+  "warningImmediateUser",
   "prompt",
   "promptRepeat",
   "promptDistracted",
