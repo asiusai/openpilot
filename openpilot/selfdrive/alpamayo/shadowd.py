@@ -156,15 +156,21 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         if not memory_ok() or not storage_ok(root, 128*1024**2):
           raise RuntimeError('Shadow resource reserve reached')
         if child is None:
+          # Power Chestnut up only after the small model runs. Two earlier Karel launches lost USB when the Adreno
+          # model started while Chestnut was active; the cause is unconfirmed, so avoid the coincidence.
+          if not model_healthy:
+            producer.stop.wait(.05)
+            continue
           child = subprocess.Popen([str(python), '-m', 'openpilot.selfdrive.alpamayo.shadowd', str(config_path), str(root), str(handoff)],
                                    env=worker_environment(config, cache), stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
           worker_start = time.monotonic()
         if child.poll() is not None:
           raise WorkerStopped(f'Inference worker exited ({child.returncode})')
         ready = (root/'ready.json').exists()
-        if not ready and time.monotonic()-worker_start > 600:
+        # Weights (~70 s) plus the graph warmup run before ready. A cold compiler cache takes considerably longer.
+        if not ready and time.monotonic()-worker_start > 1500:
           raise WorkerStopped('Inference initialization timed out')
-        # Load weights alongside small-model startup. No slot or plan can be admitted until the model is healthy.
+        # No slot or plan can be admitted until the small model is healthy.
         if not model_healthy:
           producer.stop.wait(.05)
           continue

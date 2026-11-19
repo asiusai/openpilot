@@ -198,33 +198,36 @@ class Runtime:
 
   def prime(self, anchors, deadline_ns):
     """Encode only the two real current exposures. A cold graph may outlive its slot."""
-    import numpy as np
-    from openpilot.selfdrive.alpamayo.segments import PatchRows
-    from tinygrad import Tensor
     with self.lock:
       if self.closed:
         raise RuntimeError('Runtime is closed')
+      return self._prime(anchors, deadline_ns)
+
+  def _prime(self, anchors, deadline_ns):
+    import numpy as np
+    from openpilot.selfdrive.alpamayo.segments import PatchRows
+    from tinygrad import Tensor
+    if time.monotonic_ns() >= deadline_ns:
+      return False
+    patches,grids = self.adapter.anchor_patches(anchors)
+    pixels,layout = (patches if type(patches) is PatchRows else patches.numpy()),grids.numpy()
+    keys = self.vision.patch_keys(pixels,layout)
+    missing = self.vision.missing_indices(keys)
+    encoded = {}
+    if missing:
+      batches = self.vision_buffers.batches(layout,1)
+      positions = self.adapter.vision_positions(grids)
+      raw = np.concatenate([pixels.rows(*batches[i][:2]) if type(pixels) is PatchRows else pixels[batches[i][0]:batches[i][1]] for i in missing])
       if time.monotonic_ns() >= deadline_ns:
         return False
-      patches,grids = self.adapter.anchor_patches(anchors)
-      pixels,layout = (patches if type(patches) is PatchRows else patches.numpy()),grids.numpy()
-      keys = self.vision.patch_keys(pixels,layout)
-      missing = self.vision.missing_indices(keys)
-      encoded = {}
-      if missing:
-        batches = self.vision_buffers.batches(layout,1)
-        positions = self.adapter.vision_positions(grids)
-        raw = np.concatenate([pixels.rows(*batches[i][:2]) if type(pixels) is PatchRows else pixels[batches[i][0]:batches[i][1]] for i in missing])
-        if time.monotonic_ns() >= deadline_ns:
-          return False
-        positions = self.vision_buffers.position_buffer(layout,positions)
-        expanded = self.vision_buffers.expand(Tensor(raw,device='CPU'))
-        encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
-        self.model.synchronize()
-      if time.monotonic_ns() >= deadline_ns:
-        return False
-      self.vision.retain(keys,encoded)
-      return True
+      positions = self.vision_buffers.position_buffer(layout,positions)
+      expanded = self.vision_buffers.expand(Tensor(raw,device='CPU'))
+      encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
+      self.model.synchronize()
+    if time.monotonic_ns() >= deadline_ns:
+      return False
+    self.vision.retain(keys,encoded)
+    return True
 
   def predict(self, sample, noise=None, *, retained=()):
     with self.lock:
@@ -292,6 +295,81 @@ class Runtime:
     prediction['runtime_ms'] = metrics.runtime_ms
     return prediction
 
+  def warmup(self):
+    """Compile and capture every steady-state graph shape before live slots start.
+
+    Without this, the first turn (new verifier width), a repriming slot (different upload count) or an odd image
+    group compiles during driving and blocks the planner for tens of seconds. Synthetic inputs only shape the graphs;
+    all sample state is cleared afterwards, while compiled programs and captured graphs are kept.
+    """
+    import numpy as np
+    with self.lock:
+      if self.closed:
+        raise RuntimeError('Runtime is closed')
+      started = time.monotonic_ns()
+      rng = np.random.default_rng(0)
+      images = rng.integers(0, 256, (10,1,3,432,768), dtype=np.uint8)
+      sample = {'image_frames':images,'camera_indices':np.array([1]*5+[6]*5,dtype=np.int64),
+                'absolute_timestamps':np.tile(np.array([-2_000_000,-1_000_000,-500_000,-100_000,0],dtype=np.int64)+10_000_000,2),
+                'ego_history_xyz':np.zeros((1,20,3),dtype=np.float32),
+                'ego_history_rot':np.tile(np.eye(3,dtype=np.float32),(1,20,1,1)),'nav_text':['']}
+      def run(fresh):
+        # Replace `fresh` current images per call: the live cadence uploads 4; repriming and gaps use other counts.
+        for i in (4,9,3,8,2,7,1,6,0,5)[:fresh]:
+          images[i] = rng.integers(0, 256, images.shape[1:], dtype=np.uint8)
+        try:
+          self._predict(sample, self.noise, ())
+        except RuntimeError as exc:
+          if 'No trajectory anchor' not in str(exc):  # Random pixels need not produce a complete text.
+            raise
+      phases = {}
+      def phase(name):
+        nonlocal started_phase
+        now = time.monotonic_ns(); phases[name] = round((now-started_phase)/1e6); started_phase = now
+      started_phase = started
+      run(10)
+      phase('first_prediction')
+      # The 500 ms rolling worker primes two anchors per slot and then uploads four new images per prediction.
+      for fresh in (4,4,4):
+        run(fresh)
+      for i in range(3):
+        anchors = [(rng.integers(0, 256, (1,3,432,768), dtype=np.uint8), {'view':camera,'capture_ns':(i+1)*1_000_000_000})
+                   for camera in (1,6)]
+        if not self._prime(anchors, time.monotonic_ns()+600_000_000_000):
+          raise RuntimeError('Warmup priming failed')
+      phase('rolling_shapes')
+      decoder = self.decoder
+      generate,first_token = decoder.generate,decoder.first_token
+      seen = []
+      def first(logits):
+        seen.append(first_token(logits))
+        return seen[-1]
+      # Force the lookup path, then propose drafts of each verifier width from the observed first token.
+      decoder.generate = lambda prefill,logits,dc,ds,prompt,max_tokens=64: decoder.generate_lookup(logits,dc,ds,prompt,max_tokens)
+      decoder.first_token = first
+      filler = self.draft[0]
+      try:
+        decoder.history = [[filler]*20]
+        run(0)
+        for width in (16,32):
+          for _ in range(3):
+            decoder.history = [[seen[-1]]+[filler]*(width-2)+[self.anchor]]  # A proposal of exactly `width` tokens.
+            run(0)
+          phase(f'verifier_{width}')
+      finally:
+        decoder.generate,decoder.first_token = generate,first_token
+        self.model.synchronize()
+        decoder.history.clear()
+        decoder.statistics = {}
+        self.vision.cache.clear()
+        self.vision.keys = ()
+        self.vision.hits = self.vision.misses = 0
+        self.adapter.reset()
+        self.prefill.last_targets = self.prefill.last_prompt = None
+        self.metrics = Metrics()
+      self.startup_ms['warmup'] = (time.monotonic_ns()-started)/1e6
+      print(f"Alpamayo startup: warmup {self.startup_ms['warmup']:.0f} ms {phases}", file=sys.stderr, flush=True)
+
   def synchronize(self):
     if not self.closed:
       self.model.synchronize()
@@ -344,6 +422,13 @@ class ShadowAdapter:
 
   def prime(self, anchors, deadline_ns):
     return self.runtime.prime(anchors,deadline_ns)
+
+  def warmup(self):
+    self.runtime.warmup()
+
+  def pin_threads(self, cpus):
+    # The camera-patch pool thread already exists; threads created later inherit the caller's affinity.
+    self.runtime.adapter.worker.submit(os.sched_setaffinity, 0, cpus).result()
 
   def synchronize(self):
     self.runtime.synchronize()

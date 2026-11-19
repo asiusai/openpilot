@@ -68,6 +68,11 @@ class Decoder:
     return logits,tokens
 
   def continuation(self, context, limit):
+    # Consecutive slots usually repeat a recent text. An identical prefix aligns the draft at its true position;
+    # suffix matching alone can align a repeated token at a later occurrence and cost extra verification rounds.
+    for previous in reversed(self.history):
+      if len(previous) > len(context) and previous[:len(context)] == context:
+        return previous[len(context):len(context)+limit]
     for width in range(min(8,len(context)),0,-1):
       suffix = context[-width:]
       for previous in reversed(self.history):
@@ -87,7 +92,8 @@ class Decoder:
       proposed = []
       if self.history and remaining >= 16:
         first = self.first_token(logits) if next_token is None else next_token
-        proposed = [first]+self.continuation(generated+[first],min(64,remaining)-1)
+        # At most 32 rows per check: only two verifier widths exist, and both are compiled during warmup.
+        proposed = [first]+self.continuation(generated+[first],min(32,remaining)-1)
       # The serial block chooses its own first token. Only a possible verifier call needs it on the host.
       next_token = None
       count = ((len(proposed)+15)//16)*16
