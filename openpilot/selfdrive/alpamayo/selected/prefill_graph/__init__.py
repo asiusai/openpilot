@@ -15,8 +15,8 @@ from ..frozen import ASSETS
 from .programs import DTYPES, TARGET as TARGET, load_programs, require
 
 ASSET = Path(__file__).with_name('gfx1200.json.gz')
-SHA256 = 'f6f935fa1a1c9e78a8732e31a700f07209245e6dafebd8573ccc5dad8279d5c9'
-ORDER = 'fe67296128f53f6ab463f2f5750216b865da3da1c6ccbad0c53dae14084c9e7c'
+SHA256 = '47c35bc66940b06fa34025099495f36e36ebefad82e73e15e353a166bd880736'
+ORDER = '1cdf585ca64148ebc15d6a5db7ee8bf022e8130ec3ed44158da100dd76b372ff'
 INPUT_SHAPES = ((1, 2048, 2048), (1, 1, 2048, 128), (1, 1, 2048, 128))
 LENGTH = 'valid_prefill_draft_length'
 
