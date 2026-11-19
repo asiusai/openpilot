@@ -60,7 +60,7 @@ class TestSoundd(OpenpilotTestCase):
         if reason == 'started': sm['deviceState'].started = True
         if reason == 'stale': sm.logMonoTime['pandaStates'] = 0
         if reason == 'expired': daemon.params.remove('SoundVolumePreview')
-        if reason == 'critical': daemon.update_alert(AudibleAlert.warningImmediate)
+        if reason == 'critical': daemon.update_alert(AudibleAlert.warningImmediateSystem)
         if reason == 'pairing':
           daemon.pairing_speech.clip = np.full(10, .5, dtype=np.float32)
           daemon.pairing_speech.offset = 0
@@ -68,7 +68,7 @@ class TestSoundd(OpenpilotTestCase):
         data = daemon.get_sound_data(10)
         assert daemon.preview_frame is None
         if reason == 'pairing': np.testing.assert_allclose(data, .4)
-        elif reason == 'critical': np.testing.assert_array_equal(data, daemon.loaded_sounds[AudibleAlert.warningImmediate][:10] * .8)
+        elif reason == 'critical': np.testing.assert_array_equal(data, daemon.loaded_sounds[AudibleAlert.warningImmediateSystem][:10] * .8)
         else: assert not np.any(data)
 
   def test_check_selfdrive_timeout_alert(self, mocker):
@@ -134,7 +134,7 @@ class TestSoundd(OpenpilotTestCase):
       assert samples.dtype == np.float32
       np.testing.assert_array_equal(samples, comma.loaded_sounds[alert])
       assert np.all(samples[comma.loaded_sounds[alert] == 0] == 0)
-    for alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate, soundd.CRITICAL_MAX):
+    for alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser, soundd.CRITICAL_MAX):
       np.testing.assert_array_equal(asius.loaded_sounds[alert], comma.loaded_sounds[alert])
 
     device.return_value = 'mici'

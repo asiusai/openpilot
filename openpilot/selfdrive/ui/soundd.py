@@ -121,7 +121,7 @@ class Soundd:
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
     ret = np.zeros(frames, dtype=np.float32)
-    critical = self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
+    critical = self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser)
 
     if self.current_alert != AudibleAlert.none:
       num_loops = sound_list[self.current_alert][1]
@@ -144,7 +144,8 @@ class Soundd:
           self.pending_stop = False
           break
 
-    critical = critical or self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
+    critical = critical or self.voice_critical or self.current_alert in (
+      AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser)
     busy = critical or self.current_alert != AudibleAlert.none or self.voice.playing or self.pairing_speech.playing
     voice_volume = self.current_volume
     mixed = self.voice.mix(ret * self.current_volume, voice_volume, critical)
@@ -259,7 +260,7 @@ class Soundd:
         now = time.monotonic()
         onroad = not sm.seen['deviceState'] or sm['deviceState'].started
         state = sm['selfdriveState'] if sm.seen['selfdriveState'] and sm.valid['selfdriveState'] and now - sm.recv_time['selfdriveState'] < 1. else None
-        self.voice_critical = (self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate) or
+        self.voice_critical = (self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser) or
                                (onroad and state is not None and state.alertStatus == log.SelfdriveState.AlertStatus.critical))
         self.voice.update(state, onroad, self.voice_critical, now)
         self.pairing_speech.update(onroad, self.voice_critical, now)
