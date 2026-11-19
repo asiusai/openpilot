@@ -36,9 +36,9 @@ def locked():
 
 def capabilities() -> dict:
   return {
-    'leds': all((LEDS / f'asius:cam{cam}:{color}:{package}/brightness').is_file()
-                for cam in (2, 3) for color in ('red', 'green', 'blue') for package in (0, 2)),
-    'ir': all((LEDS / f'asius:cam{cam}:ir/brightness').is_file() for cam in (2, 3)),
+    'leds': any(all((LEDS / f'asius:cam{cam}:{color}:{package}/brightness').is_file()
+                   for color in ('red', 'green', 'blue') for package in range(4)) for cam in (2, 3)),
+    'ir': any((LEDS / f'asius:cam{cam}:ir/brightness').is_file() for cam in (2, 3)),
     'maxLedBrightness': MAX_LED, 'maxIrMa': MAX_IR_MA,
   }
 
