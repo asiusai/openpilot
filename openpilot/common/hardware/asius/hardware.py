@@ -4,6 +4,13 @@ from functools import cached_property
 from openpilot.common.hardware.base import ThermalConfig, ThermalZone
 from openpilot.common.hardware.asius.gpu import GpuUsage
 from openpilot.common.hardware.comma.hardware import HardwareComma, affine_irq
+from openpilot.common.utils import sudo_write
+
+# Karel f9ad9a96, 2026-11-19: with the small model on Adreno at 812 MHz, the internal USB hub, Chestnut and
+# onboard PCIe dropped together within ~15 s (19-40 USB disconnects per run, two supply cables).
+# At 700 and 608 MHz, 46 s runs logged none; the small model took 24.0 ms instead of 22.5 ms.
+GPU_DEVFREQ = '/sys/class/devfreq/3d00000.gpu'
+ONROAD_GPU_HZ = 700_000_000
 
 
 class HardwareAsius(HardwareComma):
@@ -42,6 +49,8 @@ class HardwareAsius(HardwareComma):
     subprocess.run(["sudo", "/usr/bin/vamos-hardware", "gpu-power-save", "on" if powersave_enabled else "off"], check=True)
     super().set_power_save(powersave_enabled)
     if not powersave_enabled:
+      sudo_write(str(ONROAD_GPU_HZ), f'{GPU_DEVFREQ}/max_freq')
+      sudo_write(str(ONROAD_GPU_HZ), f'{GPU_DEVFREQ}/userspace/set_freq')
       # Mainline CAMSS uses different IRQ names from AGNOS. Keep camera work
       # on camerad's core after the big CPUs come online.
       for action in ("ac4a000.cci", "ac4b000.cci"):
