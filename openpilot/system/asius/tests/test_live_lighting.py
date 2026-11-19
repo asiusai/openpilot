@@ -13,7 +13,7 @@ def bench(tmp_path, monkeypatch):
   monkeypatch.setattr(lights, 'ignition_state', lambda: ignition['state'])
   monkeypatch.setattr(access_policy, 'ignition_state', lambda: ignition['state'])
   for cam in (2, 3):
-    for channel in ['ir'] + [f'{color}:{package}' for color in ('red', 'green', 'blue') for package in (0, 2)]:
+    for channel in ['ir'] + [f'{color}:{package}' for color in ('red', 'green', 'blue') for package in range(4)]:
       path = lights.LEDS / f'asius:cam{cam}:{channel}/brightness'
       path.parent.mkdir(parents=True)
       path.write_text('0')
@@ -80,7 +80,23 @@ def test_invalid_or_over_limit_requests_do_not_change_output(bench, params):
   assert lights.read_state() == {}
 
 
+@pytest.mark.parametrize('connected', [2, 3])
+def test_one_road_board_supports_manual_controls(bench, connected):
+  for path in lights.LEDS.glob(f'asius:cam{5 - connected}:*/brightness'):
+    path.unlink()
+  assert lights.get_state()['capabilities']['leds']
+  assert lights.get_state()['capabilities']['ir']
+  assert call(led={'color': '#0000ff', 'brightness': 5}, irMa=20)['result']['expiresIn'] == 5
+
+
 def test_missing_road_emitters_are_reported_without_using_cam1(bench):
-  (lights.LEDS / 'asius:cam2:ir/brightness').unlink()
+  for path in lights.LEDS.glob('*/brightness'):
+    path.unlink()
+  for channel in ['ir'] + [f'{color}:{package}' for color in ('red', 'green', 'blue') for package in range(4)]:
+    path = lights.LEDS / f'asius:cam1:{channel}/brightness'
+    path.parent.mkdir()
+    path.write_text('0')
+  assert not lights.get_state()['capabilities']['leds']
   assert not lights.get_state()['capabilities']['ir']
   assert 'not available' in call(irMa=20)['error']['message']
+  assert 'not available' in call(led={'color': '#0000ff', 'brightness': 5})['error']['message']
