@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import signal
 import struct
+import sys
 import tempfile
 import time
 from typing import Protocol
@@ -170,6 +171,8 @@ def frame_layout(ref):
 
 def valid_snapshot_views(refs, context):
   views = [ref['view'] for ref in refs]
+  if context.get('early') is True:
+    return views in ([1, 6], [1, 6, 1, 6]) and type(context.get('slot_start_ns')) is int
   return views == [1]*5+[6]*5 or (views == [1, 1, 6, 6] and context.get('period_ms') == 500 and type(context.get('slot_start_ns')) is int)
 
 
@@ -193,7 +196,7 @@ def save_selection(path, selected, context):
   if len(header) > HEADER_LIMIT or size > INPUT_LIMIT or not input_storage_ok(path.parent, size):
     raise RuntimeError('Shadow input reached its RAM limit or reserve')
   temporary = path.with_suffix('.tmp')
-  if path.name != 'pending.bin' or path.exists() or temporary.exists() or (path.parent/'working.bin').exists():
+  if path.name not in ('pending.bin', 'early.bin') or path.exists() or temporary.exists() or (path.parent/'working.bin').exists():
     raise RuntimeError('Shadow input slot is occupied')
   try:
     with temporary.open('xb') as stream:
@@ -305,9 +308,8 @@ def validate_input(arrays, meta):
     raise ValueError('Navigation differs from its source metadata')
 
 
-def run_prediction(adapter, arrays, metadata, clock=time.monotonic_ns):
-  """The same synchronous inference boundary serves live input and replay."""
-  validate_input(arrays, metadata)
+def input_hashes(arrays):
+  """Canonical NPY SHA-256 of each model input."""
   hashes = {}
   for name, value in arrays.items():
     array = np.array(value[0]) if name == 'nav_text' else value
@@ -322,7 +324,16 @@ def run_prediction(adapter, arrays, metadata, clock=time.monotonic_ns):
     else:
       digest.update(array.reshape(-1).view(np.uint8))
     hashes[name] = digest.hexdigest()
-  metadata = dict(metadata, input_sha256=hashes)
+  return hashes
+
+
+def run_prediction(adapter, arrays, metadata, clock=time.monotonic_ns, *, hash_inputs=True):
+  """The same synchronous inference boundary serves live input and replay.
+
+  With hash_inputs=False the caller must add input_sha256 itself (the live worker hashes after publishing the plan).
+  """
+  validate_input(arrays, metadata)
+  metadata = dict(metadata, input_sha256=input_hashes(arrays)) if hash_inputs else dict(metadata)
   begin = clock()
   result = adapter.predict(arrays, metadata)
   adapter.synchronize()
@@ -418,6 +429,21 @@ def worker(config, directory, handoff):
       os.sched_setaffinity(0, big)
       if hasattr(adapter, 'pin_threads'):
         adapter.pin_threads(big)
+  def encode_early(path):
+    # Project and encode the predicted -0.1 s pair before its slot opens. Failures only lose the shortcut.
+    try:
+      pin_big_cores()
+      with load_selection(path) as (selected, context):
+        if segmented and hasattr(adapter, 'prime') and time.monotonic_ns() < context['slot_start_ns']:
+          views = preparer.early(selected)
+          for pair in (views[:2], views[2:]):
+            if pair:
+              adapter.prime(pair, context['slot_start_ns']+400_000_000)
+    except Exception as error:  # noqa: BLE001
+      print(f'Early encoding skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+    finally:
+      path.unlink(missing_ok=True)
+
   writer, count = PredictionWriter(), 0
   stopping = False
   def stop(*_):
@@ -436,7 +462,10 @@ def worker(config, directory, handoff):
         (handoff/'pending.bin').replace(handoff/'working.bin')
         pin_big_cores()
       except FileNotFoundError:
-        time.sleep(.005)
+        if (handoff/'early.bin').exists():
+          encode_early(handoff/'early.bin')
+        else:
+          time.sleep(.001)
         continue
       try:
         begin = time.monotonic_ns()
@@ -451,7 +480,7 @@ def worker(config, directory, handoff):
           meta['prepared_ns'] = time.monotonic_ns()
           if meta['prepared_ns'] >= context.get('slot_deadline_ns', meta['prepared_ns']+1):
             raise Unavailable('Input expired during preparation')
-          result = run_prediction(adapter, arrays, meta)
+          result = run_prediction(adapter, arrays, meta, hash_inputs=False)
           result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
           writer.check(wait=True)  # A failed previous write must stop this plan before publication.
           if stopping:
@@ -460,6 +489,8 @@ def worker(config, directory, handoff):
             temporary = handoff/'plan.tmp'
             temporary.write_text(json.dumps(packet(result), allow_nan=False))
             temporary.replace(handoff/'plan.json')
+          # Audit hashes cover the exact inputs but are not needed to publish the plan; the source mapping is still open.
+          result['input']['input_sha256'] = input_hashes(arrays)
           writer.submit(root/f'{selected.query_ns}.json', result)
           count += 1
       except (Unavailable, PromptTooLong) as error:

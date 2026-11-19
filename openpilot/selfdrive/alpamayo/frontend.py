@@ -232,6 +232,27 @@ class Preparer:
     self.sampler = sampler
     self.segmented = segmented
     self.anchors = deque(maxlen=4)
+    self.early_views = OrderedDict()  # (camera, frame_id, sof, calibration) -> projected bytes of a predicted -0.1 s exposure
+
+  def early(self, selected):
+    """Project a predicted -0.1 s pair before its slot. The slot reuses these exact bytes if it selects the same frames."""
+    if not self.segmented:
+      raise Unavailable('Early projection requires retained CPU inputs')
+    unique = list({(f.camera, f.frame_id): f for f in selected.frames}.values())  # Alternates can repeat a frame.
+    projected = {(f.camera, f.frame_id): image for (image, ref), f in zip(self.project(unique, selected.states, reuse=False)[0], unique, strict=True)}
+    refs = []
+    for frame in unique:
+      calibration, _ = required(selected.states['extrinsicsCalibration'], frame.sof_ns, STATE_LIMITS['extrinsicsCalibration'])
+      self.early_views[self.early_key(frame, calibration)] = projected[(frame.camera, frame.frame_id)]
+    for frame in selected.frames:
+      refs.append((projected[(frame.camera, frame.frame_id)], {'view': frame.camera, 'capture_ns': frame.sof_ns}))
+    while len(self.early_views) > 8:
+      self.early_views.popitem(last=False)
+    return refs
+
+  @staticmethod
+  def early_key(frame, calibration):
+    return frame.camera, frame.frame_id, frame.sof_ns, json.dumps(calibration, sort_keys=True)
 
   def prepare(self, selected, half_second_slot=None):
     from openpilot.selfdrive.alpamayo.history import ego_history
@@ -316,7 +337,11 @@ class Preparer:
       # Content identity survives the process boundary and invalidates reused
       # frame IDs, changed pixels, and changed calibration without approximation.
       key = (frame.camera, frame.pixels.shape, frame.format, hashlib.sha256(frame.pixels).digest(), json.dumps(calibration, sort_keys=True)) if reuse else len(keys)
-      if key in cache or key in missing:
+      early = None if reuse else self.early_views.get(self.early_key(frame, calibration))
+      if early is not None:
+        cache[key] = early
+        hits += 1
+      elif key in cache or key in missing:
         hits += 1
       else:
         missing[key] = frame, calibration

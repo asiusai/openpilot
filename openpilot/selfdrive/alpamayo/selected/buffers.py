@@ -12,9 +12,21 @@ class VisionBuffers:
     words = ((torch.arange(256,dtype=torch.float32)-127.5)/127.5).to(torch.bfloat16).view(torch.uint16).numpy()
     self.palette = Tensor(words,device='CPU').to(Device.DEFAULT).bitcast(dtypes.bfloat16).realize()
     self.positions = {}
+    self.expanders = {}
 
   def expand(self, pixels):
     return self.palette[pixels.to(Device.DEFAULT).cast(dtypes.int32)].contiguous().realize()
+
+  def expand_captured(self, raw):
+    """expand() through a persistent CPU buffer and a captured graph: ~8 ms instead of ~95 ms of host scheduling."""
+    if raw.shape not in self.expanders:
+      cpu = Tensor.empty(*raw.shape, dtype=dtypes.uint8, device='CPU').realize()
+      view = np.frombuffer(cpu._buffer().as_memoryview(allow_zero_copy=True), dtype=np.uint8).reshape(raw.shape)
+      self.expanders[raw.shape] = cpu, view, TinyJit(self.expand)
+    cpu, view, jit = self.expanders[raw.shape]
+    view[:] = raw
+    # The captured output buffer is reused; callers copy encoder outputs, never the expanded pixels.
+    return jit(cpu)
 
   def position_buffer(self, grids, positions):
     key = grids.tobytes()
@@ -38,22 +50,37 @@ class VisionBuffers:
     return tuple(batches)
 
 
+_ROTARY = {}
+
+
+def bf16_rotary(key, positions):
+  """BF16 cos/sin words for one position layout. Consecutive slots repeat the layout; reuse the exact same arrays."""
+  if key not in _ROTARY:
+    if len(_ROTARY) >= 16:
+      _ROTARY.pop(next(iter(_ROTARY)))
+    _ROTARY[key] = tuple(torch.from_numpy(a).to(torch.bfloat16).view(torch.uint16).numpy() for a in rotary(positions()))
+  return _ROTARY[key]
+
+
+# Metadata order after pixels: zeros, ids, prefill cos/sin, two decode cos/sin pairs, noise.
+PREFILL_ROTARY = (2, 3)
+
+
 class CompactInputs:
 
   @staticmethod
   def arrays(args, prepared, packed):
     ids, positions, delta, vision_positions = packed
     patches = prepared['tokenized_data']['pixel_values']
-    arrays = [patches if type(patches) is PatchRows else patches.numpy(), np.zeros(1, dtype=np.uint16),
-              ids.astype(np.int32), *rotary(positions)]
+    arrays = [patches if type(patches) is PatchRows else patches.numpy(), np.zeros(1, dtype=np.uint16), ids.astype(np.int32),
+              *bf16_rotary(('prefill', positions.shape, positions.tobytes()), lambda: positions)]
     for length in (args.max_tokens, args.max_tokens+64):
-      pos = np.arange(length) + ids.shape[1] + delta
-      arrays.extend(rotary(np.broadcast_to(pos, (3, 1, length))))
+      start = ids.shape[1] + delta
+      arrays.extend(bf16_rotary(('decode', length, start), lambda: np.broadcast_to(np.arange(length) + start, (3, 1, length))))
     arrays.append(np.zeros((1, 64, 2), dtype=np.float32))
     if arrays[0].dtype != np.uint8:
       raise ValueError('Expected unnormalized uint8 image patches')
-    return [torch.from_numpy(a).to(torch.bfloat16).view(torch.uint16).numpy()
-            if i not in (0, 1, 2, len(arrays)-1) else a for i, a in enumerate(arrays)]
+    return arrays
 
   @staticmethod
   def signature(args, config, prepared, packed):
@@ -68,9 +95,13 @@ class CompactInputs:
     if arrays[0].shape != self.pixels.shape or any(a.shape != old.shape for a, old in zip(arrays[1:], self.cpu, strict=True)):
       return False
     self.pixels = arrays[0]
-    for a, old in zip(arrays[1:], self.cpu, strict=True):
+    for i, (a, old) in enumerate(zip(arrays[1:], self.cpu, strict=True)):
+      if a is self.sources[i]:
+        continue  # The same memoized rotary array is already in this CPU buffer.
       destination = np.frombuffer(old._buffer().as_memoryview(allow_zero_copy=True), dtype=a.dtype).reshape(a.shape)
       np.copyto(destination, a, casting='no')
+      self.sources[i] = a
+      self.rotary_dirty |= i in PREFILL_ROTARY
     return True
 
   def __init__(self, args, config, prepared, packed, arrays=None, vision=None):
@@ -80,7 +111,10 @@ class CompactInputs:
     grids = prepared['tokenized_data']['image_grid_thw'].numpy()
     fixed_positions = vision.position_buffer(grids,vision_positions)
     self.pixels, *metadata = self.arrays(args, prepared, packed) if arrays is None else arrays
-    self.cpu = [Tensor(a, device='CPU').realize() for a in metadata]
+    # Own copies: a CPU tensor may alias its numpy source, and memoized rotary arrays must never be overwritten.
+    self.cpu = [Tensor(np.array(a, copy=True), device='CPU').realize() for a in metadata]
+    self.sources = list(metadata)
+    self.rotary_dirty, self.rotary_device = True, None
     self.uploaded_pixel_bytes = 0
     self.noise = np.frombuffer(self.cpu[-1]._buffer().as_memoryview(allow_zero_copy=True), dtype=np.float32).reshape(1, 64, 2)
     self.batches = vision.batches(grids,args.vision_batch)
@@ -94,6 +128,8 @@ class CompactInputs:
       return normalized, fixed_positions, ids.to(Device.DEFAULT).contiguous().realize(), *angles, fields[-1].to(Device.DEFAULT).contiguous().realize()
 
     self.transfer = transfer
+    # The prefill rotary tables (~1 MB) change only with the prompt layout; upload them only then.
+    self.rotary_transfer = TinyJit(lambda cos, sin: tuple(x.to(Device.DEFAULT).bitcast(dtypes.bfloat16).contiguous().realize() for x in (cos, sin)))
 
   def upload(self, noise, missing):
     ranges = [self.batches[i][:2] for i in missing]
@@ -109,4 +145,9 @@ class CompactInputs:
       offset += end-begin
     self.uploaded_pixel_bytes = dest.nbytes if rows else 0
     self.noise[:] = noise
-    return transfer(buf, *self.cpu)
+    if self.rotary_dirty or self.rotary_device is None:
+      self.rotary_device = self.rotary_transfer(*(self.cpu[i] for i in PREFILL_ROTARY))
+      self.rotary_dirty = False
+    rest = [t for i, t in enumerate(self.cpu) if i not in PREFILL_ROTARY]
+    pixels, positions, ids, dc, ds, ac, ass, actions = transfer(buf, *rest)
+    return (pixels, positions, ids, *self.rotary_device, dc, ds, ac, ass, actions)

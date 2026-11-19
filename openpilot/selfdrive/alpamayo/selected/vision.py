@@ -3,7 +3,7 @@ from collections import OrderedDict
 import hashlib
 import numpy as np
 from tinygrad import Device, Tensor, TinyJit, dtypes
-from tinygrad.uop.ops import UOp
+from tinygrad.uop.ops import Ops, UOp
 from openpilot.selfdrive.alpamayo.segments import PatchRows
 
 
@@ -20,6 +20,12 @@ class VisionCache:
         from .vision_pair import VisionWeights
         self.pair_weights = VisionWeights(model)
     self.cache,self.encoders,self.stitchers = OrderedDict(),{},OrderedDict()
+    # The frozen pair encoder writes both features into one reused base buffer. A captured copy into fresh storage
+    # costs ~3 ms; a scheduled clone() costs 30-60 ms of host work on the Dragon.
+    def copy_pair(first, second, src):
+      flat = src.reshape(2, -1)
+      return first.assign(flat[0]).realize(), second.assign(flat[1]).realize()
+    self.copy_jit = TinyJit(copy_pair)
     self.keys = ()
     self.hits = self.misses = 0
 
@@ -91,10 +97,28 @@ class VisionCache:
         chunk = group[start:start+self.group_limit]
         pairs = [view for _,p,a,b in chunk for view in (self.image_view(pixels,p,p+b-a),self.image_view(positions,a,b))]
         Tensor.realize(*pairs)
-        values = [t.clone() for t in self.encoder(pairs)(*pairs)]
-        Tensor.realize(*values)
+        outputs = self.encoder(pairs)(*pairs)
+        values = self.own(outputs)
         encoded.update(zip((item[0] for item in chunk),values,strict=True))
     return encoded
+
+  def own(self, outputs):
+    """Copy encoder outputs out of the encoder's reused storage."""
+    base = outputs[0].uop.base
+    views = [t.uop.buffer for t in outputs]
+    width = outputs[0].numel()
+    if (len(outputs) == 2 and all(t.uop.base is base and t.shape == outputs[0].shape for t in outputs) and base.op is Ops.BUFFER
+        and base.buffer.nbytes == 2*width*outputs[0].dtype.itemsize and [b.offset for b in views] == [0, width*outputs[0].dtype.itemsize]):
+      # Separate storage per image: a later stitch graph may take both features as distinct inputs.
+      targets = [Tensor(UOp.new_buffer(base.device, width, base.dtype)) for _ in outputs]
+      for t in targets:
+        t.uop.buffer.ensure_allocated()
+      # A replayed graph returns its captured buffers; the results live in the per-call targets.
+      self.copy_jit(*targets, Tensor(base))
+      return [t.reshape(outputs[0].shape) for t in targets]
+    values = [t.clone() for t in outputs]
+    Tensor.realize(*values)
+    return values
 
   def retain(self, keys, encoded):
     self.cache.update(encoded)

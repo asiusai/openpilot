@@ -9,6 +9,8 @@ import tempfile
 import time
 
 MATCH_WAIT_NS = 100_000_000
+EARLY_LEAD_NS = 160_000_000  # The -0.1 s exposures of the next slot are ready about 150-200 ms before it opens.
+EARLY_CUTOFF_NS = 40_000_000  # Later than this, early encoding could delay the slot instead of shortening it.
 ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
 
 def planner_mode():
@@ -110,6 +112,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.selfdrive.alpamayo.capture import NativeProducer, device_healthy, healthy
   from openpilot.selfdrive.alpamayo.frontend import AwaitingFrame, Store, Unavailable
   from openpilot.selfdrive.alpamayo.planner import HANDOFF_GRACE, deliverable
+  from openpilot.selfdrive.alpamayo.frontend import CAMERAS, Selection
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
   slots = FixedSlots(config.get('period_ms', 500))
   pm = None
@@ -137,6 +140,8 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   served_plan = False
   model_seen = False
   last_query, last_current = 0, {}
+  last_priors, early_slot = {}, None
+  predicted, flips, flips_until = {}, {}, 0  # Early predictions and recent +-1 frame flips of the selected priors.
   try:
     producer.start()
     with (root/'worker.log').open('xb') as log:
@@ -240,10 +245,45 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
             save_selection(handoff/'pending.bin', selected, context)
             last_query = selected.query_ns
             last_current = {f.camera: f.sof_ns for f in selected.frames}
+            if len(selected.frames) == 4:
+              last_priors = {f.camera: f.frame_id for f in selected.frames[0::2]}
+              for camera, frame_id in last_priors.items():
+                if predicted.get(camera) not in (None, frame_id) and abs(frame_id-predicted[camera]) == 1:
+                  # The query flips between two adjacent frames while small-model arrival straddles the opening.
+                  flips[camera], flips_until = predicted[camera]-frame_id, selected_ns+20_000_000_000
+              predicted = {}
           except Unavailable:
             slots.skip()
             publish()
-        producer.stop.wait(.005 if pm is not None else .02)
+        upcoming = slots.next_ns
+        now = time.monotonic_ns()
+        if (ready and model_healthy and admission is None and len(last_priors) == len(CAMERAS) and upcoming is not None and
+            early_slot != upcoming and upcoming-EARLY_LEAD_NS <= now < upcoming-EARLY_CUTOFF_NS and
+            not any((handoff/k).exists() for k in ('pending.bin', 'working.bin', 'early.bin'))):
+          # At 20 FPS the next slot's -0.1 s exposures are normally ten frames after this slot's. The slot still selects
+          # its frames with the normal rules; a matching early encoding only turns into cache hits.
+          with store.lock:
+            rings = {c: tuple(store.frames[c]) for c in CAMERAS}
+            calibration = tuple(store.states['extrinsicsCalibration'])
+          def frame(camera, frame_id):
+            return next((f for f in reversed(rings[camera]) if f.frame_id == frame_id and f.ready_ns <= now), None)
+          frames = [frame(c, last_priors[c]+10) for c in CAMERAS]
+          if now < flips_until and any(c in flips for c in CAMERAS):
+            # Also encode the adjacent candidate for flipping cameras; the GPU is otherwise idle before the opening.
+            alternates = [frame(c, last_priors[c]+10+flips[c]) if c in flips else f for c, f in zip(CAMERAS, frames)]
+            frames += alternates if all(alternates) else []
+          elif now >= flips_until:
+            flips.clear()
+          if all(frames[:2]):
+            early_slot = upcoming
+            predicted = {c: f.frame_id for c, f in zip(CAMERAS, frames)}
+            try:
+              save_selection(handoff/'early.bin', Selection(max(f.sof_ns for f in frames), now, tuple(frames),
+                                                             {'extrinsicsCalibration': calibration}, {}, {}),
+                             {'early': True, 'slot_start_ns': upcoming})
+            except (Unavailable, RuntimeError, ValueError):
+              pass  # Early encoding is optional; the slot itself is unaffected.
+        producer.stop.wait(.002 if pm is not None else .02)
   finally:
     try:
       publish()
@@ -259,8 +299,9 @@ if __name__ == '__main__':
     if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
       raise RuntimeError('Explicit shadow opt-in is required')
     os.nice(10)
-    # Warm up on the low-power cores 0-3; runtime.worker moves per-slot threads to big cores 4-5 once online.
-    os.sched_setaffinity(0, {cpu for cpu in os.sched_getaffinity(0) if cpu < 4} or os.sched_getaffinity(0))
+    # Leave cores 6-7 to camerad and modeld. The mask keeps 4-5 while they are offline; runtime.worker moves
+    # per-slot threads onto them once the onroad policy brings them online.
+    os.sched_setaffinity(0, set(range(6)))
     from openpilot.selfdrive.alpamayo.runtime import worker
     worker(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
   else:

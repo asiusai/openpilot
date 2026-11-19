@@ -119,6 +119,7 @@ class Runtime:
     self.config = config if isinstance(config,Config) else Config(**config)
     self.closed,self.backend = False,None
     self.lock = threading.Lock()
+    self.stage_sync = True
     self.metrics = Metrics()
     self.startup_ms = {}
     previous = time.monotonic_ns()
@@ -221,7 +222,7 @@ class Runtime:
       if time.monotonic_ns() >= deadline_ns:
         return False
       positions = self.vision_buffers.position_buffer(layout,positions)
-      expanded = self.vision_buffers.expand(Tensor(raw,device='CPU'))
+      expanded = self.vision_buffers.expand_captured(raw)
       encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
       self.model.synchronize()
     if time.monotonic_ns() >= deadline_ns:
@@ -247,10 +248,14 @@ class Runtime:
     metrics = Metrics()
     @contextmanager
     def timed(name):
-      self.model.synchronize()
+      # Each synchronize is a USB round trip (~1 ms) and stops host work from overlapping the GPU. Without stage_sync,
+      # stage times measure host dispatch; the trajectory download still waits for the GPU.
+      if self.stage_sync:
+        self.model.synchronize()
       begin = time.monotonic_ns()
       yield
-      self.model.synchronize()
+      if self.stage_sync:
+        self.model.synchronize()
       metrics.stages_ms[name] = (time.monotonic_ns()-begin)/1e6
     with timed('preprocess'):
       prepared,packed = self.adapter.prepare(sample)
@@ -330,7 +335,9 @@ class Runtime:
       run(10)
       phase('first_prediction')
       # The 500 ms rolling worker primes two anchors per slot and then uploads four new images per prediction.
-      for fresh in (4,4,4):
+      # With the -0.1 s pair encoded early, a matching slot uploads only its two current images. When only one camera's
+      # early frame matches, three images are new; odd counts also use the single-image encoder.
+      for fresh in (4,4,4,2,2,2,3,3,3,1,1,1):
         run(fresh)
       for i in range(3):
         anchors = [(rng.integers(0, 256, (1,3,432,768), dtype=np.uint8), {'view':camera,'capture_ns':(i+1)*1_000_000_000})
@@ -411,6 +418,7 @@ class ShadowAdapter:
     if config.initial_noise is None:
       raise ValueError('The shared shadow adapter requires an initial_noise file')
     self.runtime = Runtime(config)
+    self.runtime.stage_sync = False  # Live slots: no per-stage USB round trips; stage times record host dispatch.
     self.manifest = self.runtime.manifest
     self.startup_ms = self.runtime.startup_ms
 

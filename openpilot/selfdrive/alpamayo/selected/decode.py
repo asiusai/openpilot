@@ -2,7 +2,7 @@
 from functools import partial
 import math
 import numpy as np
-from tinygrad import Tensor, TinyJit
+from tinygrad import Tensor, TinyJit, dtypes
 from tinygrad.uop.ops import UOp
 from .policy import accept_targets, validate_draft
 from .transport import download
@@ -14,7 +14,7 @@ class Decoder:
     self.model = model
     self.draft,self.anchor = validate_draft(draft,anchor),anchor
     self.history,self.statistics = [],{}
-    self.jits,self.verifiers,self.select_jits = {},{},{}
+    self.jits,self.verifiers,self.select_jits,self.proposals = {},{},{},{}
     self.choose_jit = TinyJit(lambda logits: model.output_token_mapping[logits.reshape(-1).argmax()].float().realize())
 
   def reset(self):
@@ -54,9 +54,24 @@ class Decoder:
     step = UOp.variable('block_step',0,cos.shape[2]-count).bind(step)
     return self.jits[key](logits,cos,sin,position,step)
 
+  def proposal(self, values, device):
+    """Write a draft into a persistent CPU buffer. The verifier graph copies it to the GPU itself.
+
+    A fresh Tensor(...).to(device) per round costs 20-60 ms of host scheduling on the Dragon; this costs a memcpy.
+    """
+    count = len(values)
+    if count not in self.proposals:
+      buffer = Tensor.empty(count,dtype=dtypes.int32,device='CPU').realize()
+      self.proposals[count] = buffer,np.frombuffer(buffer._buffer().as_memoryview(allow_zero_copy=True),dtype=np.int32)
+    buffer,view = self.proposals[count]
+    view[:] = values
+    return buffer
+
   def verify(self, token_ids, cos, sin, position, step):
     model = self.model
     count = token_ids.shape[0]
+    if token_ids.device != model.cache[0].device:
+      token_ids = token_ids.to(model.cache[0].device)
     x = model.weights['vlm.model.language_model.embed_tokens.weight'][token_ids].reshape(1,count,-1)
     c,s = cos[:,:,step:step+count],sin[:,:,step:step+count]
     mask = (Tensor.arange(model.cache[0].shape[3]).reshape(1,-1) > (Tensor.arange(count)+position).reshape(-1,1)).where(-math.inf,0)
@@ -105,7 +120,7 @@ class Decoder:
         accepted = download(tokens).reshape(-1).astype(int).tolist()
         stats['serial_tokens'] += len(accepted)
       else:
-        tokens = Tensor(np.array(proposed+[proposed[-1]]*(count-len(proposed)),dtype=np.int32),device='CPU').to(logits.device).realize()
+        tokens = self.proposal(proposed+[proposed[-1]]*(count-len(proposed)),logits.device)
         pos = UOp.variable('draft_position',0,model.cache[0].shape[3]-count).bind(prompt+offset)
         step = UOp.variable('draft_step',0,dc.shape[2]-count).bind(offset)
         key = (count,dc.shape,model.cache[0].shape[3])
