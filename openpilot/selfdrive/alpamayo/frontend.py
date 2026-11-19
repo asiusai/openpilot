@@ -242,6 +242,7 @@ class Preparer:
     if free and not segmented:
       raise ValueError('Free-running inference requires retained CPU inputs')
     self.free = free
+    self.on_current = None  # Called with a complete slot's projected current pair before the rest of preparation.
     self.retained = OrderedDict()  # Free-running: (camera, frame_id, sof, calibration) -> projected bytes.
     self.period = period_ns
     # Older history images are the current exposures of earlier slots: -2, -1 and -0.5 s back.
@@ -358,6 +359,8 @@ class Preparer:
     # The six older images come directly from the anchor ring. These exposures must advance, so project their actual bytes once.
     fresh, hits = self.project(frames if complete else frames[1::2], selected.states, reuse=False)
     current_views = fresh[1::2] if complete else fresh
+    if complete and self.on_current is not None:
+      self.on_current([(image, ref) for image, ref in current_views])
     self.anchors.append((opening, [(image, dict(ref, anchor_slot_ns=opening, anchor_query_ns=query, anchor_selected_ns=selected.selected_ns))
                                   for image, ref in current_views]))
     if anchor_only:

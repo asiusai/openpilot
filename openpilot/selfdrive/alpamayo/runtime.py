@@ -430,6 +430,8 @@ def worker(config, directory, handoff):
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
+  if segmented and hasattr(adapter, 'encode_ahead'):
+    preparer.on_current = adapter.encode_ahead
   if hasattr(adapter, 'warmup'):
     adapter.warmup()  # Compile every steady-state graph shape before ready; no live slot pays a mid-drive compile.
   # Per-slot CPU work (projection, patch packing, dispatch) takes ~2.5x longer on the A55 cores 0-3.

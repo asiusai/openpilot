@@ -197,19 +197,23 @@ class Runtime:
     if not isinstance(noise,np.ndarray) or noise.shape != (1,64,2) or noise.dtype != np.float32 or not np.isfinite(noise).all():
       raise ValueError('Require finite float32 diffusion noise [1,64,2]')
 
-  def prime(self, anchors, deadline_ns):
-    """Encode only the two real current exposures. A cold graph may outlive its slot."""
+  def prime(self, anchors, deadline_ns, wait=True):
+    """Encode only the two real current exposures. A cold graph may outlive its slot.
+
+    wait=False returns once the GPU work is queued; later GPU work is ordered after it.
+    """
     with self.lock:
       if self.closed:
         raise RuntimeError('Runtime is closed')
-      return self._prime(anchors, deadline_ns)
+      return self._prime(anchors, deadline_ns, wait)
 
-  def _prime(self, anchors, deadline_ns):
+  def _prime(self, anchors, deadline_ns, wait=True):
     import numpy as np
     from openpilot.selfdrive.alpamayo.segments import PatchRows
     from tinygrad import Tensor
     if time.monotonic_ns() >= deadline_ns:
       return False
+    self.model.synchronize()  # A queued earlier prime may still read the persistent pixel upload buffer.
     patches,grids = self.adapter.anchor_patches(anchors)
     pixels,layout = (patches if type(patches) is PatchRows else patches.numpy()),grids.numpy()
     keys = self.vision.patch_keys(pixels,layout)
@@ -224,8 +228,9 @@ class Runtime:
       positions = self.vision_buffers.position_buffer(layout,positions)
       expanded = self.vision_buffers.expand_captured(raw)
       encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
-      self.model.synchronize()
-    if time.monotonic_ns() >= deadline_ns:
+      if wait:
+        self.model.synchronize()
+    if wait and time.monotonic_ns() >= deadline_ns:
       return False
     self.vision.retain(keys,encoded)
     return True
@@ -431,6 +436,10 @@ class ShadowAdapter:
 
   def prime(self, anchors, deadline_ns):
     return self.runtime.prime(anchors,deadline_ns)
+
+  def encode_ahead(self, anchors):
+    """Queue the current pair's vision encoding while the CPU prepares the rest of the input."""
+    self.runtime.prime(anchors,time.monotonic_ns()+10**12,wait=False)
 
   def warmup(self):
     self.runtime.warmup()

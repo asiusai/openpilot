@@ -9,6 +9,8 @@ from tinygrad.helpers import USE_TC, TC_OPT, round_up
 from tinygrad.renderer.llvmir import AMDLLVMRenderer
 from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
+
+PROMPT_TILES = 2304//16  # Expert attention keys: 2304 prompt rows, then 64 action rows.
 from . import amd_gemm, amd_decode, weights
 from .serial_attention import direct as serial_cache_attention
 from .serial_coordinates import cache_attention
@@ -178,17 +180,28 @@ class SelectedModel(EdgeModel):
     return frozen_ops.norm(x,self.weights[name+'.weight'],None if rms else self.weights[name+'.bias'],
                            rms,eps if eps is not None else 1e-5 if rms else 1e-6)
 
+  def expert_kv(self, k, v):
+    """Packed expert K/V: the prompt tiles were stored once per diffusion call; store only the 64 action rows."""
+    layer = self.expert_layer % len(self.cache)
+    self.expert_layer += 1
+    pk,pv = self.expert_packs[layer]
+    pk = Tensor(pk.uop.after(pk[:,:,PROMPT_TILES:].uop.store(_pack(k[:,:,PROMPT_TILES*16:]).uop)))
+    pv = Tensor(pv.uop.after(pv[:,:,:,PROMPT_TILES:].uop.store(_pack(v[:,:,PROMPT_TILES*16:].transpose(-2,-1)).uop)))
+    return pk,pv
+
   def masked_attention(self, q, k, v, mask, *, expert=False):
     batch,heads,queries,width = q.shape
     kv_heads,keys = k.shape[1:3]
     assert queries in (16,32,48,64) and mask.shape in ((keys,),(queries,keys))
+    packed_k,packed_v = self.expert_kv(k,v) if expert else (_pack(k),None)
     scores = Tensor.empty(batch,heads,queries,keys,device=q.device,dtype=q.dtype)
-    scores = Tensor.custom_kernel(scores,_pack(q),_pack(k),fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
+    scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
     scores = (scores.float()+mask).cast(q.dtype).contiguous()
     probs = Tensor.empty(batch,heads,round_up(queries,16),round_up(keys,16),device=q.device,dtype=q.dtype)
     probs = Tensor.custom_kernel(probs,scores,fxn=_softmax)[0]
     out = Tensor.empty(q.shape,device=q.device,dtype=q.dtype)
-    packed_v = _pack(v.transpose(-2,-1))
+    if not expert:
+      packed_v = _pack(v.transpose(-2,-1))
     if expert:
       assert self.trajectory_active and not self.verifying
       assert q.shape == (1,16,64,128) and keys == 2368
@@ -281,6 +294,15 @@ class SelectedModel(EdgeModel):
     if steps != 3 or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
       raise ValueError('Selected expert requires three Euler steps and 2304 KV rows')
     before = self.trace_counts['pv'],self.trace_counts['qk']
+    # The prompt KV cache is constant during diffusion: pack it once per call, not once per Euler step and layer.
+    # Not created in __init__: the frozen prefill graph pins that method's source.
+    if getattr(self,'expert_packs',None) is None:
+      self.expert_packs = [(Tensor.empty(1,8,PROMPT_TILES+4,8,4,16,4,dtype=self.dtype).contiguous().realize(),
+                            Tensor.empty(1,8,8,PROMPT_TILES+4,4,16,4,dtype=self.dtype).contiguous().realize()) for _ in self.cache]
+    for (pk,pv),plane in zip(self.expert_packs,self.cache,strict=True):
+      Tensor(pk.uop.after(pk[:,:,:PROMPT_TILES].uop.store(_pack(plane[0]).uop))).realize()
+      Tensor(pv.uop.after(pv[:,:,:,:PROMPT_TILES].uop.store(_pack(plane[1].transpose(-2,-1)).uop))).realize()
+    self.expert_layer = 0
     self.trajectory_active = True
     try:
       result = super()._trajectory(actions,cos,sin,length,steps,offset)
