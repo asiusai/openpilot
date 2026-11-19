@@ -37,22 +37,53 @@ def _hash_program(out, data, nonce):
                                UOp(Ops.SOURCE, arg=source), UOp(Ops.BINARY, arg=binary)))
 
 
-def _check_destination(target, raw):
+_ZERO_NONCE = bytes(16)
+
+
+def leaf_proofs(directory, index):
+  """Per-leaf SHA-256 (leaf || 16 zero bytes) of weights.bin, built once by a pass that also checks the file digest.
+
+  Startup then needs no CPU hashing: the GPU recomputes each proof from the uploaded bytes and the host compares.
+  """
+  directory = Path(directory)
+  weights, path, meta = directory/'weights.bin', directory/'leaf-proofs.bin', directory/'leaf-proofs.json'
+  stat = weights.stat()
+  identity = {'weights_sha256': index['sha256'], 'nbytes': index['nbytes'], 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+              'leaf': _LEAF, 'nonce': 'zero16'}
+  if path.exists() and meta.exists():
+    recorded = json.loads(meta.read_text())
+    if {k: recorded.get(k) for k in identity} == identity:
+      data = path.read_bytes()
+      if hashlib.sha256(data).hexdigest() == recorded['proofs_sha256']:
+        return data
+  digest, proofs = hashlib.sha256(), bytearray()
+  with weights.open('rb') as source:
+    while chunk := source.read(16*1024*1024):
+      digest.update(chunk)
+      view = memoryview(chunk)
+      for i in range(0, len(chunk)-len(chunk)%_LEAF, _LEAF):
+        proofs += hashlib.sha256(view[i:i+_LEAF].tobytes()+_ZERO_NONCE).digest()
+  if digest.hexdigest() != index['sha256'] or stat.st_size != index['nbytes']:
+    raise ValueError('FP8 weight content differs')
+  data = bytes(proofs)
+  for target, content in ((path, data), (meta, json.dumps(dict(identity, proofs_sha256=hashlib.sha256(data).hexdigest())).encode())):
+    temporary = target.with_suffix('.tmp')
+    temporary.write_bytes(content)
+    os.replace(temporary, target)
+  return data
+
+
+def _check_destination(target, raw, proofs):
   size = len(raw) - len(raw)%(_LEAF*_LANES)
   if size:
     if target.device.split(':')[0] != 'AMD' or Device[target.device].arch != 'gfx1200':
       raise ValueError('Weight digest kernel requires gfx1200')
-    # The expected proof stays on the host. A stale digest read cannot answer a fresh challenge.
-    nonce = os.urandom(16)
-    challenge = Tensor(nonce, device='CPU').bitcast(dtypes.uint32).to(target.device).realize()
+    # Random initial proof contents: a kernel that did not run, or a stale read, cannot match the stored proofs.
+    nonce = Tensor(_ZERO_NONCE, device='CPU').bitcast(dtypes.uint32).to(target.device).realize()
+    out = Tensor(os.urandom(size//_LEAF*32), device='CPU').bitcast(dtypes.uint32).to(target.device).contiguous().realize()
     data = Tensor(UOp.from_buffer(target.view(size, 0).ensure_allocated(), dtypes.uint32))
-    out = Tensor.empty(size//_LEAF*8, device=target.device, dtype=dtypes.uint32)
-    proof = Tensor.custom_kernel(out, data, challenge, fxn=_hash_program)[0].realize()
-    expected = bytearray()
-    for i in range(0, size, _LEAF):
-      h = hashlib.sha256(raw[i:i+_LEAF])
-      h.update(nonce)
-      expected.extend(h.digest())
+    proof = Tensor.custom_kernel(out, data, nonce, fxn=_hash_program)[0].realize()
+    expected = proofs[target.offset//_LEAF*32:(target.offset+size)//_LEAF*32]
     Device[target.device].synchronize()
     if proof._buffer().as_memoryview() != expected:
       raise ValueError(f'GPU weight upload digest differs at chunk offset {target.offset}')
@@ -60,12 +91,12 @@ def _check_destination(target, raw):
     raise ValueError(f'GPU weight upload tail differs at offset {target.offset+size}')
 
 
-def _upload_bulk(source, nbytes, expected):
+def _upload_bulk(source, nbytes, proofs):
   if nbytes <= 0 or os.fstat(source.fileno()).st_size != nbytes:
     raise ValueError('FP8 weight size differs')
   storage = Buffer(Device.DEFAULT, nbytes).ensure_allocated()
   staging = memoryview(bytearray(min(16*1024*1024, nbytes)))
-  digest, offset = hashlib.sha256(), 0
+  offset = 0
   while count := source.readinto(staging):
     if offset + count > nbytes:
       raise ValueError('FP8 weight size differs')
@@ -73,11 +104,10 @@ def _upload_bulk(source, nbytes, expected):
     target = storage.view(count, offset).ensure_allocated()
     target.copy_from(Buffer('NPY', count, opaque=raw))
     Device[target.device].synchronize()
-    _check_destination(target, raw)
-    digest.update(raw)
+    _check_destination(target, raw, proofs)
     offset += count
-  if offset != nbytes or digest.hexdigest() != expected:
-    raise ValueError('FP8 weight content differs')
+  if offset != nbytes:
+    raise ValueError('FP8 weight size differs')
   return storage
 
 
@@ -99,8 +129,9 @@ def load_bulk(model, checkpoint, directory):
       if tensor.reshape(-1).bitcast(dtypes.uint8).numpy().tobytes() != source.read(record['nbytes']):
         raise ValueError(f'Target FP8 conversion/packing differs: {kind}')
   del value, scale
+  proofs = leaf_proofs(directory, index)
   with (directory/'weights.bin').open('rb') as source:
-    storage = _upload_bulk(source, index['nbytes'], index['sha256'])
+    storage = _upload_bulk(source, index['nbytes'], proofs)
   for record in index['records']:
     kind = record['kind']
     dtype = {'scale':dtypes.float32,'fp8':dtypes.fp8e4m3,'bf16':dtypes.bfloat16}[kind]

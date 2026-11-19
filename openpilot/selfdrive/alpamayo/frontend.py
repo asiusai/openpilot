@@ -144,7 +144,8 @@ class Store:
       while rows and (len(rows) > self.state_limit or rows[0].stamp < received-horizon):
         rows.pop(0)
 
-  def select(self, now, last_query=0, last_current=None, *, half_second_slot=None, cached=None, cached_offsets=(0, 1, 2)):
+  def select(self, now, last_query=0, last_current=None, *, half_second_slot=None, cached=None, cached_offsets=(0, 1, 2),
+             max_age_ns=250_000_000):
     """cached: {camera: frame IDs the worker already holds}. For the listed history offsets, prefer the newest held frame
     inside the same causal window, so free-running inference re-encodes as few images as possible."""
     with self.lock:
@@ -160,7 +161,7 @@ class Store:
       raise AwaitingFrame('No exact small-model frame match')
     current, model = match
     query = current.sof_ns
-    if query <= last_query or not 0 <= now-query <= 250_000_000:
+    if query <= last_query or not 0 <= now-query <= max_age_ns:
       raise AwaitingFrame('No fresh query')
     if half_second_slot is not None and not (query <= half_second_slot <= now and half_second_slot-query <= FRAME_TOLERANCE_NS):
       raise AwaitingFrame('No fresh half-second anchor')
@@ -247,6 +248,7 @@ class Preparer:
     self.lags = tuple(-offset//period_ns for offset in OFFSETS_NS[:3])
     self.anchors = deque(maxlen=self.lags[0])
     self.early_views = OrderedDict()  # (camera, frame_id, sof, calibration) -> projected bytes of a predicted -0.1 s exposure
+    self.early_lock = threading.Lock()  # early() runs on the worker's early-encoding thread
 
   def free_images(self, selected):
     """Free-running: reuse held projections; project only frames that arrived with pixels."""
@@ -280,11 +282,13 @@ class Preparer:
     refs = []
     for frame in unique:
       calibration, _ = required(selected.states['extrinsicsCalibration'], frame.sof_ns, STATE_LIMITS['extrinsicsCalibration'])
-      self.early_views[self.early_key(frame, calibration)] = projected[(frame.camera, frame.frame_id)]
+      with self.early_lock:
+        self.early_views[self.early_key(frame, calibration)] = projected[(frame.camera, frame.frame_id)]
     for frame in selected.frames:
       refs.append((projected[(frame.camera, frame.frame_id)], {'view': frame.camera, 'capture_ns': frame.sof_ns}))
-    while len(self.early_views) > 8:
-      self.early_views.popitem(last=False)
+    with self.early_lock:
+      while len(self.early_views) > 8:
+        self.early_views.popitem(last=False)
     return refs
 
   @staticmethod
@@ -326,7 +330,9 @@ class Preparer:
   def rolling_images(self, selected, opening, *, anchor_only=False):
     """Only retain owned, calibrated pixels. The worker unmaps the input after each slot."""
     query, frames = selected.query_ns, selected.frames
-    if not (len(frames) == 4 and opening <= selected.selected_ns < opening+self.period and
+    # A superseded slot is anchored after newer slots opened; its frames still carry their own capture times.
+    window = self.period*(4 if anchor_only else 1)
+    if not (len(frames) == 4 and opening <= selected.selected_ns < opening+window and
             0 <= opening-query <= FRAME_TOLERANCE_NS and frames[-1].sof_ns == query):
       raise Unavailable('Front query is outside its slot')
     reason = 'Priming front-camera anchors'
@@ -376,7 +382,8 @@ class Preparer:
       # Content identity survives the process boundary and invalidates reused
       # frame IDs, changed pixels, and changed calibration without approximation.
       key = (frame.camera, frame.pixels.shape, frame.format, hashlib.sha256(frame.pixels).digest(), json.dumps(calibration, sort_keys=True)) if reuse else len(keys)
-      early = None if reuse else self.early_views.get(self.early_key(frame, calibration))
+      with self.early_lock:
+        early = None if reuse else self.early_views.get(self.early_key(frame, calibration))
       if early is not None:
         cache[key] = early
         hits += 1

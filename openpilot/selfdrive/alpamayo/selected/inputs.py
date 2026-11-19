@@ -4,6 +4,7 @@
 """Exact selected CPU inputs, with bounded per-adapter caches."""
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import ctypes
 from functools import partial
 from types import SimpleNamespace
@@ -59,6 +60,8 @@ class SelectedInputs(InputAdapter):
       self.fresh_kernel = pack_fresh
     # Process one camera on the calling thread. Propagate the runtime's Torch thread count to the other camera.
     self.worker = ThreadPoolExecutor(max_workers=1,initializer=torch.init_num_threads)
+    # The live worker patches early camera pairs on a second thread; each camera's resize cache has one writer at a time.
+    self.camera_locks = {camera:threading.Lock() for camera in self.resize_cache}
 
   def reset(self):
     for cache in self.resize_cache.values():
@@ -72,6 +75,10 @@ class SelectedInputs(InputAdapter):
     self.reset()
 
   def camera_patches(self, camera, entries, owned):
+    with self.camera_locks[camera]:
+      return self._camera_patches(camera, entries, owned)
+
+  def _camera_patches(self, camera, entries, owned):
     cache = self.resize_cache[camera]
     patches = []
     for frame,stamp in entries:

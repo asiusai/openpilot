@@ -3,25 +3,23 @@
 The small driving model runs by default. Shadow mode saves GPU predictions without changing driving actions.
 Planner mode lets modeld select GPU actions at its regular cadence. This mode is under bench evaluation. Vehicle control remains unqualified.
 
-Setting `ALPAMAYO_CONFIG` selects the 500 ms planner unless `ALPAMAYO_SHADOW=1` or `ALPAMAYO_PLANNER=0` is set.
+Setting `ALPAMAYO_CONFIG` selects the planner (period from the configuration) unless `ALPAMAYO_SHADOW=1` or `ALPAMAYO_PLANNER=0` is set.
 The file must contain a selected-model configuration. With no configuration, the existing openpilot model selection applies.
-Planner mode reserves Chestnut for Alpamayo and keeps the small model running for perception and immediate fallback.
+Planner mode reserves Chestnut for Alpamayo. The small model keeps running for camera odometry and perception only.
+In planner mode the driving action comes only from Alpamayo plans; the small model's action is never used.
 The manager starts the GPU worker onroad when Chestnut enumerates at 5 Gbps and the device is healthy. Weights can load alongside modeld startup.
 Input admission still requires a healthy local model. The first five completed predictions are startup samples.
-Two consecutive timely plans are required before modeld can use a GPU action. Age the plan from camera capture before computing the requested action.
-When eligible, Alpamayo supplies the complete model action. Its planned speed must agree with measured vehicle speed; curvature and acceleration must stay within physical limits.
-Driver braking or stock emergency braking invalidates GPU selection. Normal openpilot engagement, vehicle-specific controls, radar and Panda remain authoritative downstream.
-An absent, expired, invalid, or rejected plan leaves the current small-model action in place. An explicit worker invalidation clears the plan.
-An already active planner can use one isolated overrun published less than one 20 Hz model frame (50 ms) late.
-It still counts as a missed 500 ms deadline. The plan must be newer and fresh from capture.
-Repeated overruns, stale delivery or a missed slot return control to the small model. Two consecutive on-time plans are required to resume.
-The scheduler briefly waits for a nearly finished worker, then admits only current input or skips the slot. A stalled worker restarts with fresh history.
-When the matching camera and modeld message arrive separately, the scheduler can wait up to 100 ms from the slot opening. The 500 ms deadline stays fixed.
-`modelV2.alpamayoQueryMonoTime` identifies the selected plan; zero means the local action was used. `localAction` records the independent small-model action in planner mode.
-The logged `alpamayoPlan` contains the GPU path. `modelV2.position` still describes the small model. Radar, longitudinal limits, and Panda safety keep their usual roles.
+A plan is usable when it was ready within 500 ms of its camera query, and it drives while that query is under 1 s old.
+Two consecutive plans with queries at most 600 ms apart are required before the first use. Late, stale, repeated or invalid packets are ignored.
+modeld ages the plan from camera capture before computing the requested action. Its planned speed must agree with measured vehicle speed within 2 m/s;
+curvature and acceleration must stay within physical limits. Low speeds, stops and starts use the plan.
+Without a usable plan, modeld holds the last Alpamayo curvature with non-positive acceleration and leaves
+`modelV2.alpamayoQueryMonoTime` at zero. selfdrived then raises `alpamayoUnavailable`: no entry, or soft disable when engaged.
+Normal openpilot engagement, vehicle-specific controls, radar and Panda safety remain authoritative downstream.
+`modelV2.alpamayoQueryMonoTime` identifies the plan that produced the action. `localAction` records the independent small-model action.
+The logged `alpamayoPlan` contains the GPU path. `modelV2.position` still describes the small model.
 
 `PlanSelector.candidate_action(now, v_ego, lat_delay, long_delay)` derives steering and acceleration from Alpamayo alone for live selection and replay.
-The small model stays running for camera odometry, perception and immediate fallback. Its action does not vote on an eligible Alpamayo plan.
 
 The default runtime uses original BF16 weights, greedy reasoning, ten Euler steps, and a fixed diffusion-noise file.
 It retains all five images per front camera: `(-2, -1, -0.5, -0.1, 0)` seconds.
@@ -130,7 +128,7 @@ A comparison command returns failure if numerical or performance limits fail.
 ## Live configuration
 
 Configure `ALPAMAYO_CONFIG` in the manager environment before starting openpilot. Keep `ALPAMAYO_SHADOW=1` for capture without selecting GPU actions.
-For planner evaluation, unset the shadow flag. Without an available GPU, modeld continues running the local small model.
+For planner evaluation, unset the shadow flag. Without Alpamayo plans, selfdrived blocks engagement (`alpamayoUnavailable`).
 With Alpamayo disabled, `DISABLE_CHESTNUT=0` restores the existing large driving-model selection.
 
 The private JSON configuration contains:
@@ -139,7 +137,7 @@ The private JSON configuration contains:
 - `tinygrad`: isolated tinygrad checkout path.
 - `output`: existing output directory, separate from route recordings.
 - `cache`: absolute existing writable persistent cache directory, separate from route recordings and `output`.
-- `period_ms`: fixed live slot period; default `500` for the initial 2 Hz shadow car test. Accepted values are `100`, `250`, and `500`.
+- `period_ms`: live slot period; `250` for the car test, `500` for 2 Hz. Accepted values are `0` (free running), `250`, and `500`.
 - `retained_cpu_inputs`: optional boolean, default `false`. The selected 500 ms worker can retain immutable calibrated images and byte patches.
 - `geometry`: the qualified source-camera geometry object described below.
 - `inference`: `variant` defaults to `default`, with `checkpoint`, `initial_noise`, and optional `cache_vision`. The selected fields are shown below.
@@ -209,16 +207,18 @@ Model guidance is only maneuver, direction, roundabout exit and distance, for ex
 An unrecognized maneuver sends no guidance. Full road names and sign text remain in saved navigation metadata.
 Disabled, replaced, loading, stale, and last-known-position routes are rejected.
 
-The initial car-test cadence is one attempt every 500 ms. Slots align to the monotonic clock once the model worker is ready.
-Each slot admits at most one snapshot. Planner mode allows one local-model frame for a previous worker call to finish at the slot boundary.
-Skip slots that remain busy or lack causal inputs. Never replay a missed slot. The 500 ms benchmark deadline does not include the grace period.
-`250` ms remains an unqualified diagnostic option. `100` ms / 10 Hz is a later phase after the initial car test.
-The input camera rate and requested slot rate do not establish achieved output throughput; actual completion times and missed slots determine that rate.
-The first five completed outputs are marked startup; graph compilation can overrun multiple slots. Later overruns remain visible in deadline results.
-At 500 ms, the worker retains the calibrated current pair from four consecutive slots. A gap restarts that history.
-For each front camera it reuses the actual current exposures from four, two, and one slot ago, with their original timestamps and calibration.
-Selected inference encodes both current anchor images during each priming slot. Late priming or a lost historical feature restarts the two-second history.
-With distinct images, the first complete prediction and each following prediction encode four new images. Priming produces no driving action.
+The car-test cadence is a 250 ms slot grid (`period_ms: 250`); 500 ms remains available. Slots align to the monotonic clock.
+Every slot keeps its calibrated camera pair in the worker's history ring, because later queries reuse the pairs from
+two, four and eight slots ago (-0.5, -1 and -2 s). Each slot is predicted or, when late, only anchored:
+- The supervisor selects each slot as soon as it opens and queues it (one input may wait while the worker runs).
+- The worker predicts a slot it picks up within 100 ms of its opening (`START_LATENESS_NS`); a later one only encodes its pair.
+- A slot superseded before it was queued becomes a backlog anchor, served before the newest slot.
+- The supervisor hands the next slot's predicted -0.1 s pair to the worker 160 to 20 ms before the opening. A worker thread
+  projects and patches it on the CPU; the main thread queues its GPU encode between predictions.
+- Audit hashes and the prediction record are written on a log thread, which then releases the input mapping.
+Never replay a missed slot. Plans are judged by query-to-ready latency (at most 500 ms), not by the slot deadline.
+The first five completed outputs are marked startup. A history gap restarts the two-second history (eight slots at 250 ms).
+With distinct images, each prediction encodes four new images: the current pair and the -0.1 s pair.
 Other cadences select all five exposures from capture timestamps. Feature reuse always depends on actual image content.
 
 The supervisor monitors small-model health, temperatures, memory, and storage while inference runs in its isolated child.

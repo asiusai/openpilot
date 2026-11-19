@@ -321,8 +321,8 @@ def main(demo=False):
   pm = PubMaster(pub_socks)
   planner = None
   if use_alpamayo:
-    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_period
-    planner = PlanSelector(configured_period())
+    from openpilot.selfdrive.alpamayo.planner import PlanSelector
+    planner = PlanSelector()
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
                   "carControl", "controlsState", "lateralDelay"] + (['alpamayoPlan'] if planner is not None else []),
                  frequency=ModelConstants.MODEL_RUN_FREQ)
@@ -391,11 +391,8 @@ def main(demo=False):
       meta_extra = meta_main
 
     sm.update(0)
-    if planner is not None and sm.updated['alpamayoPlan']:
-      if sm.valid['alpamayoPlan']:
-        planner.receive(sm['alpamayoPlan'], time.monotonic_ns(), sm.logMonoTime['alpamayoPlan'])
-      else:
-        planner.reject()
+    if planner is not None and sm.updated['alpamayoPlan'] and sm.valid['alpamayoPlan']:
+      planner.receive(sm['alpamayoPlan'], time.monotonic_ns(), sm.logMonoTime['alpamayoPlan'])
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
@@ -473,15 +470,11 @@ def main(demo=False):
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
       modelv2_send.modelV2.big = model.chestnut
       if planner is not None:
-        # Keep the local model recurrent state and perception live, even while the GPU supplies actions.
+        # The local model keeps perception and odometry live; the action always comes from Alpamayo (planner.apply).
+        # A local frame drop or invalid local output does not affect the GPU plan. selfdrived handles car-state faults.
         m = modelv2_send.modelV2
         m.localAction = action
-        now = time.monotonic_ns()
-        if (modelv2_send.valid and sm.all_checks(['carState', 'extrinsicsCalibration', 'deviceState']) and not vipc_dropped_frames
-            and not sm['carState'].brakePressed and not sm['carState'].stockAeb):
-          planner.apply(m, now, v_ego, lat_delay+action_delay, long_delay+action_delay)
-        else:
-          planner.reject()
+        planner.apply(m, time.monotonic_ns(), v_ego, lat_delay+action_delay, long_delay+action_delay)
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]

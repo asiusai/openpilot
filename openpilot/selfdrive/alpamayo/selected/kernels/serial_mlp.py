@@ -30,8 +30,9 @@ def pack_weights(model):
           or scale.dtype != dtypes.float32 or scale.numel() != 1 or scale.device != w.device or name+'.bias' in model.weights):
         raise ValueError(f'Unsupported W4 projection: {name}')
       out = Tensor.empty(_words(n,k),device=w.device,dtype=dtypes.uint32)
-      result[name] = Tensor.custom_kernel(out,w,fxn=partial(_program,kind='pack',n=n,k=k))[0].realize()
-      model.synchronize()
+      result[name] = Tensor.custom_kernel(out,w,fxn=partial(_program,kind='pack',n=n,k=k))[0]
+  Tensor.realize(*result.values())
+  model.synchronize()
   return result
 
 

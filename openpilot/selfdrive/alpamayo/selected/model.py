@@ -7,6 +7,7 @@ from pathlib import Path
 from tinygrad import Device, Tensor, TinyJit, dtypes
 from tinygrad.helpers import USE_TC, TC_OPT, round_up
 from tinygrad.renderer.llvmir import AMDLLVMRenderer
+from tinygrad.uop.ops import UOp
 from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 
@@ -51,23 +52,33 @@ class SelectedModel(EdgeModel):
     mark('bf16_pack')
     self.vocabulary_size = weights.reduce_head(self)
     mark('reduce_head')
-    self.expert_weights = set()
-    for name,value in list(self.weights.items()):
-      if name.startswith('expert.') and value.dtype == dtypes.fp8e4m3:
-        self.weights[name] = amd_gemm.unpack(amd_gemm.pack(value).realize())
-        self.expert_weights.add(name.removesuffix('.weight'))
-    self.packed_weights = {name[:-7]:amd_gemm.pack(value).realize() for name,value in self.weights.items()
+    # One schedule for all packs: per-tensor realizes cost ~20 ms of host scheduling each on the Dragon.
+    expert = {name:amd_gemm.pack(value) for name,value in self.weights.items()
+              if name.startswith('expert.') and value.dtype == dtypes.fp8e4m3}
+    self.packed_weights = {name[:-7]:amd_gemm.pack(value) for name,value in self.weights.items()
                            if name.startswith('vlm.model.language_model.layers.') and name.endswith('.weight')
                            and ('.mlp.' in name or '.self_attn.' in name) and value.dtype == dtypes.fp8e4m3}
+    Tensor.realize(*expert.values(),*self.packed_weights.values())
+    self.expert_weights = set()
+    for name,packed in expert.items():
+      self.weights[name] = amd_gemm.unpack(packed)
+      self.expert_weights.add(name.removesuffix('.weight'))
     mark('expert_and_language_pack')
     expected = {f'vlm.model.language_model.layers.{i}/{j}' for i in range(28) for j in range(4)}
     if set(fixed_scales) != expected or not all(math.isfinite(v) and v > 0 for v in fixed_scales.values()):
       raise ValueError('Require all 112 positive finite fixed language scales')
     if self.config['vlm_config']['text_config']['num_hidden_layers'] != 28:
       raise ValueError('Unsupported selected model depth')
-    self.fixed = {key:Tensor([float(value)],dtype=dtypes.float32).reshape(()).realize() for key,value in fixed_scales.items()}
-    self.projector_weights = {name:amd_gemm.unpack(amd_gemm.pack(self.weights[name+'.weight']).realize())
-                              for name in ('vlm.model.projector.linear_fc1','vlm.model.projector.linear_fc2')}
+    # One upload for the 112 fixed scales; each scale is an independent 4-byte view of it.
+    keys = sorted(fixed_scales)
+    scales = Tensor([float(fixed_scales[k]) for k in keys],dtype=dtypes.float32).realize()
+    base = scales.uop.base.buffer
+    self.fixed = {key:Tensor(UOp.from_buffer(base.view(4,4*i,).ensure_allocated(),dtypes.float32)).reshape(())
+                  for i,key in enumerate(keys)}
+    self._fixed_storage = scales
+    projector = {name:amd_gemm.pack(self.weights[name+'.weight']) for name in ('vlm.model.projector.linear_fc1','vlm.model.projector.linear_fc2')}
+    Tensor.realize(*projector.values())
+    self.projector_weights = {name:amd_gemm.unpack(packed) for name,packed in projector.items()}
     mark('projector')
     self.w4_weights = serial_mlp.pack_weights(self)
     mark('w4_pack')

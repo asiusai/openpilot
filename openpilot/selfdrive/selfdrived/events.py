@@ -412,6 +412,11 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.PERMANENT: NormalPermanentAlert("Big Model Failed ", "Restart the car to retry,\nsmall model is still available", duration=20.),
   },
 
+  EventName.alpamayoUnavailable: {
+    ET.NO_ENTRY: NoEntryAlert("Alpamayo Plan Unavailable"),
+    ET.SOFT_DISABLE: soft_disable_alert("Alpamayo Plan Unavailable"),
+  },
+
   EventName.lateralManeuver: {
     ET.WARNING: longitudinal_maneuver_alert,
     ET.PERMANENT: NormalPermanentAlert("Lateral Maneuver Mode"),

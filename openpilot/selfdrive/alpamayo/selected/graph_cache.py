@@ -1,8 +1,8 @@
 """Persist captured TinyJit graphs so restarts skip graph scheduling.
 
-A capture records the compiled program sequence (after code generation, before command building). Each buffer is stored
-as an owner: a named persistent runtime buffer, a JIT output, fresh memory-planner scratch, or a small constant. Loading
-rebinds the owners to the live runtime and only builds the device command program. Entries are keyed by graph name,
+A capture records the compiled command linear (after code generation and command building, before linking). Each buffer
+is stored as an owner: a named persistent runtime buffer, a JIT output, fresh scratch or host command memory, or a small
+constant. Loading rebinds the owners to the live runtime; linking on the first call resolves the addresses. Entries are keyed by graph name,
 the selected sources, the checkpoint and the compiler; any mismatch or unresolved owner falls back to a normal capture.
 """
 import hashlib
@@ -19,7 +19,7 @@ import tinygrad.engine.realize as realize
 from tinygrad.engine.jit import CapturedJit, TinyJit, _TinyJit, _prepare_jit_inputs
 from tinygrad.uop.ops import Ops, UOp
 
-SCHEMA = 1
+SCHEMA = 2
 CONSTANT_LIMIT = 1 << 20  # unnamed held buffers above this size must be registered runtime state
 _ROOTS: dict = {}
 _DIRECTORY: Path | None = None
@@ -35,8 +35,9 @@ def configure(directory, roots, key_parts):
   digest = hashlib.sha256()
   for part in key_parts:
     digest.update(repr(part).encode())
+  # Graph construction code: the selected runtime package plus the shared model and attention modules.
   sources = Path(__file__).resolve().parents[1]
-  for path in sorted(sources.rglob('*.py')):
+  for path in sorted([*sources.joinpath('selected').rglob('*.py'), sources/'model.py', sources/'amd_attention.py']):
     digest.update(str(path.relative_to(sources)).encode())
     digest.update(path.read_bytes())
   _KEY = digest.hexdigest()[:24]
@@ -126,10 +127,28 @@ def _ret_buffers(ret, out):
   return out
 
 
-def save(name, lowered, ret, names, info):
+def _written(programs):
+  """Base buffers written by the program calls of a code-generated linear."""
+  out = set()
+  for call in programs.src:
+    c = call.src[0] if call.op is Ops.AFTER else call
+    if c.op is Ops.CALL and c.src and c.src[0].op is Ops.PROGRAM:
+      for i in c.src[0].arg.outs:
+        arg = c.src[1+i]
+        out.add(arg.base if arg.op is not Ops.BUFFER else arg)
+  return out
+
+
+def save(name, lowered, ret, names, info, programs=None):
   registry = _registry()
   ret = _strip(ret)
   outputs = _ret_buffers(ret, {})
+  if programs is not None:
+    written = _written(programs)
+    unwritten = [u for u in outputs if u not in registry and u not in written]
+    if unwritten:
+      # A returned buffer the graph does not write is persistent state; a fresh allocation would lose its contents.
+      raise ValueError(f'{len(unwritten)} returned buffer(s) not written by the graph')
   arenas = {u.src[0] for call in lowered.src for u in call.toposort() if u.op is Ops.SHRINK and u.src[0].op is Ops.BUFFER}
   owners = {'path': 0, 'out': 0, 'new': 0, 'data': 0}
 
@@ -143,7 +162,7 @@ def save(name, lowered, ret, names, info):
       if obj in outputs:
         owners['out'] += 1
         return ('out', outputs[obj], obj.device, obj.max_numel(), obj.dtype)
-      if obj in arenas or not obj.arg.buffer.is_allocated():
+      if obj in arenas or obj.device == 'CPU' or not obj.arg.buffer.is_allocated():  # link writes host command memory
         owners['new'] += 1
         return ('new', obj.device, obj.max_numel(), obj.dtype)
       nbytes = obj.max_numel() * obj.dtype.itemsize
@@ -217,8 +236,7 @@ class CachedJit:
     input_uops, var_vals, live_names, live_info = _prepare_jit_inputs(args, kwargs)
     if live_names != names or live_info != info:
       raise ValueError('graph cache input signature differs')
-    compiled = realize.compile_linear(lowered, beam=0, input_uops=input_uops, cache=False)
-    jit = _TinyJit(None, captured=CapturedJit(ret, compiled, names, info))
+    jit = _TinyJit(None, captured=CapturedJit(ret, lowered, names, info))
     STATS['loaded'] += 1
     STATS['load_ms'] += (time.monotonic()-started)*1e3
     return jit
@@ -240,9 +258,11 @@ class CachedJit:
       return self.jit(*args, **kwargs)
     recorded = []
     def record(linear, beam=None, validate=False, input_uops=None, profile=None, cache=False):
-      lowered = realize.lower_and_compile(linear)
-      recorded.append(lowered)
-      return realize.hcq_compile(lowered, input_uops, bool(realize.PROFILE or realize.DEBUG >= 2) if profile is None else profile, cache=cache)
+      programs = realize.lower_and_compile(linear)
+      compiled = realize.hcq_compile(programs, input_uops, bool(realize.PROFILE or realize.DEBUG >= 2) if profile is None else profile,
+                                     cache=cache)
+      recorded.append((compiled, programs))
+      return compiled
     tinyjit.compile_linear = record
     try:
       ret = self.jit(*args, **kwargs)
@@ -251,7 +271,8 @@ class CachedJit:
     captured = self.jit.captured
     if captured is not None and recorded:
       try:
-        save(self.name, max(recorded, key=lambda l: len(l.src)), captured.ret, captured.expected_names, captured.expected_input_info)
+        compiled, programs = max(recorded, key=lambda r: len(r[1].src))
+        save(self.name, compiled, captured.ret, captured.expected_names, captured.expected_input_info, programs)
         STATS['captured'] += 1
       except Exception as exc:  # noqa: BLE001 - an unsupported graph still runs; it just is not persisted
         print(f'graph cache: {self.name} not saved ({type(exc).__name__}: {exc})', file=sys.stderr, flush=True)

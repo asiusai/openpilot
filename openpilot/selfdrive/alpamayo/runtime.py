@@ -1,4 +1,5 @@
 """Inference contract, process-boundary snapshots, and durable shadow output."""
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
@@ -12,6 +13,7 @@ import signal
 import struct
 import sys
 import tempfile
+import threading
 import time
 from typing import Protocol
 
@@ -140,15 +142,24 @@ class PredictionWriter:
       self.pending.result()
       self.pending = None
 
-  def submit(self, path, result):
+  def submit(self, path, result, finish=None, release=None):
+    """Serialize and write on the log thread. `finish(result)` (audit hashes) runs there first; `release()` always runs last."""
     self.check(wait=True)
-    raw = json_bytes(result)
-    if self.written+len(raw) > 256*1024**2:
-      raise RuntimeError('Shadow session reached its 256 MiB prediction limit')
-    if not memory_ok(len(raw)) or not storage_ok(path.parent, len(raw)):
-      raise RuntimeError('Shadow prediction reached its memory or disk reserve')
-    self.pending = self.pool.submit(atomic_write, path, raw)
-    self.written += len(raw)
+    def task():
+      try:
+        if finish is not None:
+          finish(result)
+        raw = json_bytes(result)
+        if self.written+len(raw) > 256*1024**2:
+          raise RuntimeError('Shadow session reached its 256 MiB prediction limit')
+        if not memory_ok(len(raw)) or not storage_ok(path.parent, len(raw)):
+          raise RuntimeError('Shadow prediction reached its memory or disk reserve')
+        atomic_write(path, raw)
+        self.written += len(raw)
+      finally:
+        if release is not None:
+          release()
+    self.pending = self.pool.submit(task)
 
   def close(self):
     self.pool.shutdown(wait=True)
@@ -203,7 +214,7 @@ def save_selection(path, selected, context, held=None):
   if len(header) > HEADER_LIMIT or size > INPUT_LIMIT or not input_storage_ok(path.parent, size):
     raise RuntimeError('Shadow input reached its RAM limit or reserve')
   temporary = path.with_suffix('.tmp')
-  if path.name not in ('pending.bin', 'early.bin') or path.exists() or temporary.exists() or (path.parent/'working.bin').exists():
+  if path.name not in ('pending.bin', 'early.bin') or path.exists() or temporary.exists():
     raise RuntimeError('Shadow input slot is occupied')
   try:
     with temporary.open('xb') as stream:
@@ -214,7 +225,7 @@ def save_selection(path, selected, context, held=None):
           raise OSError('Short input payload write')
     if temporary.stat().st_size != size:
       raise OSError('Incomplete input snapshot')
-    if 'slot_deadline_ns' in context and time.monotonic_ns() >= context['slot_deadline_ns']:
+    if 'slot_deadline_ns' in context and time.monotonic_ns() >= context.get('expires_ns', context['slot_deadline_ns']):
       raise Unavailable('Input handoff missed its slot deadline')
     temporary.replace(path)
   finally:
@@ -295,11 +306,12 @@ def validate_input(arrays, meta):
     causal = 0 <= desired-capture <= FRAME_TOLERANCE_NS
     if rolling and i % 5 < 3:
       # Camera jitter can put a real earlier slot's anchor on either side of the nominal offset.
+      # A superseded slot's anchor can be selected up to four periods after its opening (still after its capture).
       source = meta['slot_start_ns']+offset
       origin, watermark = ref.get('anchor_query_ns', 0), ref.get('anchor_selected_ns', 0)
       paired = meta['frames'][(i+5) % 10]
       causal = (ref.get('anchor_slot_ns') == source and 0 <= source-origin <= FRAME_TOLERANCE_NS and
-                source <= watermark < source+period and capture <= ref['ready_ns'] <= watermark and
+                source <= watermark < source+4*period and capture <= ref['ready_ns'] <= watermark and
                 origin == paired.get('anchor_query_ns') and watermark == paired.get('anchor_selected_ns') and
                 0 <= origin-capture <= FRAME_TOLERANCE_NS and (ref['view'] != 6 or origin == capture) and
                 abs(desired-capture) <= FRAME_TOLERANCE_NS and capture < meta['query_ns'])
@@ -403,7 +415,7 @@ def load_adapter(config):
 def worker(config, directory, handoff):
   from openpilot.selfdrive.alpamayo.frontend import Preparer, Priming, Unavailable
   from openpilot.selfdrive.alpamayo.selected.policy import PromptTooLong
-  from openpilot.selfdrive.alpamayo.shadowd import planner_mode
+  from openpilot.selfdrive.alpamayo.shadowd import START_LATENESS_NS, planner_mode
   from openpilot.selfdrive.alpamayo.planner import packet
   root = Path(directory)
   handoff = Path(handoff)
@@ -442,21 +454,36 @@ def worker(config, directory, handoff):
       os.sched_setaffinity(0, big)
       if hasattr(adapter, 'pin_threads'):
         adapter.pin_threads(big)
-  def encode_early(path):
-    # Project and encode the predicted -0.1 s pair before its slot opens. Failures only lose the shortcut.
+  early_ready = []  # (views, deadline_ns): projected by the early thread, encoded on the main thread between predictions
+  def project_early(path):
+    # CPU-only projection of the predicted -0.1 s pair; tinygrad stays on the main thread. Failures only lose the shortcut.
     try:
-      pin_big_cores()
       with load_selection(path) as (selected, context):
         if segmented and hasattr(adapter, 'prime') and time.monotonic_ns() < context['slot_start_ns']:
           views = preparer.early(selected)
-          for pair in (views[:2], views[2:]):
-            if pair:
-              adapter.prime(pair, context['slot_start_ns']+400_000_000)
+          pairs = [(pair, adapter.anchor_inputs(pair)) for pair in (views[:2], views[2:]) if pair]  # CPU patching here too
+          early_ready.append((pairs, context['slot_start_ns']+400_000_000))
     except Exception as error:  # noqa: BLE001
-      print(f'Early encoding skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+      print(f'Early projection skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
     finally:
       path.unlink(missing_ok=True)
+  def encode_early():
+    while early_ready:
+      pairs, deadline = early_ready.pop(0)
+      try:
+        for pair, inputs in pairs:
+          # Queued without waiting: the main thread projects the current pair on the CPU while the GPU encodes this one.
+          adapter.prime(pair, deadline, wait=False, inputs=inputs)
+      except Exception as error:  # noqa: BLE001
+        print(f'Early encoding skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
 
+  def early_loop():
+    # Projection runs here, in parallel with a prediction.
+    while not stopping:
+      if (handoff/'early.bin').exists():
+        project_early(handoff/'early.bin')
+      else:
+        time.sleep(.002)
   writer, count = PredictionWriter(), 0
   stopping = False
   def stop(*_):
@@ -469,48 +496,57 @@ def worker(config, directory, handoff):
     ready = time.monotonic_ns()
     atomic_json(root/'ready.json', {'ready': True, 'adapter_load_started_ns': load_started, 'worker_ready_ns': ready,
                                     'adapter_startup_ms': getattr(adapter, 'startup_ms', {})})
+    threading.Thread(target=early_loop, name='alpamayo-early', daemon=True).start()
     while not stopping:
       writer.check()
+      encode_early()  # the next slot's -0.1 s pair goes to the GPU before its prediction
       try:
         (handoff/'pending.bin').replace(handoff/'working.bin')
         pin_big_cores()
       except FileNotFoundError:
-        if (handoff/'early.bin').exists():
-          encode_early(handoff/'early.bin')
-        else:
-          time.sleep(.001)
+        time.sleep(.001)
         continue
+      mapping = contextlib.ExitStack()
       try:
         begin = time.monotonic_ns()
-        with load_selection(handoff/'working.bin') as (selected, context):
-          admitted = time.monotonic_ns()
-          if not 0 <= admitted-selected.query_ns <= 500_000_000 or admitted >= context.get('slot_deadline_ns', admitted+1):
-            raise Unavailable('Input expired before preparation')
-          if context.get('anchor_only'):
-            preparer.rolling_images(selected, context['slot_start_ns'], anchor_only=True)  # Raises Priming; no prediction for this slot.
-          arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 4 else None)
-          meta.update(context)
-          meta['prepared_ns'] = time.monotonic_ns()
-          if meta['prepared_ns'] >= context.get('slot_deadline_ns', meta['prepared_ns']+1):
-            raise Unavailable('Input expired during preparation')
-          result = run_prediction(adapter, arrays, meta, hash_inputs=False)
-          result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
-          writer.check(wait=True)  # A failed previous write must stop this plan before publication.
-          if stopping:
-            return
-          if publish_plans:
-            temporary = handoff/'plan.tmp'
-            temporary.write_text(json.dumps(packet(result), allow_nan=False))
-            temporary.replace(handoff/'plan.json')
-          # Audit hashes cover the exact inputs but are not needed to publish the plan; the source mapping is still open.
-          result['input']['input_sha256'] = input_hashes(arrays)
-          writer.submit(root/f'{selected.query_ns}.json', result)
-          count += 1
+        selected, context = mapping.enter_context(load_selection(handoff/'working.bin'))  # stays open until the log thread has hashed it
+        admitted = time.monotonic_ns()
+        if (period_ms in (250, 500) and not context.get('anchor_only') and 'slot_start_ns' in context and
+            admitted-context['slot_start_ns'] > START_LATENESS_NS):
+          # Queued behind a slow prediction: keep only this slot's camera pair, which bounds query-to-plan latency.
+          context['anchor_only'] = True
+        expires = context.get('expires_ns', context.get('slot_deadline_ns', admitted+1))
+        if not 0 <= admitted-selected.query_ns <= (1_000_000_000 if context.get('anchor_only') else 500_000_000) or admitted >= expires:
+          raise Unavailable('Input expired before preparation')
+        if context.get('anchor_only'):
+          preparer.rolling_images(selected, context['slot_start_ns'], anchor_only=True)  # Raises Priming; no prediction for this slot.
+        arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 4 else None)
+        meta.update(context)
+        meta['prepared_ns'] = time.monotonic_ns()
+        if meta['prepared_ns'] >= expires:
+          raise Unavailable('Input expired during preparation')
+        result = run_prediction(adapter, arrays, meta, hash_inputs=False)
+        result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
+        writer.check(wait=True)  # A failed previous write must stop this plan before publication.
+        if stopping:
+          return
+        if publish_plans:
+          temporary = handoff/'plan.tmp'
+          temporary.write_text(json.dumps(packet(result), allow_nan=False))
+          temporary.replace(handoff/'plan.json')
+        # Audit hashes cover the exact inputs but are not needed to publish the plan. The log thread computes them from the
+        # still-open mapping and then releases it, so the next slot starts without waiting.
+        writer.submit(root/f'{selected.query_ns}.json', result,
+                      finish=lambda r, arrays=arrays: r['input'].__setitem__('input_sha256', input_hashes(arrays)), release=mapping.pop_all().close)
+        count += 1
       except (Unavailable, PromptTooLong) as error:
-        if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context['slot_deadline_ns']):
+        if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns'])):
           error = Unavailable('Front-camera feature priming missed its slot deadline')
         if not isinstance(error, Priming):
           preparer.anchors.clear()
+          print(f'alpamayo slot {context.get("slot_start_ns")} unavailable, history cleared: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+        elif 'Repriming' in str(error):
+          print(f'alpamayo slot {context.get("slot_start_ns")}: {error}', file=sys.stderr, flush=True)
         rejected = time.monotonic_ns()
         writer.check(wait=True)  # Serialize disk reserve checks for predictions and status.
         atomic_json(root/'unavailable.json', {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
@@ -519,6 +555,7 @@ def worker(config, directory, handoff):
         (handoff/'skipped').touch()
         continue
       finally:
+        mapping.close()
         (handoff/'working.bin').unlink(missing_ok=True)
   finally:
     try:

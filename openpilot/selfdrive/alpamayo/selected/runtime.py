@@ -152,18 +152,30 @@ class Runtime:
     if self.noise is not None:
       self.validate_noise(self.noise)
       self.noise.setflags(write=False)
-    self.adapter = SelectedInputs(self.config.checkpoint, native_fresh_patches=self.config.native_fresh_patches)
-    self.anchor = self.adapter.config.traj_ids['future_start']
-    self.draft = validate_draft(self.adapter.tokenizer.encode(DRAFT_TEXT,add_special_tokens=False),self.anchor)
-    if self.draft != CHECKPOINT_DRAFT_IDS:
-      raise ValueError('Checkpoint nominal draft token IDs changed')
-    finished('input_adapter')
+    # The tokenizer and input adapter load on the CPU while the weights stream over USB.
+    adapter = {}
+    def load_adapter():
+      try:
+        adapter['value'] = SelectedInputs(self.config.checkpoint, native_fresh_patches=self.config.native_fresh_patches)
+      except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
+        adapter['error'] = exc
+    loader = threading.Thread(target=load_adapter, name='alpamayo-adapter', daemon=True)
+    loader.start()
     try:
       self.backend = Backend(self.config.device_timeout_ms)
       finished('gpu_backend')
       self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales,self.backend.pv_program())
       finished('weights_and_packing')
       print(f'Alpamayo startup: weight stages {self.model.load_ms}', file=sys.stderr, flush=True)
+      loader.join()
+      if 'error' in adapter:
+        raise adapter['error']
+      self.adapter = adapter['value']
+      self.anchor = self.adapter.config.traj_ids['future_start']
+      self.draft = validate_draft(self.adapter.tokenizer.encode(DRAFT_TEXT,add_special_tokens=False),self.anchor)
+      if self.draft != CHECKPOINT_DRAFT_IDS:
+        raise ValueError('Checkpoint nominal draft token IDs changed')
+      finished('input_adapter_join')
       if self.model.weight_digest != artifacts['fp8_weights_sha256']:
         raise ValueError('Selected FP8 weight bytes changed')
       self.model.allocate_expert_packs()
@@ -204,26 +216,31 @@ class Runtime:
     if not isinstance(noise,np.ndarray) or noise.shape != (1,64,2) or noise.dtype != np.float32 or not np.isfinite(noise).all():
       raise ValueError('Require finite float32 diffusion noise [1,64,2]')
 
-  def prime(self, anchors, deadline_ns, wait=True):
+  def anchor_inputs(self, anchors):
+    """CPU-only patching and content keys for prime(); safe on another thread."""
+    from openpilot.selfdrive.alpamayo.segments import PatchRows
+    patches,grids = self.adapter.anchor_patches(anchors)
+    pixels,layout = (patches if type(patches) is PatchRows else patches.numpy()),grids.numpy()
+    return pixels,layout,grids,self.vision.patch_keys(pixels,layout)
+
+  def prime(self, anchors, deadline_ns, wait=True, inputs=None):
     """Encode only the two real current exposures. A cold graph may outlive its slot.
 
     wait=False returns once the GPU work is queued; later GPU work is ordered after it.
+    `inputs` from anchor_inputs() skips the CPU patching here.
     """
     with self.lock:
       if self.closed:
         raise RuntimeError('Runtime is closed')
-      return self._prime(anchors, deadline_ns, wait)
+      return self._prime(anchors, deadline_ns, wait, inputs)
 
-  def _prime(self, anchors, deadline_ns, wait=True):
+  def _prime(self, anchors, deadline_ns, wait=True, inputs=None):
     import numpy as np
     from openpilot.selfdrive.alpamayo.segments import PatchRows
-    from tinygrad import Tensor
     if time.monotonic_ns() >= deadline_ns:
       return False
-    self.model.synchronize()  # A queued earlier prime may still read the persistent pixel upload buffer.
-    patches,grids = self.adapter.anchor_patches(anchors)
-    pixels,layout = (patches if type(patches) is PatchRows else patches.numpy()),grids.numpy()
-    keys = self.vision.patch_keys(pixels,layout)
+    # CPU patching overlaps queued GPU work; the device is synchronized only before the shared upload buffer is rewritten.
+    pixels,layout,grids,keys = self.anchor_inputs(anchors) if inputs is None else inputs
     missing = self.vision.missing_indices(keys)
     encoded = {}
     if missing:
@@ -233,6 +250,7 @@ class Runtime:
       if time.monotonic_ns() >= deadline_ns:
         return False
       positions = self.vision_buffers.position_buffer(layout,positions)
+      self.model.synchronize()  # A queued earlier prime may still read the persistent pixel upload buffer.
       expanded = self.vision_buffers.expand_captured(raw)
       encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
       if wait:
@@ -447,8 +465,11 @@ class ShadowAdapter:
     prediction['selected_metrics'] = asdict(self.runtime.metrics)
     return {'query_ns':metadata['query_ns'],'prediction':prediction}
 
-  def prime(self, anchors, deadline_ns):
-    return self.runtime.prime(anchors,deadline_ns)
+  def prime(self, anchors, deadline_ns, wait=True, inputs=None):
+    return self.runtime.prime(anchors,deadline_ns,wait,inputs)
+
+  def anchor_inputs(self, anchors):
+    return self.runtime.anchor_inputs(anchors)
 
   def encode_ahead(self, anchors):
     """Queue the current pair's vision encoding while the CPU prepares the rest of the input."""

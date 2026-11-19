@@ -1,7 +1,7 @@
 {
   "GMMU": "0",
   "PROFILE": "0",
-  "AM_PERF_LEVEL": "auto",
+  "AM_PERF_LEVEL": "high",
   "AM_POWER_LIMIT": "144",
   "PARALLEL": "32",
   "CCACHE": "1",

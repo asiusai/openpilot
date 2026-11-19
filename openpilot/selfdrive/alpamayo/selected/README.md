@@ -82,7 +82,7 @@ No runtime recipe switches or experimental installers are exposed.
 
 Captured graphs persist under `<cache>/graphs` after code generation and before command building.
 Buffers are stored as owners: model attribute paths, JIT outputs, fresh scratch, or small constants.
-Entries are keyed by graph name, every Alpamayo source file, the checkpoint digest, kernel manifest, compiler settings and calibration.
+Entries are keyed by graph name, the graph-building sources (`selected/`, `model.py`, `amd_attention.py`), the checkpoint digest, kernel manifest, compiler settings and calibration.
 Entries from other keys are deleted at startup. An entry that fails to bind is recaptured normally.
 
 ## Required assets and shared code
@@ -100,6 +100,10 @@ Preparation verifies the original 5.30 GB of shards. Startup verifies the comple
 The runtime records both the source checkpoint identity and the hashes of the files actually loaded.
 The full original checkpoint is also supported. The default BF16 reference still requires the full checkpoint.
 The separate FP8 `weights.bin`/`index.json`, fixed calibration, and per-upload verification remain required.
+The first startup checks the complete `weights.bin` digest and stores per-4 KiB SHA-256 proofs (`leaf-proofs.bin`, zero nonce).
+Each upload then recomputes the proofs on the GPU into randomly initialized memory and compares them with the stored file.
+The tokenizer and input adapter load on a thread while the weights upload. Packing runs as batched schedules.
+The GPU runs at its highest clock level (`AM_PERF_LEVEL=high`) under the 144 W power limit, so short idle gaps do not slow the next stage.
 Changing these artifacts requires a separate numerical qualification.
 
 The selected dispatcher uses 21 HIP source/object pairs and the expert PV object under `assets/gfx1200`.

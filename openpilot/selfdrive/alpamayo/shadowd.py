@@ -14,6 +14,7 @@ EARLY_CUTOFF_NS = 20_000_000  # Later than this, early encoding (~50 ms) would d
 CAMERA_FRAME_NS = 50_000_000  # 20 FPS front cameras: frame IDs advance by period/50 ms per slot.
 HELD_FRAMES_NS = 2_600_000_000  # Free-running: the worker keeps projections covering the 2 s history.
 ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
+START_LATENESS_NS = 100_000_000  # the worker predicts a slot only if it picks it up within this time of its opening
 
 def planner_mode():
   return (bool(os.environ.get('ALPAMAYO_CONFIG')) and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'
@@ -113,7 +114,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.common.params import Params
   from openpilot.selfdrive.alpamayo.capture import NativeProducer, device_healthy, healthy
   from openpilot.selfdrive.alpamayo.frontend import AwaitingFrame, Store, Unavailable
-  from openpilot.selfdrive.alpamayo.planner import FREE_WINDOW, HANDOFF_GRACE, deliverable
+  from openpilot.selfdrive.alpamayo.planner import FREE_WINDOW, deliverable
   from openpilot.selfdrive.alpamayo.frontend import CAMERAS, Selection
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
   free = config.get('period_ms', 500) == 0
@@ -132,7 +133,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
       if payload is not None:
         msg.alpamayoPlan = payload
         published = time.monotonic_ns()
-        if deliverable(payload['queryMonoTime'],payload['readyMonoTime'],payload['slotDeadline'],published,0 if free else slots.period_ns):
+        if deliverable(payload['queryMonoTime'],payload['readyMonoTime'],published):
           msg.logMonoTime = published
         else:
           msg = messaging.new_message('alpamayoPlan', valid=False)
@@ -144,10 +145,11 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   worker_start = working_since = None
   next_check, last_ticks = 0., None
   admission = None
+  backlog = []  # Superseded slots that still owe their camera pair to the worker's history ring.
   served_plan = False
   model_seen = False
   last_query, last_current = 0, {}
-  last_priors, early_slot = {}, None
+  last_priors, early_slot, last_slot_start = {}, None, None
   predicted, flips, flips_until = {}, {}, 0  # Early predictions and recent +-1 frame flips of the selected priors.
   try:
     producer.start()
@@ -167,6 +169,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
           raise WorkerStopped('Small-model health stopped inference')
         if not model_healthy:
           admission = None  # Offroad or small model restarting: keep the warm worker, admit nothing.
+          backlog.clear()
         model_seen |= model_healthy
         if not memory_ok() or not storage_ok(root, 128*1024**2):
           raise RuntimeError('Shadow resource reserve reached')
@@ -244,29 +247,32 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
           continue
         slot = slots.take(time.monotonic_ns()) if ready else None
         if slot is not None:
-          admission = slot
-        slot = admission
+          if admission is not None and rolling:
+            # Superseded before dispatch: encode only its camera pair so later queries find their -0.5/-1/-2 s history.
+            backlog.append(dict(admission, anchor_only=True, expires_ns=admission['slot_start_ns']+4*slots.period_ns))
+          admission = dict(slot, expires_ns=slot['slot_start_ns']+2*slots.period_ns)
+        # One input can wait while the worker runs: the next slot is selected as soon as it opens, and the worker decides on
+        # pickup whether it is still timely enough to predict (otherwise it only anchors the camera pair).
+        idle = not (handoff/'pending.bin').exists()
+        slot = backlog.pop(0) if backlog and idle else admission
         if slot is not None:
           try:
             selected_ns = time.monotonic_ns()
-            busy = (handoff/'pending.bin').exists() or (handoff/'working.bin').exists()
-            if busy and pm is not None:
-              age = selected_ns-slot['slot_start_ns']
-              if age >= HANDOFF_GRACE:
-                # This slot loses its prediction. Its actual camera pair can still seed the next slot's history.
-                slot['anchor_only'] = True
-              if age < anchor_wait:
-                producer.stop.wait(.005)
-                continue
-            admission = None
-            if selected_ns >= slot['slot_deadline_ns'] or busy or (slot.get('anchor_only') and selected_ns-slot['slot_start_ns'] >= anchor_wait):
+            busy = (handoff/'pending.bin').exists()
+            if busy:  # the queued input has not been picked up yet; this slot waits (a newer opening moves it to the backlog)
+              producer.stop.wait(.002)
+              continue
+            if slot is admission:
+              admission = None
+            if selected_ns >= slot['expires_ns'] or busy:
               raise Unavailable('Busy or late slot')
             try:
-              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if rolling else None)
+              # A slot can start late (grid-snapped) or be anchored after newer slots opened; its frames keep their capture times.
+              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if rolling else None,
+                                      max_age_ns=slot['expires_ns']-slot['slot_start_ns'] if rolling else 250_000_000)
             except AwaitingFrame:
               # The matched modelV2 can arrive after this slot opens. Keep the same opening, cutoff and deadline.
-              wait_ns = anchor_wait if slot.get('anchor_only') else min(MATCH_WAIT_NS, anchor_wait)
-              if rolling and selected_ns < slot['slot_start_ns']+wait_ns:
+              if rolling and not slot.get('anchor_only') and selected_ns < slot['slot_start_ns']+min(MATCH_WAIT_NS, anchor_wait):
                 admission = slot
                 producer.stop.wait(.002)
                 continue
@@ -280,19 +286,24 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
             last_current = {f.camera: f.sof_ns for f in selected.frames}
             if len(selected.frames) == 4:
               last_priors = {f.camera: f.frame_id for f in selected.frames[0::2]}
+              last_slot_start = slot['slot_start_ns']
               for camera, frame_id in last_priors.items():
                 if predicted.get(camera) not in (None, frame_id) and abs(frame_id-predicted[camera]) == 1:
                   # The query flips between two adjacent frames while small-model arrival straddles the opening.
                   flips[camera], flips_until = predicted[camera]-frame_id, selected_ns+20_000_000_000
               predicted = {}
-          except Unavailable:
+          except Unavailable as error:
+            if not isinstance(error, AwaitingFrame) or slot.get('anchor_only'):
+              print(f'alpamayo slot {slot["slot_start_ns"]} skipped{" (anchor)" if slot.get("anchor_only") else ""}: {error}',
+                    file=sys.stderr, flush=True)
             slots.skip()
             publish()
         upcoming = slots.next_ns
         now = time.monotonic_ns()
-        if (ready and model_healthy and admission is None and len(last_priors) == len(CAMERAS) and upcoming is not None and
-            early_slot != upcoming and upcoming-EARLY_LEAD_NS <= now < upcoming-EARLY_CUTOFF_NS and
-            not any((handoff/k).exists() for k in ('pending.bin', 'working.bin', 'early.bin'))):
+        # The worker projects early pairs on a separate thread and encodes them between predictions, so a busy worker
+        # still receives them: at 4 Hz the GPU is never idle before an opening.
+        if (ready and model_healthy and len(last_priors) == len(CAMERAS) and upcoming is not None and last_slot_start is not None and
+            early_slot != upcoming and upcoming-EARLY_LEAD_NS <= now < upcoming-EARLY_CUTOFF_NS and not (handoff/'early.bin').exists()):
           # At 20 FPS the next slot's -0.1 s exposures are normally period/50 ms frames after this slot's. The slot still selects
           # its frames with the normal rules; a matching early encoding only turns into cache hits.
           with store.lock:
@@ -300,10 +311,11 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
             calibration = tuple(store.states['extrinsicsCalibration'])
           def frame(camera, frame_id):
             return next((f for f in reversed(rings[camera]) if f.frame_id == frame_id and f.ready_ns <= now), None)
-          frames = [frame(c, last_priors[c]+frames_per_slot) for c in CAMERAS]
+          ahead = frames_per_slot*((upcoming-last_slot_start)//slots.period_ns)
+          frames = [frame(c, last_priors[c]+ahead) for c in CAMERAS]
           if now < flips_until and any(c in flips for c in CAMERAS):
             # Also encode the adjacent candidate for flipping cameras; the GPU is otherwise idle before the opening.
-            alternates = [frame(c, last_priors[c]+frames_per_slot+flips[c]) if c in flips else f for c, f in zip(CAMERAS, frames)]
+            alternates = [frame(c, last_priors[c]+ahead+flips[c]) if c in flips else f for c, f in zip(CAMERAS, frames)]
             frames += alternates if all(alternates) else []
           elif now >= flips_until:
             flips.clear()
