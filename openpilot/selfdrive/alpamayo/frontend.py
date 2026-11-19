@@ -18,6 +18,7 @@ CAMERAS = (1, 6)
 _stamp = attrgetter('stamp')
 OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
 HALF_SECOND_NS = 500_000_000
+ROLLING_PERIODS_NS = (250_000_000, 500_000_000)  # Both divide the -2, -1 and -0.5 s history offsets.
 FRAME_TOLERANCE_NS = 150_000_000
 STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
                 'vehicleParameters': 1_000_000_000, 'carParams': 120_000_000_000,
@@ -143,7 +144,9 @@ class Store:
       while rows and (len(rows) > self.state_limit or rows[0].stamp < received-horizon):
         rows.pop(0)
 
-  def select(self, now, last_query=0, last_current=None, *, half_second_slot=None):
+  def select(self, now, last_query=0, last_current=None, *, half_second_slot=None, cached=None, cached_offsets=(0, 1, 2)):
+    """cached: {camera: frame IDs the worker already holds}. For the listed history offsets, prefer the newest held frame
+    inside the same causal window, so free-running inference re-encodes as few images as possible."""
     with self.lock:
       rings = {c: tuple(f for f in ring if f.ready_ns <= now) for c, ring in self.frames.items()}
       states = {k: tuple(r for r in rows if r.received <= now) for k, rows in self.states.items()}
@@ -166,11 +169,14 @@ class Store:
     for camera in CAMERAS:
       ring = rings[camera]
       times = [f.sof_ns for f in ring]
-      for offset in offsets:
+      for k, offset in enumerate(offsets):
         desired = query+offset
         index = bisect_right(times, desired)-1
         if index < 0 or desired-times[index] > FRAME_TOLERANCE_NS:
           raise Unavailable('Missing causal camera history')
+        if cached and half_second_slot is None and k in cached_offsets:
+          held = cached.get(camera, ())
+          index = next((j for j in range(index, -1, -1) if desired-times[j] <= FRAME_TOLERANCE_NS and ring[j].frame_id in held), index)
         frames.append(ring[index])
       if len({f.sof_ns for f in frames[-len(offsets):]}) != len(offsets) or frames[-1].sof_ns <= (last_current or {}).get(camera, 0):
         raise Unavailable('Repeated or stalled camera history')
@@ -222,7 +228,7 @@ def navigation(rows, query):
 
 
 class Preparer:
-  def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False):
+  def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False, period_ns=HALF_SECOND_NS, free=False):
     if cache_limit < 0:
       raise ValueError('Negative image cache capacity')
     if any(tuple(geometry['cameras'][str(c)]['prepared_size']) != (768, 432) for c in CAMERAS):
@@ -231,8 +237,40 @@ class Preparer:
     self.cache, self.cache_limit = OrderedDict(), cache_limit
     self.sampler = sampler
     self.segmented = segmented
-    self.anchors = deque(maxlen=4)
+    if period_ns not in ROLLING_PERIODS_NS:
+      raise ValueError('Rolling front history requires a 250 or 500 ms slot period')
+    if free and not segmented:
+      raise ValueError('Free-running inference requires retained CPU inputs')
+    self.free = free
+    self.retained = OrderedDict()  # Free-running: (camera, frame_id, sof, calibration) -> projected bytes.
+    self.period = period_ns
+    # Older history images are the current exposures of earlier slots: -2, -1 and -0.5 s back.
+    self.lags = tuple(-offset//period_ns for offset in OFFSETS_NS[:3])
+    self.anchors = deque(maxlen=self.lags[0])
     self.early_views = OrderedDict()  # (camera, frame_id, sof, calibration) -> projected bytes of a predicted -0.1 s exposure
+
+  def free_images(self, selected):
+    """Free-running: reuse held projections; project only frames that arrived with pixels."""
+    keys, fresh = [], []
+    for frame in selected.frames:
+      calibration, stamp = required(selected.states['extrinsicsCalibration'], frame.sof_ns, STATE_LIMITS['extrinsicsCalibration'])
+      key = self.early_key(frame, calibration)
+      keys.append((key, stamp, calibration))
+      if key not in self.retained and frame.pixels is None:
+        raise Unavailable('A held camera frame needs projection again')
+      if key not in self.retained and all(frame is not f for f in fresh):
+        fresh.append(frame)
+    if fresh:
+      projected, _ = self.project(tuple(fresh), selected.states, reuse=False)
+      for frame, (image, ref) in zip(fresh, projected, strict=True):
+        self.retained[self.early_key(frame, ref['image_calibration'])] = image
+    views = []
+    for frame, (key, stamp, calibration) in zip(selected.frames, keys, strict=True):
+      self.retained.move_to_end(key)
+      views.append((self.retained[key], {**frame.reference(), 'image_calibration_ns': stamp, 'image_calibration': copy.deepcopy(calibration)}))
+    while len(self.retained) > 96:
+      self.retained.popitem(last=False)
+    return views, len(selected.frames)-len(fresh)
 
   def early(self, selected):
     """Project a predicted -0.1 s pair before its slot. The slot reuses these exact bytes if it selects the same frames."""
@@ -271,11 +309,11 @@ class Preparer:
                                             'applied_stiffness_factor': max(parameters['stiffnessFactor'], .1),
                                             'applied_steer_ratio': max(parameters['steerRatio'], .1)})
     if half_second_slot is None:
-      views, hits = self.project(selected.frames, states)
+      views, hits = self.free_images(selected) if self.free else self.project(selected.frames, states)
     images, refs = zip(*views, strict=True)
     refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
     nav, nav_meta = navigation(states['navInstruction'], query)
-    arrays = {'image_frames': FrontImages(images) if self.segmented and half_second_slot is not None else np.stack(images),
+    arrays = {'image_frames': FrontImages(images) if self.segmented and (half_second_slot is not None or self.free) else np.stack(images),
               'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
               'absolute_timestamps': np.array([ref['capture_ns']//1000 for ref in refs], dtype=np.int64),
               'ego_history_xyz': xyz, 'ego_history_rot': rot, 'nav_text': [nav]}
@@ -289,13 +327,13 @@ class Preparer:
   def rolling_images(self, selected, opening, *, anchor_only=False):
     """Only retain owned, calibrated pixels. The worker unmaps the input after each slot."""
     query, frames = selected.query_ns, selected.frames
-    if not (len(frames) == 4 and opening <= selected.selected_ns < opening+HALF_SECOND_NS and
+    if not (len(frames) == 4 and opening <= selected.selected_ns < opening+self.period and
             0 <= opening-query <= FRAME_TOLERANCE_NS and frames[-1].sof_ns == query):
       raise Unavailable('Front query is outside its slot')
     reason = 'Priming front-camera anchors'
     if self.anchors and opening <= self.anchors[-1][0]:
       raise Unavailable('Front slot did not advance')
-    if self.anchors and opening != self.anchors[-1][0]+HALF_SECOND_NS:
+    if self.anchors and opening != self.anchors[-1][0]+self.period:
       self.anchors.clear()
       reason = 'Repriming after a missed slot'
     for i, camera in enumerate(CAMERAS):
@@ -310,8 +348,8 @@ class Preparer:
         if last['capture_ns'] >= prior.sof_ns or last['frame_id'] >= prior.frame_id:
           raise Unavailable('Front exposure did not advance')
     older = []
-    if len(self.anchors) == 4:
-      older = [[self.anchors[-lag][1][i] for lag in (4, 2, 1)] for i in range(len(CAMERAS))]
+    if len(self.anchors) == self.lags[0]:
+      older = [[self.anchors[-lag][1][i] for lag in self.lags] for i in range(len(CAMERAS))]
       if any(abs(query+offset-ref['capture_ns']) > FRAME_TOLERANCE_NS for view in older for (_, ref), offset in zip(view, OFFSETS_NS[:3], strict=True)):
         self.anchors.clear()
         older = []
@@ -325,7 +363,7 @@ class Preparer:
     if anchor_only:
       raise Priming('Retaining current camera pair after worker overrun', self.anchors[-1][1])
     if not older:
-      raise Priming(f'{reason} ({len(self.anchors)}/4 slots)', self.anchors[-1][1])
+      raise Priming(f'{reason} ({len(self.anchors)}/{self.lags[0]} slots)', self.anchors[-1][1])
     return [frame for i, view in enumerate(older) for frame in (*view, *fresh[2*i:2*i+2])], hits+6
 
   def project(self, frames, states, *, reuse=True):

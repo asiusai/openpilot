@@ -2,21 +2,40 @@
 import numpy as np
 
 PERIOD = 500_000_000
+FREE = 0  # Free-running: each prediction starts when the previous one finishes.
+PERIODS = (FREE, 250_000_000, 500_000_000)
+FREE_WINDOW = 400_000_000  # Free-running: ready within this time of selection, usable this long after ready.
+FREE_GAP = 600_000_000  # Free-running: consecutive plans have queries at most this far apart.
 HANDOFF_GRACE = 50_000_000  # One frame of the local 20 Hz driving model.
-MAX_DELIVERY_AGE = PERIOD+250_000_000
+DELIVERY_AGE_MARGIN = 250_000_000
 T = np.arange(65) * .1
 ACTION_TIMES = np.arange(22)*.1
 
 
-def deliverable(query, ready, deadline, now):
-  return (0 < query <= deadline-PERIOD <= ready <= now < deadline+HANDOFF_GRACE
-          and now-query <= MAX_DELIVERY_AGE)
+def configured_period():
+  """Slot period from ALPAMAYO_CONFIG; modeld and the supervisor must agree."""
+  import json, os
+  from pathlib import Path
+  path = os.environ.get('ALPAMAYO_CONFIG')
+  period = json.loads(Path(path).read_text()).get('period_ms', 500)*1_000_000 if path and os.path.isfile(path) else PERIOD
+  if period not in PERIODS:
+    raise ValueError('Alpamayo planner requires a free-running, 250 or 500 ms period')
+  return period
+
+
+def deliverable(query, ready, deadline, now, period=PERIOD):
+  # A plan must be computed within its own slot (free-running: within FREE_WINDOW of its selection)
+  # and be no older than that window plus 250 ms when delivered.
+  window = period or FREE_WINDOW
+  return (0 < query <= deadline-window <= ready <= now < deadline+HANDOFF_GRACE
+          and now-query <= window+DELIVERY_AGE_MARGIN)
 
 
 def packet(result):
   """Keep the strict benchmark deadline separate from eligibility for live handoff."""
   q,r,d = result['input']['query_ns'], result['output_ready_ns'], result['slot_deadline_ns']
-  if result['startup'] or result['period_ms'] != 500 or not deliverable(q,r,d,r):
+  period = result['period_ms']*1_000_000
+  if result['startup'] or period not in PERIODS or not deliverable(q,r,d,r,period):
     return None
   xyz = np.asarray(result['prediction']['xyz'])[0]
   rot = np.asarray(result['prediction']['rot'])[0]
@@ -27,7 +46,10 @@ def packet(result):
 
 
 class PlanSelector:
-  def __init__(self):
+  def __init__(self, period=PERIOD):
+    if period not in PERIODS:
+      raise ValueError('Alpamayo planner requires a free-running, 250 or 500 ms period')
+    self.period, self.window = period, period or FREE_WINDOW
     self.query = self.deadline = self.ready = self.streak = 0
     self.curve = None
     self.last_on_time = False
@@ -41,12 +63,12 @@ class PlanSelector:
     if q <= self.query and d <= self.deadline:
       return  # An older or repeated packet cannot replace a newer result.
     published = r if published is None else published
-    if not (q > self.query and d > self.deadline and r <= published <= now and deliverable(q,r,d,published)
-            and now-published <= HANDOFF_GRACE and now-q <= MAX_DELIVERY_AGE):
+    if not (q > self.query and d > self.deadline and r <= published <= now and deliverable(q,r,d,published,self.period)
+            and now-published <= HANDOFF_GRACE and now-q <= self.window+DELIVERY_AGE_MARGIN):
       self.reject()
       return
     on_time = published < d
-    consecutive = d-self.deadline == PERIOD
+    consecutive = d-self.deadline == self.period if self.period else 0 < q-self.query <= FREE_GAP
     if not on_time and not (consecutive and self.streak >= 2 and self.last_on_time):
       self.reject()
       return
@@ -69,7 +91,8 @@ class PlanSelector:
     """Time-align the GPU plan without consulting any other model's path or action."""
     from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
     from openpilot.selfdrive.controls.lib.drive_helpers import MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL, get_accel_from_plan, get_curvature_from_plan, should_stop
-    if self.curve is None or self.streak < 2 or not self.ready <= now < min(self.deadline+PERIOD, self.query+1_000_000_000):
+    expires = self.ready+FREE_WINDOW if self.period == FREE else self.deadline+self.period
+    if self.curve is None or self.streak < 2 or not self.ready <= now < min(expires, self.query+1_000_000_000):
       return None
     if not np.isfinite(v_ego) or not (1. <= v_ego and 0 < lat_delay <= 2. and 0 < long_delay <= 2.):
       return None

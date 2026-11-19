@@ -10,7 +10,9 @@ import time
 
 MATCH_WAIT_NS = 100_000_000
 EARLY_LEAD_NS = 160_000_000  # The -0.1 s exposures of the next slot are ready about 150-200 ms before it opens.
-EARLY_CUTOFF_NS = 40_000_000  # Later than this, early encoding could delay the slot instead of shortening it.
+EARLY_CUTOFF_NS = 20_000_000  # Later than this, early encoding (~50 ms) would delay the slot about as much as it saves.
+CAMERA_FRAME_NS = 50_000_000  # 20 FPS front cameras: frame IDs advance by period/50 ms per slot.
+HELD_FRAMES_NS = 2_600_000_000  # Free-running: the worker keeps projections covering the 2 s history.
 ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
 
 def planner_mode():
@@ -78,8 +80,8 @@ def main():
   from openpilot.selfdrive.alpamayo.runtime import private_output, ram_handoff, storage_ok
   config_path = Path(os.environ['ALPAMAYO_CONFIG']).resolve()
   config = json.loads(config_path.read_text())
-  if planner_mode() and (config.get('period_ms', 500) != 500 or config['inference'].get('variant') != 'selected'):
-    raise ValueError('Planner evaluation requires the selected 500 ms configuration')
+  if planner_mode() and (config.get('period_ms', 500) not in (0, 250, 500) or config['inference'].get('variant') != 'selected'):
+    raise ValueError('Planner evaluation requires the selected free-running, 250 or 500 ms configuration')
   python = Path(config['python'])
   if not python.is_file() or python == Path(sys.executable):
     raise ValueError('Configure a separate, pinned Alpamayo Python environment')
@@ -111,10 +113,15 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.common.params import Params
   from openpilot.selfdrive.alpamayo.capture import NativeProducer, device_healthy, healthy
   from openpilot.selfdrive.alpamayo.frontend import AwaitingFrame, Store, Unavailable
-  from openpilot.selfdrive.alpamayo.planner import HANDOFF_GRACE, deliverable
+  from openpilot.selfdrive.alpamayo.planner import FREE_WINDOW, HANDOFF_GRACE, deliverable
   from openpilot.selfdrive.alpamayo.frontend import CAMERAS, Selection
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
-  slots = FixedSlots(config.get('period_ms', 500))
+  free = config.get('period_ms', 500) == 0
+  slots = FixedSlots(500 if free else config.get('period_ms', 500))
+  rolling = not free and slots.period_ms in (250, 500)
+  held = {c: {} for c in CAMERAS}  # Free-running: frames the worker retains, {camera: {frame_id: sof}}.
+  anchor_wait = min(ANCHOR_WAIT_NS, slots.period_ns*2//5)
+  frames_per_slot = slots.period_ns//CAMERA_FRAME_NS
   pm = None
   if planner_mode():
     from openpilot.cereal import messaging
@@ -125,7 +132,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
       if payload is not None:
         msg.alpamayoPlan = payload
         published = time.monotonic_ns()
-        if deliverable(payload['queryMonoTime'],payload['readyMonoTime'],payload['slotDeadline'],published):
+        if deliverable(payload['queryMonoTime'],payload['readyMonoTime'],payload['slotDeadline'],published,0 if free else slots.period_ns):
           msg.logMonoTime = published
         else:
           msg = messaging.new_message('alpamayoPlan', valid=False)
@@ -209,6 +216,32 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
           (handoff/'skipped').unlink()
           slots.skip()
           publish()
+          for frames in held.values():
+            frames.clear()  # The worker may not have retained the rejected input.
+        if free:
+          # Free-running: start the next prediction as soon as the worker is idle, on the newest matched frames.
+          now = time.monotonic_ns()
+          if ready and not (handoff/'pending.bin').exists() and not (handoff/'working.bin').exists():
+            try:
+              selected = store.select(now, last_query, last_current, cached={c: set(f) for c, f in held.items()},
+                                      cached_offsets=(0, 1, 2, 3) if config.get('free_cached_prior') else (0, 1, 2))
+              route = params.get('CurrentRoute')
+              if not route:
+                raise Unavailable('No current recording route')
+              context = {'slot_start_ns': now, 'slot_deadline_ns': now+FREE_WINDOW, 'period_ms': 0, 'missed_slots': 0,
+                         'route': route.decode() if isinstance(route, bytes) else route, 'boot_id': boot}
+              save_selection(handoff/'pending.bin', selected, context, {c: set(f) for c, f in held.items()})
+              last_query = selected.query_ns
+              last_current = {f.camera: f.sof_ns for f in selected.frames}
+              for f in selected.frames:
+                held[f.camera][f.frame_id] = f.sof_ns
+              for frames in held.values():
+                for frame_id in [i for i, sof in frames.items() if sof < now-HELD_FRAMES_NS]:
+                  del frames[frame_id]
+            except Unavailable:
+              pass  # AwaitingFrame included: no fresh matched query yet.
+          producer.stop.wait(.002)
+          continue
         slot = slots.take(time.monotonic_ns()) if ready else None
         if slot is not None:
           admission = slot
@@ -222,18 +255,18 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
               if age >= HANDOFF_GRACE:
                 # This slot loses its prediction. Its actual camera pair can still seed the next slot's history.
                 slot['anchor_only'] = True
-              if age < ANCHOR_WAIT_NS:
+              if age < anchor_wait:
                 producer.stop.wait(.005)
                 continue
             admission = None
-            if selected_ns >= slot['slot_deadline_ns'] or busy or (slot.get('anchor_only') and selected_ns-slot['slot_start_ns'] >= ANCHOR_WAIT_NS):
+            if selected_ns >= slot['slot_deadline_ns'] or busy or (slot.get('anchor_only') and selected_ns-slot['slot_start_ns'] >= anchor_wait):
               raise Unavailable('Busy or late slot')
             try:
-              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if slots.period_ms == 500 else None)
+              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if rolling else None)
             except AwaitingFrame:
               # The matched modelV2 can arrive after this slot opens. Keep the same opening, cutoff and deadline.
-              wait_ns = ANCHOR_WAIT_NS if slot.get('anchor_only') else MATCH_WAIT_NS
-              if slots.period_ms == 500 and selected_ns < slot['slot_start_ns']+wait_ns:
+              wait_ns = anchor_wait if slot.get('anchor_only') else min(MATCH_WAIT_NS, anchor_wait)
+              if rolling and selected_ns < slot['slot_start_ns']+wait_ns:
                 admission = slot
                 producer.stop.wait(.002)
                 continue
@@ -260,17 +293,17 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         if (ready and model_healthy and admission is None and len(last_priors) == len(CAMERAS) and upcoming is not None and
             early_slot != upcoming and upcoming-EARLY_LEAD_NS <= now < upcoming-EARLY_CUTOFF_NS and
             not any((handoff/k).exists() for k in ('pending.bin', 'working.bin', 'early.bin'))):
-          # At 20 FPS the next slot's -0.1 s exposures are normally ten frames after this slot's. The slot still selects
+          # At 20 FPS the next slot's -0.1 s exposures are normally period/50 ms frames after this slot's. The slot still selects
           # its frames with the normal rules; a matching early encoding only turns into cache hits.
           with store.lock:
             rings = {c: tuple(store.frames[c]) for c in CAMERAS}
             calibration = tuple(store.states['extrinsicsCalibration'])
           def frame(camera, frame_id):
             return next((f for f in reversed(rings[camera]) if f.frame_id == frame_id and f.ready_ns <= now), None)
-          frames = [frame(c, last_priors[c]+10) for c in CAMERAS]
+          frames = [frame(c, last_priors[c]+frames_per_slot) for c in CAMERAS]
           if now < flips_until and any(c in flips for c in CAMERAS):
             # Also encode the adjacent candidate for flipping cameras; the GPU is otherwise idle before the opening.
-            alternates = [frame(c, last_priors[c]+10+flips[c]) if c in flips else f for c, f in zip(CAMERAS, frames)]
+            alternates = [frame(c, last_priors[c]+frames_per_slot+flips[c]) if c in flips else f for c, f in zip(CAMERAS, frames)]
             frames += alternates if all(alternates) else []
           elif now >= flips_until:
             flips.clear()

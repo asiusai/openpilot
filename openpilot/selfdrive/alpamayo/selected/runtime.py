@@ -337,7 +337,8 @@ class Runtime:
       # The 500 ms rolling worker primes two anchors per slot and then uploads four new images per prediction.
       # With the -0.1 s pair encoded early, a matching slot uploads only its two current images. When only one camera's
       # early frame matches, three images are new; odd counts also use the single-image encoder.
-      for fresh in (4,4,4,2,2,2,3,3,3,1,1,1):
+      # Free-running inference re-encodes a history image when no held frame falls in its window: 5 or 6 images.
+      for fresh in (4,4,4,2,2,2,3,3,3,1,1,1,6,6,6,5,5,5):
         run(fresh)
       for i in range(3):
         anchors = [(rng.integers(0, 256, (1,3,432,768), dtype=np.uint8), {'view':camera,'capture_ns':(i+1)*1_000_000_000})

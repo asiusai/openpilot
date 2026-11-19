@@ -321,8 +321,8 @@ def main(demo=False):
   pm = PubMaster(pub_socks)
   planner = None
   if use_alpamayo:
-    from openpilot.selfdrive.alpamayo.planner import PlanSelector
-    planner = PlanSelector()
+    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_period
+    planner = PlanSelector(configured_period())
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
                   "carControl", "controlsState", "lateralDelay"] + (['alpamayoPlan'] if planner is not None else []),
                  frequency=ModelConstants.MODEL_RUN_FREQ)

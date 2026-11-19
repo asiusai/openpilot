@@ -19,7 +19,7 @@ import numpy as np
 
 from openpilot.selfdrive.alpamayo.segments import FrontImages
 
-from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_TOLERANCE_NS, HALF_SECOND_NS, OFFSETS_NS, Frame, Selection, State, Unavailable
+from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_TOLERANCE_NS, OFFSETS_NS, ROLLING_PERIODS_NS, Frame, Selection, State, Unavailable
 
 INPUT_LIMIT = 32*1024**2
 HEADER_LIMIT = 4*1024**2
@@ -156,6 +156,7 @@ class PredictionWriter:
 
 
 def frame_layout(ref):
+  """Shape and payload size; a frame the worker already holds ('cached') has no payload."""
   shape = ref['shape']
   if (ref['dtype'] != 'uint8' or not isinstance(shape, list) or len(shape) not in (2, 3) or
       any(type(n) is not int or n <= 0 for n in shape)):
@@ -166,25 +167,31 @@ def frame_layout(ref):
   size = math.prod(shape)
   if type(ref['nbytes']) is not int or size != ref['nbytes'] or size > 8*1024**2:
     raise ValueError('Invalid frame byte count')
-  return tuple(shape), size
+  if ref.get('cached', False) not in (True, False):
+    raise ValueError('Invalid cached flag')
+  return tuple(shape), 0 if ref.get('cached') else size
 
 
 def valid_snapshot_views(refs, context):
   views = [ref['view'] for ref in refs]
   if context.get('early') is True:
     return views in ([1, 6], [1, 6, 1, 6]) and type(context.get('slot_start_ns')) is int
-  return views == [1]*5+[6]*5 or (views == [1, 1, 6, 6] and context.get('period_ms') == 500 and type(context.get('slot_start_ns')) is int)
+  return views == [1]*5+[6]*5 or (views == [1, 1, 6, 6] and context.get('period_ms') in (250, 500) and type(context.get('slot_start_ns')) is int)
 
 
-def save_selection(path, selected, context):
-  refs = []
+def save_selection(path, selected, context, held=None):
+  """held: {camera: frame IDs the worker retains}; those frames are sent as references without pixels."""
+  refs, payload = [], []
   for frame in selected.frames:
     pixels = frame.pixels
-    ref = dict(frame.reference(), shape=list(pixels.shape), dtype=str(pixels.dtype), nbytes=pixels.nbytes)
+    cached = frame.frame_id in (held or {}).get(frame.camera, ())
+    ref = dict(frame.reference(), shape=list(pixels.shape), dtype=str(pixels.dtype), nbytes=pixels.nbytes, cached=cached)
     frame_layout(ref)
     if not pixels.flags.c_contiguous or pixels.flags.writeable:
       raise ValueError('Input frames must be immutable and contiguous')
     refs.append(ref)
+    if not cached:
+      payload.append(pixels)
   if not valid_snapshot_views(refs, context):
     raise ValueError('Invalid front-camera snapshot layout')
   meta = {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
@@ -192,7 +199,7 @@ def save_selection(path, selected, context):
           'states': {kind: [vars(row) for row in rows] for kind, rows in selected.states.items()},
           'camera_gaps': selected.camera_gaps, 'context': context}
   header = json.dumps(meta, allow_nan=False, separators=(',', ':')).encode()
-  size = INPUT_PREFIX.size+len(header)+sum(ref['nbytes'] for ref in refs)
+  size = INPUT_PREFIX.size+len(header)+sum(p.nbytes for p in payload)
   if len(header) > HEADER_LIMIT or size > INPUT_LIMIT or not input_storage_ok(path.parent, size):
     raise RuntimeError('Shadow input reached its RAM limit or reserve')
   temporary = path.with_suffix('.tmp')
@@ -202,8 +209,8 @@ def save_selection(path, selected, context):
     with temporary.open('xb') as stream:
       stream.write(INPUT_PREFIX.pack(INPUT_MAGIC, len(header)))
       stream.write(header)
-      for frame in selected.frames:
-        if stream.write(memoryview(frame.pixels).cast('B')) != frame.pixels.nbytes:
+      for pixels in payload:
+        if stream.write(memoryview(pixels).cast('B')) != pixels.nbytes:
           raise OSError('Short input payload write')
     if temporary.stat().st_size != size:
       raise OSError('Incomplete input snapshot')
@@ -249,17 +256,18 @@ def load_selection(path):
           raise ValueError('Invalid frame metadata')
     except (KeyError, TypeError, ValueError, RecursionError) as error:
       raise ValueError('Invalid input snapshot header or payload') from error
-    mapped = np.memmap(stream, dtype=np.uint8, mode='r', offset=INPUT_PREFIX.size+length, shape=(payload_size,))
+    mapped = np.memmap(stream, dtype=np.uint8, mode='r', offset=INPUT_PREFIX.size+length, shape=(payload_size,)) if payload_size else None
   try:
     frames, offset = [], 0
     for ref, (shape, count) in zip(meta['frames'], layouts, strict=True):
-      pixels = mapped[offset:offset+count].reshape(shape)
+      pixels = None if ref.get('cached') else mapped[offset:offset+count].reshape(shape)
       frames.append(Frame(ref['view'], ref['frame_id'], ref['capture_ns'], ref['eof_ns'], ref['received_ns'],
                           ref['ready_ns'], pixels, ref['source_format']))
       offset += count
     yield Selection(meta['query_ns'], meta['selected_ns'], tuple(frames), states, meta['small_model'], gaps), meta['context']
   finally:
-    mapped._mmap.close()
+    if mapped is not None:
+      mapped._mmap.close()
 
 
 def validate_input(arrays, meta):
@@ -277,8 +285,9 @@ def validate_input(arrays, meta):
   if arrays['camera_indices'].tolist() != [1]*5+[6]*5 or len(meta['frames']) != 10:
     raise ValueError('Keep both complete front-camera histories')
   rolling = any('anchor_slot_ns' in ref for ref in meta['frames'])
-  if rolling and (meta.get('period_ms') != 500 or not 0 <= meta['slot_start_ns']-meta['query_ns'] <= FRAME_TOLERANCE_NS or
-                  not meta['slot_start_ns'] <= meta['selected_ns'] < meta['slot_start_ns']+HALF_SECOND_NS):
+  period = meta.get('period_ms', 0)*1_000_000
+  if rolling and (period not in ROLLING_PERIODS_NS or not 0 <= meta['slot_start_ns']-meta['query_ns'] <= FRAME_TOLERANCE_NS or
+                  not meta['slot_start_ns'] <= meta['selected_ns'] < meta['slot_start_ns']+period):
     raise ValueError('Invalid half-second history context')
   for i, (ref, offset) in enumerate(zip(meta['frames'], OFFSETS_NS*2, strict=True)):
     desired = meta['query_ns']+offset
@@ -290,7 +299,7 @@ def validate_input(arrays, meta):
       origin, watermark = ref.get('anchor_query_ns', 0), ref.get('anchor_selected_ns', 0)
       paired = meta['frames'][(i+5) % 10]
       causal = (ref.get('anchor_slot_ns') == source and 0 <= source-origin <= FRAME_TOLERANCE_NS and
-                source <= watermark < source+HALF_SECOND_NS and capture <= ref['ready_ns'] <= watermark and
+                source <= watermark < source+period and capture <= ref['ready_ns'] <= watermark and
                 origin == paired.get('anchor_query_ns') and watermark == paired.get('anchor_selected_ns') and
                 0 <= origin-capture <= FRAME_TOLERANCE_NS and (ref['view'] != 6 or origin == capture) and
                 abs(desired-capture) <= FRAME_TOLERANCE_NS and capture < meta['query_ns'])
@@ -413,9 +422,11 @@ def worker(config, directory, handoff):
     library(str(config['cache']))
     sampler = partial(calibrated_image, cache_dir=config['cache'])
   segmented = config.get('retained_cpu_inputs', False)
-  if type(segmented) is not bool or (segmented and (sampler is None or config.get('period_ms', 500) != 500)):
-    raise ValueError('retained_cpu_inputs requires the selected 500 ms worker')
-  preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented)
+  period_ms = config.get('period_ms', 500)
+  if type(segmented) is not bool or (segmented and (sampler is None or period_ms not in (0, 250, 500))):
+    raise ValueError('retained_cpu_inputs requires the selected free-running, 250 or 500 ms worker')
+  preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented, free=period_ms == 0,
+                      period_ns=period_ms*1_000_000 if period_ms in (250, 500) else 500_000_000)
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
