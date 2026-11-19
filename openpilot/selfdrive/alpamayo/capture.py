@@ -73,13 +73,17 @@ class NativeProducer:
 
   def camera(self, camera, stream):
     from msgq.visionipc import VisionIpcClient
-    client = VisionIpcClient('camerad', stream, True)
-    while not self.stop.is_set() and not client.connect(False):
-      self.stop.wait(.05)
     while not self.stop.is_set():
-      buf = client.recv(100)
-      if buf is not None:
-        self.store.add_frame(copy_vision_buffer(camera, client, buf))
+      # camerad restarts with every ignition cycle; a warm supervisor reconnects after frames stop.
+      client = VisionIpcClient('camerad', stream, True)
+      while not self.stop.is_set() and not client.connect(False):
+        self.stop.wait(.1)
+      last = time.monotonic()
+      while not self.stop.is_set() and time.monotonic()-last < 2.:
+        buf = client.recv(100)
+        if buf is not None:
+          last = time.monotonic()
+          self.store.add_frame(copy_vision_buffer(camera, client, buf))
 
   def states(self):
     from openpilot.cereal import messaging

@@ -127,6 +127,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         else:
           msg = messaging.new_message('alpamayoPlan', valid=False)
       pm.send('alpamayoPlan', msg)
+  keep_warm = os.environ.get('ALPAMAYO_KEEP_WARM') == '1'
   store, params = Store(), Params()
   producer = NativeProducer(store)
   child = None
@@ -150,15 +151,17 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
           producer.stop.wait(.05)
           continue
         model_healthy = healthy(health, now)
-        if model_seen and not model_healthy:
+        if model_seen and not model_healthy and not keep_warm:
           raise WorkerStopped('Small-model health stopped inference')
+        if not model_healthy:
+          admission = None  # Offroad or small model restarting: keep the warm worker, admit nothing.
         model_seen |= model_healthy
         if not memory_ok() or not storage_ok(root, 128*1024**2):
           raise RuntimeError('Shadow resource reserve reached')
         if child is None:
-          # Power Chestnut up only after the small model runs. Two earlier Karel launches lost USB when the Adreno
-          # model started while Chestnut was active; the cause is unconfirmed, so avoid the coincidence.
-          if not model_healthy:
+          # Without keep-warm, power Chestnut up only after the small model runs: Karel dropped USB when the
+          # warmup overlapped the onroad camera and Adreno load. With keep-warm the worker loads offroad.
+          if not model_healthy and not keep_warm:
             producer.stop.wait(.05)
             continue
           child = subprocess.Popen([str(python), '-m', 'openpilot.selfdrive.alpamayo.shadowd', str(config_path), str(root), str(handoff)],
@@ -256,9 +259,8 @@ if __name__ == '__main__':
     if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
       raise RuntimeError('Explicit shadow opt-in is required')
     os.nice(10)
-    cpus = {cpu for cpu in os.sched_getaffinity(0) if cpu < 6}
-    if cpus:
-      os.sched_setaffinity(0, cpus)
+    # Warm up on the low-power cores 0-3; runtime.worker moves per-slot threads to big cores 4-5 once online.
+    os.sched_setaffinity(0, {cpu for cpu in os.sched_getaffinity(0) if cpu < 4} or os.sched_getaffinity(0))
     from openpilot.selfdrive.alpamayo.runtime import worker
     worker(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])
   else:

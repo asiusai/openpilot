@@ -67,8 +67,11 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
 def alpamayo_shadow(started: bool, params: Params, CP: car.CarParams) -> bool:
-  if not started or os.environ.get('ALPAMAYO_SHADOW') == '1':
-    return started
+  # ALPAMAYO_KEEP_WARM=1 loads and compiles offroad and keeps the worker across ignition cycles.
+  # Warmup then never overlaps the onroad camera and Adreno load (Karel dropped USB under that combined load).
+  keep_warm = os.environ.get('ALPAMAYO_KEEP_WARM') == '1'
+  if (not started and not keep_warm) or os.environ.get('ALPAMAYO_SHADOW') == '1':
+    return started or keep_warm
   from openpilot.selfdrive.alpamayo.shadowd import planner_mode
   if planner_mode() and os.path.isfile(os.environ['ALPAMAYO_CONFIG']):
     from openpilot.selfdrive.modeld.helpers import chestnut_present
