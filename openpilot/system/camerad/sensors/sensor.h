@@ -16,9 +16,7 @@ struct i2c_random_wr_payload {
 #define CAM_ISP_PATTERN_BAYER_GRGRGR 1
 #define CAM_ISP_PATTERN_BAYER_BGBGBG 2
 #define CAM_ISP_PATTERN_BAYER_GBGBGB 3
-#define CAM_FORMAT_MIPI_RAW_10 10
 #define CAM_FORMAT_MIPI_RAW_12 12
-#define CSI_RAW10 0x2b
 #define CSI_RAW12 0x2c
 #else
 #include "media/cam_isp.h"
