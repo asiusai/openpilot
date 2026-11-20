@@ -521,7 +521,7 @@ def worker(config, directory, handoff):
   early_ready = []  # (views, deadline_ns): projected by the early thread, encoded on the main thread between predictions
   lookahead = {}  # 'pair': (projected images, anchor_inputs) of the queued slot; 'identity': the last examined input file
   lookahead_lock = threading.Lock()  # held while the early thread projects a queued slot
-  predicting = threading.Event()  # set while the main thread runs a prediction or an anchor encode
+  predicting = threading.Event()  # set while the main thread processes a slot
   def queued_inputs(views):
     # Patches the early thread made from these exact projected bytes while the previous prediction ran, else None.
     images, inputs = lookahead.pop('pair', ((), None))
@@ -629,6 +629,8 @@ def worker(config, directory, handoff):
         # When the supervisor finished writing this input (modification time, converted to the monotonic clock).
         marks['written_ns'] = (handoff/'working.bin').stat().st_mtime_ns-(time.time_ns()-time.monotonic_ns())
         pin_big_cores()
+        # While this slot is processed (prediction or anchor encode), the early thread projects and patches the next queued one.
+        predicting.set()
       except FileNotFoundError:
         time.sleep(.001)
         continue
@@ -663,11 +665,7 @@ def worker(config, directory, handoff):
         meta['prepared_ns'] = time.monotonic_ns()
         if meta['prepared_ns'] >= expires:
           raise Unavailable('Input expired during preparation')
-        predicting.set()
-        try:
-          result = run_prediction(adapter, arrays, meta, hash_inputs=False)
-        finally:
-          predicting.clear()
+        result = run_prediction(adapter, arrays, meta, hash_inputs=False)
         last_prediction_ns = time.monotonic_ns()
         result.update(startup=count < 5, **live_timing(selected, begin, last_prediction_ns, context if 'slot_start_ns' in context else None))
         result['worker_marks'], marks = marks, {}
@@ -698,12 +696,8 @@ def worker(config, directory, handoff):
         # The encode dispatch is mostly USB transfer: the early thread meanwhile projects the next queued slot.
         primed = None
         if isinstance(error, Priming) and sampler is not None:
-          inputs = queued_inputs(error.anchors)
-          predicting.set()
-          try:
-            primed = adapter.prime(error.anchors, selected.query_ns+1_000_000_000, wait=False, inputs=inputs)
-          finally:
-            predicting.clear()
+          primed = adapter.prime(error.anchors, selected.query_ns+1_000_000_000, wait=False, inputs=queued_inputs(error.anchors))
+          marks.pop('lookahead_ns', None)  # the mark belongs to predictions only
         if primed is False:
           error = Unavailable('Front-camera feature priming missed its slot deadline')
         elif primed:
@@ -730,6 +724,7 @@ def worker(config, directory, handoff):
         (handoff/'skipped').touch()
         continue
       finally:
+        predicting.clear()
         mapping.close()
         (handoff/'working.bin').unlink(missing_ok=True)
   finally:
