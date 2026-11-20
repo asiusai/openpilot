@@ -55,7 +55,7 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; the prefill verifies up to 31 draft tokens with 32 independent heads |
 | Continuation | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
-| Expert | Two Euler steps (`diffusion_steps`, 2 or 3); restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
+| Expert | One Euler step (`diffusion_steps`, 1 to 3); restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
 Each prediction uploads uncached images in one pixel transfer. The GPU expands the byte patches to BF16 and encodes up to two images per call.
@@ -98,8 +98,9 @@ the early -0.1 s encode it queues the second (`prefill_ahead`). A prediction ski
 positions and image keys match the queued part; after any change it runs that part and every later part again.
 The early parts move about 26 ms of prefill off the critical path.
 The trajectory start state depends only on the ego history. It is estimated on the CPU while the GPU runs the prefill.
-Two Euler steps take about 7 ms less than three. On 24 real samples (city turns, fast curves, cruise) the mean 3 s heading
-error to the driven path was 9.3 deg with two steps, 9.4 with three and 9.9 with ten. A 160-token image budget raised it to 14.0 deg.
+Each Euler step takes about 6 ms. On 24 real samples (city turns, fast curves, cruise) the mean 3 s heading error to the
+driven path was 9.3 deg with one or two steps, 9.4 with three and 9.9 with ten; turns reached 66-68% of the driven heading at
+1 s with every step count. A 160-token image budget raised the 3 s error to 14.0 deg.
 The native camera sampler takes NV12 frames directly. It converts only the sampled region (plus an 8-pixel margin) to RGB
 and reads interleaved RGB, which removes the full-frame conversion and planar copy. Each new crop is checked once against
 full-frame conversion; libswscale converts widths that are multiples of 16 with other rounding, so crops avoid them.

@@ -23,9 +23,10 @@ class Config:
   initial_noise: Path | None = None
   device_timeout_ms: int = 10000
   native_fresh_patches: bool = False
-  # Euler steps of the trajectory expert. On 24 real samples the 3 s heading error to the driven path was 9.3 deg with
-  # two steps, 9.4 deg with three and 9.9 deg with ten; two steps differ from three by 0.3 deg on average.
-  diffusion_steps: int = 2
+  # Euler steps of the trajectory expert. On 24 real samples the 3 s heading error to the driven path was 9.3 deg with one
+  # or two steps, 9.4 deg with three and 9.9 deg with ten. Predicted turns reached 66-68% of the driven heading at 1 s with
+  # every step count. One step differs from two by 1.0 deg on average at 3 s.
+  diffusion_steps: int = 1
 
   def __post_init__(self):
     for name in ('checkpoint','fp8_cache','prefill_calibration','cache_dir','initial_noise'):
@@ -35,8 +36,8 @@ class Config:
       raise ValueError('Device timeout must be positive')
     if type(self.native_fresh_patches) is not bool:
       raise ValueError('native_fresh_patches must be boolean')
-    if self.diffusion_steps not in (2,3):
-      raise ValueError('diffusion_steps must be 2 or 3')
+    if self.diffusion_steps not in (1,2,3):
+      raise ValueError('diffusion_steps must be 1, 2 or 3')
 
 
 @dataclass

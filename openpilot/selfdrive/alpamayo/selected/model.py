@@ -392,8 +392,8 @@ class SelectedModel(EdgeModel):
     return logits,token.float().realize()
 
   def _trajectory(self, actions, cos, sin, length, steps, offset):
-    if steps not in (2,3) or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
-      raise ValueError('Selected expert requires two or three Euler steps and 2304 KV rows')
+    if steps not in (1,2,3) or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
+      raise ValueError('Selected expert requires one to three Euler steps and 2304 KV rows')
     before = self.trace_counts['expert_attention']
     self.expert_layer = 0
     self.trajectory_active = True
