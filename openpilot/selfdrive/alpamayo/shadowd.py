@@ -15,7 +15,7 @@ CAMERA_FRAME_NS = 50_000_000  # 20 FPS front cameras: frame IDs advance by perio
 HELD_FRAMES_NS = 2_600_000_000  # Free-running: the worker keeps projections covering the 2 s history.
 ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
 START_LATENESS_NS = 200_000_000  # the worker predicts a slot only if it picks it up within this time of its opening
-RING_LATENESS_NS = 110_000_000  # the same with 100 ms slots, where a later slot opens soon after
+RING_LATENESS_NS = 80_000_000  # the same with 100 ms slots, where a later slot opens soon after
 RING_STARVATION_NS = 400_000_000  # with 100 ms slots, a slot after this long without a prediction uses START_LATENESS_NS
 
 def planner_mode():
