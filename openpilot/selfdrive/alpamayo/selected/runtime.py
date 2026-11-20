@@ -319,9 +319,9 @@ class Runtime:
       template = self.part_templates[part]
       if template is None or template['digest'] != digest:
         overlap = [(i,begin,end) for i,(begin,end) in enumerate(spans[:images]) if begin < stop and end > start]
-        rows = self.prefill.rows
+        part_ids,part_cos,part_sin = self.prefill.part_rows(part,ids,cos,sin,x_axis=-1)
         self.part_templates[part] = {
-          'digest':digest,'ids':rows(ids,start,stop,-1),'cos':rows(cos,start,stop),'sin':rows(sin,start,stop),
+          'digest':digest,'ids':part_ids,'cos':part_cos,'sin':part_sin,
           'pieces':tuple((i,max(begin,start)-begin,min(end,stop)-begin) for i,begin,end in overlap),  # image, feature rows
           'spans':tuple((max(begin,start)-start,min(end,stop)-start) for _,begin,end in overlap)}  # rows in this part
       digests.append(digest)
@@ -348,33 +348,37 @@ class Runtime:
     for part,template in enumerate(self.part_templates):
       if template is None or len(keys) < part+3 or any(key not in self.vision.cache for key in keys[:part+3]):
         break
-      identity = self.part_identity(part,template['digest'],keys)
-      if identity != self.parts_done[part]:
-        for later in range(part,len(self.parts_done)):
-          self.parts_done[later] = None  # later parts attend to this part's rows
-        pieces,spans = template['pieces'],template['spans']
-        if (part,pieces,spans) not in self.part_stitchers:
-          from tinygrad import Tensor
-          from .graph_cache import CachedJit
-          def stitch(ids, *features, pieces=pieces, spans=spans):
-            # Token embeddings with the image feature rows in place; a part may start or end inside an image.
-            embedding = self.model.weights['vlm.model.language_model.embed_tokens.weight'][ids]
-            chunks,cursor = [],0
-            for feature,(_,a,b),(begin,end) in zip(features,pieces,spans,strict=True):
-              if begin > cursor:
-                chunks.append(embedding[:,cursor:begin])
-              chunks.append(feature[a:b].unsqueeze(0))
-              cursor = end
-            if cursor < embedding.shape[1]:
-              chunks.append(embedding[:,cursor:])
-            return Tensor.cat(*chunks,dim=1).realize()
-          self.part_stitchers[(part,pieces,spans)] = CachedJit(stitch,f'stitch-part-{part}-{pieces}-{spans}')
-        features = [self.vision.cache[keys[i]] for i,_,_ in pieces]
-        embedding = self.part_stitchers[(part,pieces,spans)](template['ids'],*features)
-        self.prefill.part(part,embedding,template['cos'],template['sin'])
-        self.parts_done[part] = identity
+      if self.part_identity(part,template['digest'],keys) != self.parts_done[part]:
+        self.run_part(part,keys)
       ready += 1
     return ready
+
+  def run_part(self, part, keys):
+    """Stitch and prefill one early part from its template and the vision features of `keys`; all work is captured graphs."""
+    template = self.part_templates[part]
+    for later in range(part,len(self.parts_done)):
+      self.parts_done[later] = None  # later parts attend to this part's rows
+    pieces,spans = template['pieces'],template['spans']
+    if (part,pieces,spans) not in self.part_stitchers:
+      from tinygrad import Tensor
+      from .graph_cache import CachedJit
+      def stitch(ids, *features, pieces=pieces, spans=spans):
+        # Token embeddings with the image feature rows in place; a part may start or end inside an image.
+        embedding = self.model.weights['vlm.model.language_model.embed_tokens.weight'][ids]
+        chunks,cursor = [],0
+        for feature,(_,a,b),(begin,end) in zip(features,pieces,spans,strict=True):
+          if begin > cursor:
+            chunks.append(embedding[:,cursor:begin])
+          chunks.append(feature[a:b].unsqueeze(0))
+          cursor = end
+        if cursor < embedding.shape[1]:
+          chunks.append(embedding[:,cursor:])
+        return Tensor.cat(*chunks,dim=1).realize()
+      self.part_stitchers[(part,pieces,spans)] = CachedJit(stitch,f'stitch-part-{part}-{pieces}-{spans}')
+    features = [self.vision.cache[keys[i]] for i,_,_ in pieces]
+    embedding = self.part_stitchers[(part,pieces,spans)](template['ids'],*features)
+    self.prefill.part(part,embedding,template['cos'],template['sin'])
+    self.parts_done[part] = self.part_identity(part,template['digest'],keys)
 
   def _predict(self, sample, noise, retained):
     import torch
@@ -425,8 +429,12 @@ class Runtime:
           metrics.prefix_ahead += 1
           continue
         reuse = False
-        self.prefill.part(part,*self.prefill.part_inputs(part,embedding,cos,sin))
-        self.parts_done[part] = identity
+        if digest is not None:
+          self.run_part(part,self.vision.keys)  # the same captured graphs as prefill_ahead()
+        else:
+          # Other prompt layouts copy the rows outside a graph, which costs much more host time.
+          self.prefill.part(part,*self.prefill.part_rows(part,embedding,cos,sin))
+          self.parts_done[part] = None
       logits = self.prefill(embedding,cos,sin,64,prompt)
       # The start state depends only on the ego history. Estimate it on the CPU while the GPU runs the prefill.
       if self.action_space is None:

@@ -63,10 +63,19 @@ class SpeculativePrefill(PaddedPrefill):
     shape[axis],index[axis] = end-start,slice(start,end)
     return Tensor.empty(*shape,dtype=t.dtype,device=t.device).assign(t[tuple(index)]).realize()
 
-  @classmethod
-  def part_inputs(cls, part, x, cos, sin):
+  def part_rows(self, part, x, cos, sin, x_axis=-2):
+    """Copies of one part's rows of x (embedding rows, or token ids with x_axis=-1), cos and sin, as a captured graph.
+
+    Scheduling the copies outside a graph costs 50-100 ms of host time each on the Dragon. The outputs are the graph's
+    reused buffers: they hold this call's rows until the next call with the same shapes.
+    """
     start,end = PREFILL_SPLITS[part:part+2]
-    return tuple(cls.rows(t,start,end) for t in (x,cos,sin))
+    key = ('rows',part,x_axis,x.shape,x.dtype,cos.shape)
+    if key not in self.part_jits:
+      from .graph_cache import CachedJit
+      self.part_jits[key] = CachedJit(lambda x,c,s: (self.rows(x,start,end,x_axis),self.rows(c,start,end),self.rows(s,start,end)),
+                                      f'prefill-rows-{key}')
+    return self.part_jits[key](x,cos,sin)
 
   def part(self, part, x, cos, sin):
     """Prefill one early part of the prompt into the KV cache. Earlier parts must already be in the cache."""
