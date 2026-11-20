@@ -101,6 +101,9 @@ The trajectory start state depends only on the ego history. It is estimated on t
 Each Euler step takes about 6 ms. On 24 real samples (city turns, fast curves, cruise) the mean 3 s heading error to the
 driven path was 9.3 deg with one or two steps, 9.4 with three and 9.9 with ten; turns reached 66-68% of the driven heading at
 1 s with every step count. A 160-token image budget raised the 3 s error to 14.0 deg.
+Signed 4-bit language weights (one FP16 scale per 32) in the BF16 reference raised the 3 s error from 9.28 to 9.62 deg
+(MLP only) and 9.77 deg (all projections), changed 2 of 24 reasoning texts and lowered the 1 s turn ratio from 66% to 63-64%.
+Prompt processing is compute-bound, so four-bit weights would only shorten verification rounds (about 2 ms per plan).
 The native camera sampler takes NV12 frames directly. It converts only the sampled region (plus an 8-pixel margin) to RGB
 and reads interleaved RGB, which removes the full-frame conversion and planar copy. Each new crop is checked once against
 full-frame conversion; libswscale converts widths that are multiples of 16 with other rounding, so crops avoid them.
