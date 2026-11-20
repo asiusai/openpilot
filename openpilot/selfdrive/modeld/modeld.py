@@ -322,8 +322,8 @@ def main(demo=False):
   pm = PubMaster(pub_socks)
   planner = plan_sock = None
   if use_alpamayo:
-    from openpilot.selfdrive.alpamayo.planner import PlanSelector
-    planner = PlanSelector()
+    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_lateral_gain
+    planner = PlanSelector(configured_lateral_gain())
     # Every queued plan packet: an invalid packet for a skipped slot can follow a valid plan within one camera frame.
     plan_sock = messaging.sub_sock('alpamayoPlan')
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",

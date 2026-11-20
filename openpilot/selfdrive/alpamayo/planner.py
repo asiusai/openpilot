@@ -51,8 +51,23 @@ def packet(result):
               x=xyz[:, 0].tolist(), y=xyz[:, 1].tolist(), yaw=np.arctan2(rot[:, 1, 0], rot[:, 0, 0]).tolist())
 
 
+def configured_lateral_gain():
+  """Test gain on Alpamayo's curvature from ALPAMAYO_CONFIG `lateral_gain` (1.0 when unset).
+
+  On-road Alpamayo plans turned about 70% of the measured heading change 1 s ahead, so tight turns drove wide.
+  """
+  import json, os
+  from pathlib import Path
+  path = os.environ.get('ALPAMAYO_CONFIG')
+  gain = json.loads(Path(path).read_text()).get('lateral_gain', 1.0) if path and os.path.isfile(path) else 1.0
+  if type(gain) not in (int, float) or not 1.0 <= gain <= 2.0:
+    raise ValueError('lateral_gain must be between 1.0 and 2.0')
+  return float(gain)
+
+
 class PlanSelector:
-  def __init__(self):
+  def __init__(self, lateral_gain=1.0):
+    self.lateral_gain = lateral_gain
     self.query = self.ready = self.streak = 0
     self.curve = None
     self.held = None
@@ -96,6 +111,9 @@ class PlanSelector:
     if (not np.isfinite([curvature,a]).all() or not ACCEL_MIN <= a <= ACCEL_MAX or
         abs(curvature) > MAX_CURVATURE or abs(curvature)*v_ego**2 > MAX_LATERAL_ACCEL_NO_ROLL):
       return None
+    # The gained command stays inside the same curvature and lateral-acceleration limits as the plan itself.
+    limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
+    curvature = float(np.clip(curvature*self.lateral_gain, -limit, limit))
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
 
   def apply(self, model, now, speed, lat_delay, long_delay):
