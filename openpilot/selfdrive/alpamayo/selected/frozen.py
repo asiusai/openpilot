@@ -18,7 +18,7 @@ def checked(path, digest):
 @lru_cache(None)
 def manifest():
   value = json.loads((ASSETS/'manifest.json').read_text())
-  if value['tinygrad_revision'] != TINYGRAD_REVISION or value['target'] != 'gfx1200' or len(value['objects']) != 30:
+  if value['tinygrad_revision'] != TINYGRAD_REVISION or value['target'] != 'gfx1200' or len(value['objects']) != 44:
     raise ValueError('Unsupported selected kernel manifest')
   return value
 

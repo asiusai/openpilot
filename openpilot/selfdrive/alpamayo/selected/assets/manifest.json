@@ -333,6 +333,146 @@
    "source_sha256": "adcb367c1d03b44a2a745d2f62bf295309146057004a3a6c6b046ff6c8267764",
    "binary_sha256": "4744f42b6523b230c7a51283c2b1cfd80493cd8ed82a956f64ba8a65bdbc3101",
    "bytes": 28736
+  },
+  {
+   "kind": "serial_norm_fp8",
+   "args": [
+    2048
+   ],
+   "source_sha256": "34d7a1c4c634281cba76cafc8127ca2acd034ec1a835ab5907bb7d8fe54068c5",
+   "binary_sha256": "4c310c653ea631ce6268709858719f30e3a273297618e2025e946f394799d3fb",
+   "bytes": 10536
+  },
+  {
+   "kind": "serial_qkv_rope_store",
+   "args": [
+    2048,
+    0
+   ],
+   "source_sha256": "2cc2aa3026dad222a862546bfca01f40bdfb51b3bafe9b669871cb19493d59ca",
+   "binary_sha256": "5469ddee82cc36ff9cd76f78c8ce8094c3e12dedcfbd08db084d2dd25ea718aa",
+   "bytes": 8616
+  },
+  {
+   "kind": "serial_qkv_rope_store",
+   "args": [
+    2048,
+    1
+   ],
+   "source_sha256": "a3d666f46b35412f103e848bd8321533504570226a1835fe5bbfba19c6fe24a0",
+   "binary_sha256": "3fb53328ec966bd6f15aaa467a7ac03a6cc0218758e745d7f3701613f9033abd",
+   "bytes": 8616
+  },
+  {
+   "kind": "serial_qkv_rope_store",
+   "args": [
+    2048,
+    2
+   ],
+   "source_sha256": "55af174a17b1052a6465610cb3728a9682c4b914e2728a0e6d0946db16c2d29e",
+   "binary_sha256": "1ae0be3466bd2af0766d7bae5e88cbebbba320bcf54344ac26205efdc138354d",
+   "bytes": 8616
+  },
+  {
+   "kind": "serial_qkv_rope_store",
+   "args": [
+    2048,
+    3
+   ],
+   "source_sha256": "74de943b3affd003ea9bf8cb30d5c0606da52ec766f5f35f7feed8534e014eab",
+   "binary_sha256": "0206875038958b667e08755fa50c1401c9bd94da0fe0dbc696a062d33700127f",
+   "bytes": 8616
+  },
+  {
+   "kind": "serial_qkv_rope_store",
+   "args": [
+    2048,
+    4
+   ],
+   "source_sha256": "f72c30eb58a02dd8ff3c714857280e2f470689bd845e66f19e3ebeab93473f7c",
+   "binary_sha256": "e218b869fec53caf45d016dba0dc3d9a4e85bb978696b490c251aaae6bd68dae",
+   "bytes": 8616
+  },
+  {
+   "kind": "serial_qkv_rope_store",
+   "args": [
+    2048,
+    5
+   ],
+   "source_sha256": "17c679b325ceaa614bc3fe98c328e9ecccc6044478f45c8ca32b39ad28ce8552",
+   "binary_sha256": "d20cfb58773ef36e3cdd7e7fdd07046f0f863d42790183ef1100302e07f03fff",
+   "bytes": 8616
+  },
+  {
+   "kind": "serial_scores",
+   "args": [
+    16,
+    8,
+    2304,
+    128
+   ],
+   "source_sha256": "ef68174c564b0c9e0e8f2468eb6398b8664c02dc018bb9d1c22fe28a4a6c8063",
+   "binary_sha256": "8bbcd21237e4c7df75e50213b496661a70a2737f4f8bc3b5d6f87113c1554605",
+   "bytes": 9504
+  },
+  {
+   "kind": "serial_values",
+   "args": [
+    16,
+    8,
+    2304,
+    128
+   ],
+   "source_sha256": "2edc7b570b4c74aeb288ee0652c3077162322c4ee5775ff14df558bd1c6c24d8",
+   "binary_sha256": "874c799d1f743e7e5878584c0338f07429b560556a420083146a6196b0c92792",
+   "bytes": 5152
+  },
+  {
+   "kind": "serial_attn_out_fp8",
+   "args": [
+    2048
+   ],
+   "source_sha256": "7441555cc2af472d74ea926bb2a4e6f624bebf59e1700af768f101c721ae5177",
+   "binary_sha256": "35a4f1ebdb3425c33a0eda489dda1ddbfc77703e93945e1ab352a2d9d7e269d0",
+   "bytes": 8112
+  },
+  {
+   "kind": "serial_o_gemv",
+   "args": [
+    2048,
+    2048
+   ],
+   "source_sha256": "a86468b5ee70cb51b0ec3f2ae3743d8544784b9e59602b3b54a857087df88de5",
+   "binary_sha256": "aeac1a623b34eb1e1e6bd02448a50305fc14d03dfba851572d3d76e358ba9119",
+   "bytes": 7064
+  },
+  {
+   "kind": "serial_residual_norm_f16",
+   "args": [
+    2048
+   ],
+   "source_sha256": "44228a1c704cd05c6b2d8887c29db0336afa06cf7a69bb9eefa5346e8a718f08",
+   "binary_sha256": "fe4304fb90293f2802dbe1ffdfb9eaef9f470c8985928276ea0f2557204db193",
+   "bytes": 11568
+  },
+  {
+   "kind": "serial_relu2_f16",
+   "args": [
+    9216
+   ],
+   "source_sha256": "b11f68752845cd948bbe68b6135ae66f908cf4c6b361a19f34b591fbfcf699cc",
+   "binary_sha256": "3f5ab718dc889c241d7201d95e7f46c9bbacfaff8232a02f697072a5c31fb85e",
+   "bytes": 11816
+  },
+  {
+   "kind": "projection_w4_gemv_residual",
+   "args": [
+    2048,
+    9216
+   ],
+   "source_sha256": "228167694730b60f013c75de557bb5437e1cf4f1eb287887e9ccbd968d015e61",
+   "binary_sha256": "714c08690ec0e115570786a4155ced43c88becd0be49137a298ced40b4d382b5",
+   "bytes": 5568
   }
  ],
  "vocabulary_sha256": "a31437be0e5b900d3028ec8fb809bcb86e767ef1e703f727b052675fca9f18b0"

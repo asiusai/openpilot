@@ -87,6 +87,9 @@ one merged Q/K/V projection writes attention heads directly, FC1 applies GELU an
 Each image's FP8 scale still uses the `grouped_quantize` expressions. Single-image encodes keep the general path.
 The frozen pair plan holds 38 programs. A regenerated plan keeps the programs of unchanged operations and compiles only changed ones.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
+In full blocks each serial layer is eleven launches with the original arithmetic: norm and FP8 quantize, one Q/K/V GEMV with RoPE
+and the KV row store, scores, softmax, values, output quantize, o_proj, residual and norm, W4 FC1, ReLU^2 quantize, and W4 FC2 with
+the residual add. Tokens, logits and KV rows matched the previous layer at positions 2025-2083; about 0.6 ms less per token.
 No runtime recipe switches or experimental installers are exposed.
 
 ### Graph cache
