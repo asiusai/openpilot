@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import signal
 import struct
 import sys
@@ -506,6 +507,11 @@ def worker(config, directory, handoff):
           os.sched_setaffinity(int(task), big)
         except ProcessLookupError:
           pass  # the thread exited
+      # The external GPU's USB 3 controller interrupt follows the worker: on core 6, real-time modeld and camerad starved
+      # its completion work and the PCIe-over-USB link failed within minutes.
+      from openpilot.common.gpio import get_irqs_for_action
+      for irq in get_irqs_for_action('xhci-hcd:usb2'):
+        subprocess.run(['sudo', 'tee', f'/proc/irq/{irq}/smp_affinity_list'], input=b'5', stdout=subprocess.DEVNULL, check=False)
   early_ready = []  # (views, deadline_ns): projected by the early thread, encoded on the main thread between predictions
   lookahead = {}  # 'pair': (projected images, anchor_inputs) of the queued slot; 'identity': the last examined input file
   lookahead_lock = threading.Lock()  # held while the early thread projects a queued slot
