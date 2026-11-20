@@ -18,7 +18,7 @@ from ..frozen import ASSETS, TINYGRAD_REVISION, checked
 
 ASSET = Path(__file__).with_name('gfx1200.json.gz')
 PROGRAMS = 38
-SHA256 = '7066caaa1ded6449160e009641c4a6d9c23adb6b573aaec1ed8ff8f61d371a1a'
+SHA256 = 'bdf9857f01ad98694ac3f3812e87727ed78c6316cb03901c8f0f31506f24cc1d'
 TARGET = Target('AMD', 'LLVM', 'gfx1200', 'USB')
 CLASSES = {c.__name__: c for c in (Opt, Estimates, Target, KernelInfo, ParamArg, ProgramInfo)}
 ENUMS = {c.__name__: c for c in (Ops, AxisType, AddrSpace, OptOps)}

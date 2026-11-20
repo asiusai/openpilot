@@ -89,27 +89,33 @@ def attention(q, k, v):
   return Tensor.custom_kernel(out,q.contiguous(),k.contiguous(),v.contiguous(),fxn=partial(attention_program,shape=q.shape))[0]
 
 
-PREFILL_ATTENTION = (16, 8, 2112, 2304, 128)
+PREFILL_ATTENTION = (16, 8, 2304, 128)  # query heads, KV heads, cache rows, width
+PREFILL_ATTENTION_PARTS = {(576, 0), (192, 576), (1344, 768)}  # (query rows, first query row)
 
 
-def prefill_attention_program(out, q, kv):
+def prefill_attention_program(out, q, kv, *, rows, offset):
+  heads,kv_heads,capacity,width = PREFILL_ATTENTION
   dependency = q.flatten()[0].load()+kv.flatten()[0].load()
-  sink = UOp.sink(out.flatten()[0].store(dependency), UOp.special(1056, 'gidx0'), UOp.special(64, 'lidx0'),
+  sink = UOp.sink(out.flatten()[0].store(dependency), UOp.special(rows//16*kv_heads, 'gidx0'), UOp.special(64, 'lidx0'),
                   arg=KernelInfo(name='agent_prefill_cache_attention'))
-  return frozen_program(sink, 'prefill_cache_attention', PREFILL_ATTENTION)
+  args = (heads,kv_heads,rows,capacity,width) + ((offset,) if offset else ())
+  return frozen_program(sink, 'prefill_cache_attention', args)
 
 
-def prefill_attention(q, kv):
-  """Causal prefill attention reading K and V rows below 2112 directly from the (2,1,8,2304,128) KV cache.
+def prefill_attention(q, kv, offset=0):
+  """Causal prefill attention for query rows offset..offset+rows, reading K and V straight from the (2,1,8,2304,128) KV cache.
 
   Each 64-thread workgroup holds the two query heads of one KV head for one 16-row tile; V loads use the gfx12
-  transposing load. The online softmax keeps the original per-row 32-key block order and rounding.
+  transposing load. The online softmax keeps the original per-row 32-key block order and rounding, so a split
+  prefill gives the same bits as the full one.
   """
-  heads,kv_heads,rows,capacity,width = PREFILL_ATTENTION
+  heads,kv_heads,capacity,width = PREFILL_ATTENTION
+  rows = q.shape[2]
+  assert (rows,offset) in PREFILL_ATTENTION_PARTS
   assert q.shape == (1,heads,rows,width) and kv.shape == (2,1,kv_heads,capacity,width)
   assert q.dtype == kv.dtype == dtypes.bfloat16
   out = Tensor.empty(q.shape, device=q.device, dtype=q.dtype)
-  return Tensor.custom_kernel(out,q.contiguous(),kv,fxn=prefill_attention_program)[0]
+  return Tensor.custom_kernel(out,q.contiguous(),kv,fxn=partial(prefill_attention_program,rows=rows,offset=offset))[0]
 
 
 def mlp_program(out, x, weight, xs, ws, output_scale, *, rows):

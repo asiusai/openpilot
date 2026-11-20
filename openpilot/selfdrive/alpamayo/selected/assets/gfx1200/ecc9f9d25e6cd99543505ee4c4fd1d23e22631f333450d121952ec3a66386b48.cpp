@@ -1,6 +1,8 @@
 // LAUNCH 1056 64
-// Exact prefill causal attention reading K and V from the (2,1,8,CAP,128) KV cache. Variant final.
-#define ROWS 2112
+// Exact prefill causal attention reading K and V from the (2,1,8,CAP,128) KV cache, for query rows Q0..Q0+ROWS.
+// Every absolute row reads the same key blocks, mask and softmax order as the single 2112-row prefill.
+#define ROWS 192
+#define Q0 576
 #define CAP 2304
 #define DEV __attribute__((device)) __attribute__((always_inline)) inline
 typedef unsigned short u16;
@@ -32,15 +34,15 @@ DEV float exp2_exact(float d) {
 extern "C" __attribute__((global,amdgpu_flat_work_group_size(1,64)))
 void agent_prefill_cache_attention(u16 *out,const u16 *q,const u16 *kv) {
 #pragma clang fp contract(off)
-  constexpr int H=16, KH=8, R=ROWS, K=ROWS, W=128, D=8, WAVES=64/32;
+  constexpr int H=16, KH=8, R=ROWS, K=Q0+ROWS, W=128, D=8, WAVES=64/32;
   int thread=__ockl_get_local_id(0), lane=thread%32, wave=__builtin_amdgcn_readfirstlane(thread/32), block=__ockl_get_group_id(0);
   int head, tile;
-  { int kvh=block%KH; tile=131-block/KH; head=kvh*2+wave; }
+  { int kvh=block%KH; tile=(ROWS/16-1)-block/KH; head=kvh*2+wave; }
   __attribute__((shared)) int occupancy_pad[12800/4];  // limits resident waves (fewer waves thrash caches less)
   if(__builtin_amdgcn_readfirstlane(block)==0x7fffffff) { volatile int *pp=occupancy_pad; pp[thread]=thread; }  // never taken; keeps the allocation
   if(tile*16>=R) return;
   int kh=head/(H/KH);
-  int qr=tile*16+lane%16;
+  int qr=tile*16+lane%16;  // local query row; absolute row Q0+qr
   s8 query[D];
   for(int d=0;d<D;d++) for(int i=0;i<8;i++) {
     int dim=d*16+(lane/16)*8+i;
@@ -60,7 +62,7 @@ void agent_prefill_cache_attention(u16 *out,const u16 *q,const u16 *kv) {
 #define VADDR(row,dim) ((gs8*)(vp+(row)*W+(dim)))
 #endif
   f8 accum[D]={}; float denom=0.0f, maxima=-__builtin_inff();
-  int end=(tile*16+15)/32*32+32;  // blocks after the one holding this wave's diagonal are fully masked
+  int end=(Q0+tile*16+15)/32*32+32;  // blocks after the one holding this wave's diagonal are fully masked
 #if 0 && 1
   unsigned ko=koff, vo=voff;
 #endif
@@ -107,7 +109,7 @@ void agent_prefill_cache_attention(u16 *out,const u16 *q,const u16 *kv) {
     bool diagonal=start+32>=end;
     if(diagonal) {
       for(int sub=0;sub<2;sub++) for(int i=0;i<8;i++) {
-        int row=tile*16+lane%16, col=start+sub*16+(lane/16)*8+i;
+        int row=Q0+tile*16+lane%16, col=start+sub*16+(lane/16)*8+i;
         scores[sub][i]=(col<K && col<=row)?scores[sub][i]*0.08838834764831845f:-__builtin_inff();
       }
     } else {

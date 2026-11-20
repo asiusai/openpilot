@@ -402,9 +402,10 @@ class Preparer:
     def warp(item):
       frame, calibration = item
       pixels = frame.pixels
-      if frame.format == 'nv12':
+      if frame.format == 'nv12' and self.sampler is None:
         import av
         pixels = np.ascontiguousarray(av.VideoFrame.from_ndarray(pixels, format='nv12').to_ndarray(format='rgb24').transpose(2, 0, 1))
+      # The native sampler takes NV12 directly and converts only the region it samples.
       image = (self.sampler or calibrated_image)(pixels, frame.camera, self.geometry, calibration)
       if self.segmented and not reuse:
         if image.shape != IMAGE[1:] or image.dtype != np.uint8:

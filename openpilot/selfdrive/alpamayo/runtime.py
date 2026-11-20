@@ -441,7 +441,7 @@ def load_adapter(config):
   if variant == 'default':
     from openpilot.selfdrive.alpamayo.inference import ShadowAdapter
   elif variant == 'selected':
-    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches'}
+    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches', 'diffusion_steps'}
     if extra := settings.keys()-allowed:
       raise ValueError(f'Unexpected selected inference fields: {sorted(extra)}')
     settings['cache_dir'] = str(Path(config['cache']).resolve())
@@ -544,6 +544,9 @@ def worker(config, directory, handoff):
           adapter.prime(pair, deadline, wait=False, inputs=inputs)
       except Exception as error:  # noqa: BLE001
         print(f'Early encoding skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+        continue
+      if pairs:
+        prefill_next(pairs[0][0][0][0])  # the predicted -0.1 s front image allows the second early prefill part
 
   def project_queued():
     # A slot queued behind a running prediction: project and patch its current pair now, on the CPU, so its pickup starts
@@ -574,6 +577,18 @@ def worker(config, directory, handoff):
         project_early(handoff/'early.bin')
       elif not (segmented and hasattr(adapter, 'encode_ahead') and predicting.is_set() and project_queued()):
         time.sleep(.002)
+  def prefill_next(early_front=None):
+    # The next slot's three older front images are already in the anchor ring, and its -0.1 s front image is encoded
+    # early. Their prompt rows go to the GPU while it is idle; the next prediction checks that its own early parts
+    # match before it skips them.
+    if not (segmented and hasattr(adapter, 'prefill_ahead') and len(preparer.anchors) == preparer.lags[0]):
+      return
+    images = [preparer.anchors[-lag][1][0][0] for lag in preparer.lags]+([early_front] if early_front is not None else [])
+    try:
+      marks[f'prefill_ahead_{len(images)}_ns'] = time.monotonic_ns()
+      marks[f'prefill_ahead_{len(images)}'] = adapter.prefill_ahead(images)
+    except Exception as error:  # noqa: BLE001 - only the shortcut is lost
+      print(f'Early prefill skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
   marks = {}  # monotonic marks of the worker loop, attached to the next prediction record
   writer, count = PredictionWriter(), 0
   stopping = False
@@ -607,6 +622,7 @@ def worker(config, directory, handoff):
       try:
         begin = time.monotonic_ns()
         selected, context = mapping.enter_context(load_selection(handoff/'working.bin'))  # stays open until the log thread has hashed it
+        marks['loaded_ns'] = time.monotonic_ns()
         with lookahead_lock:  # a queued-slot projection in progress finishes sooner than a second projection
           admitted = time.monotonic_ns()
         if (period_ms in (250, 500) and not context.get('anchor_only') and 'slot_start_ns' in context and
@@ -643,6 +659,7 @@ def worker(config, directory, handoff):
           temporary.write_text(json.dumps(packet(result), allow_nan=False))
           temporary.replace(handoff/'plan.json')
           publish_reasoning(result)
+        prefill_next()
         gc.collect(1)
         # Audit hashes cover the exact inputs but are not needed to publish the plan. The log thread computes them from the
         # still-open mapping and then releases it, so the next slot starts without waiting.

@@ -1,10 +1,10 @@
-#define M 2112
+#define M 192
 #define N 9216
 #define K 2048
 #define TM 4
 #define TN 4
-#define PADM 2112
-#define MTILES 33
+#define PADM 192
+#define MTILES 3
 #define NTILES 144
 #define EPILOGUE_ONLY 0
 

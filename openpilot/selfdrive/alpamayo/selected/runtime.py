@@ -1,4 +1,5 @@
 """Selected inference API. The shared runtime owns live/replay scheduling and logging."""
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 import hashlib
@@ -22,6 +23,9 @@ class Config:
   initial_noise: Path | None = None
   device_timeout_ms: int = 10000
   native_fresh_patches: bool = False
+  # Euler steps of the trajectory expert. On 24 real samples the 3 s heading error to the driven path was 9.3 deg with
+  # two steps, 9.4 deg with three and 9.9 deg with ten; two steps differ from three by 0.3 deg on average.
+  diffusion_steps: int = 2
 
   def __post_init__(self):
     for name in ('checkpoint','fp8_cache','prefill_calibration','cache_dir','initial_noise'):
@@ -31,6 +35,8 @@ class Config:
       raise ValueError('Device timeout must be positive')
     if type(self.native_fresh_patches) is not bool:
       raise ValueError('native_fresh_patches must be boolean')
+    if self.diffusion_steps not in (2,3):
+      raise ValueError('diffusion_steps must be 2 or 3')
 
 
 @dataclass
@@ -41,6 +47,7 @@ class Metrics:
   vision_misses: int = 0
   uploaded_pixel_bytes: int = 0
   speculation: dict = field(default_factory=dict)
+  prefix_ahead: int = 0  # early prefill parts whose KV rows came from prefill_ahead()
 
 
 class Prediction(TypedDict):
@@ -121,6 +128,12 @@ class Runtime:
     self.lock = threading.Lock()
     self.stage_sync = True
     self.prime_done = 0
+    self.action_space = None
+    # Early prefill parts: image object -> vision key (recent images only), each part's inputs on the GPU, and the
+    # identity of the part whose KV rows the cache holds now.
+    self.image_keys = OrderedDict()
+    self.part_templates,self.parts_done = [None,None],[None,None]
+    self.part_stitchers = {}
     self.metrics = Metrics()
     self.startup_ms = {}
     previous = time.monotonic_ns()
@@ -198,7 +211,7 @@ class Runtime:
       self.manifest = {'variant':'selected','native_fresh_patches':self.config.native_fresh_patches,
                        'recipe':'fp8-group2-pad2112-draft32-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
                        'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
-                       'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2112,
+                       'diffusion_steps':self.config.diffusion_steps,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2112,
                        'cache_rows':2304,'vision_group_limit':2,'vision_cache_capacity':144,'images':10,'patches_per_image':720,
                        'history_offsets_s':[-2,-1,-.5,-.1,0],'front_fov_degrees':[120,30],'bf16_vision_layers':2,
                        'bf16_expert_projections':True,'vision_scales':'dynamic-per-image','language_scales':'fixed-112',
@@ -245,6 +258,7 @@ class Runtime:
       return False
     # CPU patching overlaps queued GPU work. Before the shared upload buffer is rewritten, wait only for the previous prime.
     pixels,layout,grids,keys = self.anchor_inputs(anchors) if inputs is None else inputs
+    self.remember_images([image for image,_ in anchors],keys)
     missing = self.vision.missing_indices(keys)
     encoded = {}
     if missing:
@@ -272,6 +286,95 @@ class Runtime:
       noise = self.noise if noise is None else noise
       self.validate_noise(noise)
       return self._predict(sample,noise,retained)
+
+  def remember_images(self, images, keys):
+    for image,key in zip(images,keys,strict=True):
+      self.image_keys[id(image)] = (image,key)  # holding the image keeps its id unique
+      self.image_keys.move_to_end(id(image))
+    while len(self.image_keys) > 64:
+      self.image_keys.popitem(last=False)
+
+  def part_identity(self, part, digest, keys):
+    return (digest,tuple(keys[:part+3]),id(self.model.cache[0]) if self.model.cache else None)
+
+  def update_part_templates(self, packed, ids, cos, sin):
+    """Inputs of the early prefill parts (token ids, rotary rows, image pieces), kept on the GPU while they stay the same.
+
+    Early part i covers rows PREFILL_SPLITS[i] to PREFILL_SPLITS[i+1]-1 and may hold only the first i+3 front images.
+    Returns one digest per early part; None for a part (and every later part) whose rows hold other content.
+    """
+    import numpy as np
+    from .model import PREFILL_SPLITS
+    spans,token_ids,positions = self.inputs.spans,packed[0],packed[1]
+    digests = []
+    for part in range(len(PREFILL_SPLITS)-1):
+      start,stop = PREFILL_SPLITS[part:part+2]
+      images = part+3
+      if (digests and digests[-1] is None) or len(spans) <= images or not spans[images-1][0] < stop <= spans[images][0]:
+        digests.append(None)
+        self.part_templates[part] = None
+        continue
+      digest = hashlib.sha256(np.ascontiguousarray(token_ids[...,:stop]).tobytes()+np.ascontiguousarray(positions[...,:stop]).tobytes()+
+                              repr(spans[:images]).encode()).digest()
+      template = self.part_templates[part]
+      if template is None or template['digest'] != digest:
+        overlap = [(i,begin,end) for i,(begin,end) in enumerate(spans[:images]) if begin < stop and end > start]
+        rows = self.prefill.rows
+        self.part_templates[part] = {
+          'digest':digest,'ids':rows(ids,start,stop,-1),'cos':rows(cos,start,stop),'sin':rows(sin,start,stop),
+          'pieces':tuple((i,max(begin,start)-begin,min(end,stop)-begin) for i,begin,end in overlap),  # image, feature rows
+          'spans':tuple((max(begin,start)-start,min(end,stop)-start) for _,begin,end in overlap)}  # rows in this part
+      digests.append(digest)
+    return digests
+
+  def prefill_ahead(self, images):
+    """Queue the next plan's early prefill parts from its older front images while the GPU is idle.
+
+    Three images (-2, -1 and -0.5 s) allow the first part; the -0.1 s image as a fourth allows the second.
+    Returns the number of early parts the KV cache now holds for these images.
+    """
+    with self.lock:
+      if self.closed:
+        raise RuntimeError('Runtime is closed')
+      entries = [self.image_keys.get(id(image)) for image in images]
+      if len(entries) not in (3,4) or any(entry is None or entry[0] is not image for entry,image in zip(entries,images)):
+        return 0
+      return self._prefill_ahead(tuple(key for _,key in entries))
+
+  def _prefill_ahead(self, keys):
+    if self.model.cache is None:
+      return 0
+    ready = 0
+    for part,template in enumerate(self.part_templates):
+      if template is None or len(keys) < part+3 or any(key not in self.vision.cache for key in keys[:part+3]):
+        break
+      identity = self.part_identity(part,template['digest'],keys)
+      if identity != self.parts_done[part]:
+        for later in range(part,len(self.parts_done)):
+          self.parts_done[later] = None  # later parts attend to this part's rows
+        pieces,spans = template['pieces'],template['spans']
+        if (part,pieces,spans) not in self.part_stitchers:
+          from tinygrad import Tensor
+          from .graph_cache import CachedJit
+          def stitch(ids, *features, pieces=pieces, spans=spans):
+            # Token embeddings with the image feature rows in place; a part may start or end inside an image.
+            embedding = self.model.weights['vlm.model.language_model.embed_tokens.weight'][ids]
+            chunks,cursor = [],0
+            for feature,(_,a,b),(begin,end) in zip(features,pieces,spans,strict=True):
+              if begin > cursor:
+                chunks.append(embedding[:,cursor:begin])
+              chunks.append(feature[a:b].unsqueeze(0))
+              cursor = end
+            if cursor < embedding.shape[1]:
+              chunks.append(embedding[:,cursor:])
+            return Tensor.cat(*chunks,dim=1).realize()
+          self.part_stitchers[(part,pieces,spans)] = CachedJit(stitch,f'stitch-part-{part}-{pieces}-{spans}')
+        features = [self.vision.cache[keys[i]] for i,_,_ in pieces]
+        embedding = self.part_stitchers[(part,pieces,spans)](template['ids'],*features)
+        self.prefill.part(part,embedding,template['cos'],template['sin'])
+        self.parts_done[part] = identity
+      ready += 1
+    return ready
 
   def _predict(self, sample, noise, retained):
     import torch
@@ -301,6 +404,9 @@ class Runtime:
         from openpilot.selfdrive.alpamayo.frontend import Unavailable
         raise Unavailable('Lost a retained front-camera feature; restarting two-second history')
       missing = self.vision.missing_indices(self.vision.keys)
+      from openpilot.selfdrive.alpamayo.segments import FrontImages
+      if type(sample['image_frames']) is FrontImages:
+        self.remember_images(sample['image_frames'],self.vision.keys)
     with timed('cpu_buffers'):
       if self.inputs is None or not self.inputs.update(self.settings,self.adapter.config,prepared,packed):
         self.inputs = CompactInputs(self.settings,self.adapter.config,prepared,packed,vision=self.vision_buffers)
@@ -310,18 +416,34 @@ class Runtime:
       embedding = self.vision.encode(pixels,vpos,ids,self.inputs.batches,self.inputs.spans,missing)
     prompt = prepared['actual_prompt_length']
     with timed('prefill'):
+      # The KV cache may already hold this plan's early parts from prefill_ahead(); a part runs again after any change.
+      self.prefill.allocate(embedding,cos,64)
+      reuse = True
+      for part,digest in enumerate(self.update_part_templates(packed,ids,cos,sin)):
+        identity = self.part_identity(part,digest,self.vision.keys) if digest is not None else None
+        if reuse and identity is not None and identity == self.parts_done[part]:
+          metrics.prefix_ahead += 1
+          continue
+        reuse = False
+        self.prefill.part(part,*self.prefill.part_inputs(part,embedding,cos,sin))
+        self.parts_done[part] = identity
       logits = self.prefill(embedding,cos,sin,64,prompt)
+      # The start state depends only on the ego history. Estimate it on the CPU while the GPU runs the prefill.
+      if self.action_space is None:
+        action_config = dict(self.adapter.config.expert_config.action_space_cfg)
+        action_config.pop('_target_')
+        self.action_space = UnicycleAccelCurvatureCourseActionSpace(**action_config)
+      history_xyz,history_rot = prepared['ego_history_xyz'][:,0],prepared['ego_history_rot'][:,0]
+      with torch.no_grad():
+        t0_states = self.action_space.estimate_t0_states(history_xyz,history_rot)
     with timed('reasoning'):
       generated = self.decoder.generate(self.prefill,logits,dc,ds,prompt,prepared['prefill_draft'])
     with timed('diffusion'):
-      actions = self.model.trajectory(actions,ac,ass,prompt+len(generated),3,len(generated))
+      actions = self.model.trajectory(actions,ac,ass,prompt+len(generated),self.config.diffusion_steps,len(generated))
       action_array = download(actions)
     with timed('trajectory_decode'):
-      action_config = dict(self.adapter.config.expert_config.action_space_cfg)
-      action_config.pop('_target_')
-      action_space = UnicycleAccelCurvatureCourseActionSpace(**action_config)
       with torch.no_grad():
-        xyz,rot = action_space.action_to_traj(torch.from_numpy(action_array.copy()),prepared['ego_history_xyz'][:,0],prepared['ego_history_rot'][:,0])
+        xyz,rot = self.action_space.action_to_traj(torch.from_numpy(action_array.copy()),history_xyz,history_rot,t0_states=t0_states)
       if xyz.shape != (1,64,3) or rot.shape != (1,64,3,3) or not torch.isfinite(xyz).all() or not torch.isfinite(rot).all():
         raise RuntimeError('Invalid decoded trajectory')
     prediction = {'xyz':xyz.numpy().tolist(),'rot':rot.numpy().tolist(),'generated_token_ids':generated,
@@ -387,6 +509,14 @@ class Runtime:
       run(0)
       sample['nav_text'] = ['']
       phase('navigation_prompts')
+      # The early parts: their stitch graphs, then a prediction that reuses the queued KV rows.
+      self.parts_done = [None,None]
+      if self._prefill_ahead(tuple(self.vision.keys[:4])) != 2:
+        raise RuntimeError('Warmup early prefill failed')
+      run(0)
+      if self.metrics.prefix_ahead != 2:
+        raise RuntimeError('Warmup prediction did not reuse the early prefill')
+      phase('prefix_ahead')
       decoder = self.decoder
       generate,first_token = decoder.generate,decoder.first_token
       seen = []
@@ -411,6 +541,8 @@ class Runtime:
         decoder.history.clear()
         decoder.statistics = {}
         self.vision.cache.clear()
+        self.image_keys.clear()
+        self.parts_done = [None,None]
         self.vision.keys = ()
         self.vision.hits = self.vision.misses = 0
         self.adapter.reset()
@@ -489,6 +621,9 @@ class ShadowAdapter:
 
   def anchor_inputs(self, anchors):
     return self.runtime.anchor_inputs(anchors)
+
+  def prefill_ahead(self, images):
+    return self.runtime.prefill_ahead(images)
 
   def encode_ahead(self, anchors, inputs=None):
     """Queue the current pair's vision encoding while the CPU prepares the rest of the input.

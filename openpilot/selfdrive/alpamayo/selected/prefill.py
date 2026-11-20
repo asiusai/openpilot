@@ -2,20 +2,14 @@
 from tinygrad import Tensor, TinyJit, dtypes
 from tinygrad.helpers import round_up
 from tinygrad.uop.ops import UOp
+from .model import PREFILL_SPLITS
 
 
 class PaddedPrefill:
+  """KV allocation shared by the split prefill."""
   def __init__(self, model):
     self.model = model
-    self.jit = TinyJit(self.language)
     self.shape = None
-
-  def language(self, x, cos, sin, length):
-    model = self.model
-    for i in range(model.config['vlm_config']['text_config']['num_hidden_layers']):
-      x = model.text_layer(x,cos,sin,f'vlm.model.language_model.layers.{i}',model.cache[i],None,cache_pos=0)
-    x = model.norm(x[:,length-1:length],'vlm.model.language_model.norm',rms=True)
-    return model.linear(x,'vlm.lm_head').realize()
 
   def allocate(self, x, cos, max_tokens):
     model = self.model
@@ -28,21 +22,14 @@ class PaddedPrefill:
       model.prefill_jit.reset()
       model.decode_jit.reset()
       model.trajectory_jits.clear()
-      self.jit.reset()
-      self.shape = None
+      self.reset()
     shape = (x.shape,cos.shape,capacity)
     if self.shape != shape:
-      self.jit.reset()
+      self.reset()
       self.shape = shape
     model.prompt_length = x.shape[1]
 
-  def __call__(self, x, cos, sin, max_tokens, length):
-    self.allocate(x,cos,max_tokens)
-    valid = UOp.variable('valid_prefill_length',1,x.shape[1]).bind(length)
-    return self.jit(x,cos,sin,valid)
-
   def reset(self):
-    self.jit.reset()
     self.shape = None
 
 
@@ -58,16 +45,49 @@ class SpeculativePrefill(PaddedPrefill):
   def __init__(self, model):
     super().__init__(model)
     self.jits = {}
+    self.part_jits = {}
     self.last_targets = self.last_prompt = self.last_logits = None
     self.heads = 0
 
-  def language(self, x, cos, sin, length, heads):
+  def part_language(self, x, cos, sin, start):
     model = self.model
     for i in range(model.config['vlm_config']['text_config']['num_hidden_layers']):
-      x = model.text_layer(x,cos,sin,f'vlm.model.language_model.layers.{i}',model.cache[i],None,cache_pos=0)
+      x = model.text_layer(x,cos,sin,f'vlm.model.language_model.layers.{i}',model.cache[i],None,cache_pos=start)
+    return x  # only the KV rows it wrote are used
+
+  @staticmethod
+  def rows(t, start, end, axis=-2):
+    # A row slice of a contiguous buffer can realize as a view of that buffer, which a JIT cannot take as an input.
+    # Copy it into its own buffer.
+    shape,index = list(t.shape),[slice(None)]*t.ndim
+    shape[axis],index[axis] = end-start,slice(start,end)
+    return Tensor.empty(*shape,dtype=t.dtype,device=t.device).assign(t[tuple(index)]).realize()
+
+  @classmethod
+  def part_inputs(cls, part, x, cos, sin):
+    start,end = PREFILL_SPLITS[part:part+2]
+    return tuple(cls.rows(t,start,end) for t in (x,cos,sin))
+
+  def part(self, part, x, cos, sin):
+    """Prefill one early part of the prompt into the KV cache. Earlier parts must already be in the cache."""
+    start,end = PREFILL_SPLITS[part:part+2]
+    assert part < len(PREFILL_SPLITS)-1 and x.shape == (1,end-start,2048)
+    assert self.model.cache is not None and self.model.cache[0].shape[3] == 2304
+    key = (part,x.shape,cos.shape)
+    if key not in self.part_jits:
+      from .graph_cache import CachedJit
+      self.part_jits[key] = CachedJit(lambda x,c,s: self.part_language(x,c,s,start),f'prefill-part-{key}')
+    self.part_jits[key](x,cos,sin)
+
+  def language(self, x, cos, sin, length, heads):
+    # The last part attends to the KV rows that the earlier parts wrote.
+    model,start = self.model,PREFILL_SPLITS[-1]
+    x,cos,sin = x[:,start:],cos[:,:,start:],sin[:,:,start:]
+    for i in range(model.config['vlm_config']['text_config']['num_hidden_layers']):
+      x = model.text_layer(x,cos,sin,f'vlm.model.language_model.layers.{i}',model.cache[i],None,cache_pos=start)
     rows = []
     for index in range(heads):
-      hidden = model.norm(x[:,length-1+index:length+index],'vlm.model.language_model.norm',rms=True)
+      hidden = model.norm(x[:,length-1+index-start:length+index-start],'vlm.model.language_model.norm',rms=True)
       rows.append(model.linear(hidden,'vlm.lm_head').realize())
     logits = Tensor.cat(*rows,dim=1).contiguous().realize()
     # One batched argmax and finiteness check. Per-head reductions fused into one serial 2.6 ms kernel.
@@ -88,7 +108,9 @@ class SpeculativePrefill(PaddedPrefill):
     if key not in self.jits:
       from .graph_cache import CachedJit
       self.jits[key] = CachedJit(lambda x,c,s,n: self.language(x,c,s,n,heads),f'prefill-{heads}-{self.shape}')
-    valid = UOp.variable(f'valid_prefill_heads{heads}_length',1,x.shape[1]-heads+1).bind(length)
+    if length <= PREFILL_SPLITS[-1]:
+      raise PromptTooLong(f'Prompt uses {length} tokens; the split prefill needs more than {PREFILL_SPLITS[-1]}')
+    valid = UOp.variable(f'valid_prefill_heads{heads}_length',PREFILL_SPLITS[-1]+1,x.shape[1]-heads+1).bind(length)
     first_logits,self.last_logits,self.last_targets = self.jits[key](x,cos,sin,valid)
     self.heads = heads
     return first_logits
@@ -96,4 +118,5 @@ class SpeculativePrefill(PaddedPrefill):
   def reset(self):
     super().reset()
     self.jits.clear()
+    self.part_jits.clear()
     self.last_targets = self.last_prompt = self.last_logits = None

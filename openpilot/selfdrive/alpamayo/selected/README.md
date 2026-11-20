@@ -51,11 +51,11 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Inputs | Two front cameras, 120/30 degrees, history `(-2,-1,-0.5,-0.1,0)` seconds |
 | Vision | 144-image content cache; missing images encoded in groups of at most two |
 | Vision precision | BF16 patch embedding and first two layers; dynamic per-image FP8 scales thereafter |
-| Language | Fixed 112 activation scales, packed FP8, 2112-row prefill, 2304-row KV allocation |
+| Language | Fixed 112 activation scales, packed FP8, 2112-row prefill in parts at rows 0, 576 and 768, 2304-row KV allocation |
 | Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; the prefill verifies up to 31 draft tokens with 32 independent heads |
 | Continuation | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
-| Expert | Three Euler steps; restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
+| Expert | Two Euler steps (`diffusion_steps`, 2 or 3); restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
 Each prediction uploads uncached images in one pixel transfer. The GPU expands the byte patches to BF16 and encodes up to two images per call.
@@ -90,6 +90,19 @@ Serial decoding reads both KV planes directly after each write. Full blocks keep
 In full blocks each serial layer is eleven launches with the original arithmetic: norm and FP8 quantize, one Q/K/V GEMV with RoPE
 and the KV row store, scores, softmax, values, output quantize, o_proj, residual and norm, W4 FC1, ReLU^2 quantize, and W4 FC2 with
 the residual add. Tokens, logits and KV rows matched the previous layer at positions 2025-2083; about 0.6 ms less per token.
+The prefill runs in three parts with the same kernels per row: rows 0-575 (system prompt and the three older front images),
+rows 576-767 (to the end of the -0.1 s front image) and rows 768-2111. Each part's attention reads the earlier parts' KV rows.
+The three parts give the same bits as one 2112-row prefill. The older front images are earlier slots' current exposures,
+and the -0.1 s pair is encoded before the slot opens. After each plan the worker queues the next slot's first part; after
+the early -0.1 s encode it queues the second (`prefill_ahead`). A prediction skips an early part only when its token ids,
+positions and image keys match the queued part; after any change it runs that part and every later part again.
+The early parts move about 26 ms of prefill off the critical path.
+The trajectory start state depends only on the ego history. It is estimated on the CPU while the GPU runs the prefill.
+Two Euler steps take about 7 ms less than three. On 24 real samples (city turns, fast curves, cruise) the mean 3 s heading
+error to the driven path was 9.3 deg with two steps, 9.4 with three and 9.9 with ten. A 160-token image budget raised it to 14.0 deg.
+The native camera sampler takes NV12 frames directly. It converts only the sampled region (plus an 8-pixel margin) to RGB
+and reads interleaved RGB, which removes the full-frame conversion and planar copy. Each new crop is checked once against
+full-frame conversion; libswscale converts widths that are multiples of 16 with other rounding, so crops avoid them.
 No runtime recipe switches or experimental installers are exposed.
 
 ### Graph cache

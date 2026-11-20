@@ -12,6 +12,11 @@ from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 
 PREFILL_ROWS = 2112  # Padded prompt rows: 2025 base tokens, compact navigation text and the 31-token verified draft (33 x 64).
+# The prefill runs in parts that start at these rows; each part writes its own KV rows and attends to the earlier ones.
+# Rows 0-575 hold the system prompt and the three older front images; rows 576-767 continue with the -0.1 s front image.
+# Neither depends on the current exposures, so both can run before the current images arrive.
+PREFILL_SPLITS = (0,576,768)
+PREFILL_PARTS = {(end-start,start) for start,end in zip(PREFILL_SPLITS,(*PREFILL_SPLITS[1:],PREFILL_ROWS))}  # (rows, first row)
 from . import amd_gemm, amd_decode, weights
 from .serial_attention import direct as serial_cache_attention
 from .kernels import bf16_linear, frozen_ops, serial_mlp, tiled_gemm, vision_tiles
@@ -134,11 +139,12 @@ class SelectedModel(EdgeModel):
 
   def norm_quantize(self, x, name):
     # Prefill: RMS norm straight to packed FP8 with the layer's next fixed scale. The BF16 norm output is never stored.
-    assert self.prefill_prefix is not None and x.shape == (1,PREFILL_ROWS,2048)
+    assert self.prefill_prefix is not None and x.shape[0] == 1 and x.shape[2] == 2048
+    assert any(x.shape[1] == rows for rows,_ in PREFILL_PARTS)
     scale = self.fixed[f'{self.prefill_prefix}/{self.quantizer_slot}']
     self.quantizer_slot += 1
     packed = frozen_ops.norm_quantize(x,self.weights[name+'.weight'],scale).realize()
-    return PackedActivation(packed,PREFILL_ROWS,2048),scale
+    return PackedActivation(packed,x.shape[1],2048),scale
 
   def packed_linear(self, packed, scale, name, shape):
     weight = self.weights[name+'.weight']
@@ -339,8 +345,9 @@ class SelectedModel(EdgeModel):
       if (not self.verifying and not self.trajectory_active and cache_pos is not None and not isinstance(cache_pos,int)
           and q.shape == (1,16,1,128) and cache.shape == (2,1,8,2304,128) and mask is not None and mask.numel() == 2304):
         h = serial_cache_attention(q,assigned,mask)
-      elif prefill and causal and mask is None:
-        h = frozen_ops.prefill_attention(q,assigned)
+      elif prefill and isinstance(cache_pos,int) and mask is None:
+        assert (x.shape[1],cache_pos) in PREFILL_PARTS
+        h = frozen_ops.prefill_attention(q,assigned,cache_pos)
       else:
         h = self.attention(q,k,v,mask,causal)
       h = h.transpose(1,2).reshape(1,x.shape[1],2048)
@@ -348,14 +355,14 @@ class SelectedModel(EdgeModel):
         o_proj = f'{prefix}.self_attn.o_proj'
         assert o_proj+'.bias' not in self.weights and self.quantizer_slot == 1
         packed,scale = self.quantize(h)
-        residual = x.reshape(PREFILL_ROWS,2048).contiguous()
+        residual = x.reshape(x.shape[1],2048).contiguous()
         x = Tensor.custom_kernel(Tensor.empty(residual.shape,dtype=x.dtype,device=x.device),packed.value,self.packed_weights[o_proj],
                                  scale,self.weight_scales[o_proj+'.weight'],residual,fxn=amd_gemm.prefill_residual)[0].reshape(x.shape)
       else:
         x = x+self.linear(h,f'{prefix}.self_attn.o_proj')
       if prefill:
         rows = x.shape[1]
-        assert x.shape == (1,PREFILL_ROWS,2048) and type(cache_pos) is int and cache_pos == 0
+        assert type(cache_pos) is int and (rows,cache_pos) in PREFILL_PARTS
         fc1,fc2 = prefix+'.mlp.fc1',prefix+'.mlp.fc2'
         assert self.quantizer_slot == 2 and fc1+'.bias' not in self.weights and fc2+'.bias' not in self.weights
         packed,scale = self.norm_quantize(x,f'{prefix}.post_attention_layernorm')
@@ -385,8 +392,8 @@ class SelectedModel(EdgeModel):
     return logits,token.float().realize()
 
   def _trajectory(self, actions, cos, sin, length, steps, offset):
-    if steps != 3 or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
-      raise ValueError('Selected expert requires three Euler steps and 2304 KV rows')
+    if steps not in (2,3) or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
+      raise ValueError('Selected expert requires two or three Euler steps and 2304 KV rows')
     before = self.trace_counts['expert_attention']
     self.expert_layer = 0
     self.trajectory_active = True
@@ -394,7 +401,7 @@ class SelectedModel(EdgeModel):
       result = super()._trajectory(actions,cos,sin,length,steps,offset)
     finally:
       self.trajectory_active = False
-    if self.trace_counts['expert_attention']-before != 84:
+    if self.trace_counts['expert_attention']-before != 28*steps:
       raise ValueError('Selected expert attention coverage changed')
     return result
 
