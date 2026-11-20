@@ -9,7 +9,7 @@ PERIOD = 500_000_000
 FREE = 0  # Free-running: each prediction starts when the previous one finishes.
 PERIODS = (FREE, 250_000_000, 500_000_000)
 FREE_WINDOW = 400_000_000  # Free-running supervisor: slot bookkeeping deadline after selection.
-MAX_LATENCY = 500_000_000  # Camera query to plan ready.
+MAX_LATENCY = 750_000_000  # Camera query to plan ready; complex scenes reason for up to ~400 ms in the car.
 MAX_PLAN_AGE = 1_500_000_000  # A plan drives while its camera query is at most this old; its horizon is 6.4 s.
 # In the car a plan is ready 350-550 ms after its query, and one superseded 250 ms slot leaves a 500 ms query gap.
 CONSECUTIVE_GAP = 1_000_000_000  # Consecutive plans have queries at most this far apart (two superseded slots).

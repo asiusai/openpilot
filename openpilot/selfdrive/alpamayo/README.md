@@ -9,7 +9,7 @@ Planner mode reserves Chestnut for Alpamayo. The small model keeps running for c
 In planner mode the driving action comes only from Alpamayo plans; the small model's action is never used.
 The manager starts the GPU worker onroad when Chestnut enumerates at 5 Gbps and the device is healthy. Weights can load alongside modeld startup.
 Input admission still requires a healthy local model. The first five completed predictions are startup samples.
-A plan is usable when it was ready within 500 ms of its camera query, and it drives while that query is under 1.5 s old.
+A plan is usable when it was ready within 750 ms of its camera query, and it drives while that query is under 1.5 s old.
 Two consecutive plans with queries at most 1 s apart are required before the first use. Late, stale, repeated or invalid packets are ignored.
 modeld reads plans once per camera frame after its own model run, so it accepts a packet received up to 100 ms after publication.
 modeld ages the plan from camera capture before computing the requested action. Its planned speed must agree with measured vehicle speed within 2 m/s;
@@ -212,7 +212,7 @@ The car-test cadence is a 250 ms slot grid (`period_ms: 250`); 500 ms remains av
 Every slot keeps its calibrated camera pair in the worker's history ring, because later queries reuse the pairs from
 two, four and eight slots ago (-0.5, -1 and -2 s). Each slot is predicted or, when late, only anchored:
 - The supervisor selects each slot as soon as it opens and queues it (one input may wait while the worker runs).
-- The worker predicts a slot it picks up within 100 ms of its opening (`START_LATENESS_NS`); a later one only encodes its pair.
+- The worker predicts a slot it picks up within 200 ms of its opening (`START_LATENESS_NS`); a later one only encodes its pair.
 - A slot superseded before it was queued becomes a backlog anchor, served before the newest slot.
 - The supervisor hands the next slot's predicted -0.1 s pair to the worker 160 to 20 ms before the opening. A worker thread
   projects and patches it on the CPU; the main thread queues its GPU encode between predictions.

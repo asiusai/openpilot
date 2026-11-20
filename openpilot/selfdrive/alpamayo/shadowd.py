@@ -14,7 +14,7 @@ EARLY_CUTOFF_NS = 20_000_000  # Later than this, early encoding (~50 ms) would d
 CAMERA_FRAME_NS = 50_000_000  # 20 FPS front cameras: frame IDs advance by period/50 ms per slot.
 HELD_FRAMES_NS = 2_600_000_000  # Free-running: the worker keeps projections covering the 2 s history.
 ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
-START_LATENESS_NS = 100_000_000  # the worker predicts a slot only if it picks it up within this time of its opening
+START_LATENESS_NS = 200_000_000  # the worker predicts a slot only if it picks it up within this time of its opening
 
 def planner_mode():
   return (bool(os.environ.get('ALPAMAYO_CONFIG')) and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'

@@ -20,6 +20,8 @@ OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
 HALF_SECOND_NS = 500_000_000
 ROLLING_PERIODS_NS = (250_000_000, 500_000_000)  # Both divide the -2, -1 and -0.5 s history offsets.
 FRAME_TOLERANCE_NS = 150_000_000
+CAMERA_PERIOD_NS = 49_000_000  # 20 Hz frames jitter by ~0.2 ms: an older query means a newer frame exposed by the opening is on its way.
+QUERY_WAIT_NS = 60_000_000
 # A history exposure may start up to this long after its nominal offset, but never after the query. Real cameras jitter by
 # about 0.2 ms per frame; without slack the -0.1 s image alternates between the 100 ms and 150 ms old exposures.
 FRAME_SLACK_NS = 10_000_000
@@ -155,15 +157,16 @@ class Store:
       rings = {c: tuple(f for f in ring if f.ready_ns <= now) for c, ring in self.frames.items()}
       states = {k: tuple(r for r in rows if r.received <= now) for k, rows in self.states.items()}
       gaps = self.camera_gaps.copy()
-    # Wait for the newest matching small-model output, rather than chasing a
-    # camera that is always ahead of modeld. The query keeps its actual SOF.
-    models = {(row.value['frameId'], row.value['timestampEof']): row for row in states['modelV2'] if row.valid}
-    match = next(((frame, models[(frame.frame_id, frame.eof_ns)]) for frame in reversed(rings[6])
-                  if (half_second_slot is None or frame.sof_ns <= half_second_slot) and (frame.frame_id, frame.eof_ns) in models), None)
-    if match is None:
-      raise AwaitingFrame('No exact small-model frame match')
-    current, model = match
+    # The query is the newest narrow frame exposed by the slot opening; it never waits for the small model, whose output
+    # trails the camera by about two frames. A frame is ready about 41 ms after its SOF, so the opening's last frame
+    # arrives within QUERY_WAIT_NS. The matched small-model output is recorded when present.
+    current = next((frame for frame in reversed(rings[6]) if half_second_slot is None or frame.sof_ns <= half_second_slot), None)
+    if current is None:
+      raise AwaitingFrame('No query frame')
+    if half_second_slot is not None and half_second_slot-current.sof_ns > CAMERA_PERIOD_NS and now < half_second_slot+QUERY_WAIT_NS:
+      raise AwaitingFrame('Slot frame not ready')
     query = current.sof_ns
+    model = next((row for row in states['modelV2'] if row.valid and (row.value['frameId'], row.value['timestampEof']) == (current.frame_id, current.eof_ns)), None)
     if query <= last_query or not 0 <= now-query <= max_age_ns:
       raise AwaitingFrame('No fresh query')
     if half_second_slot is not None and not (query <= half_second_slot <= now and half_second_slot-query <= FRAME_TOLERANCE_NS):
@@ -186,7 +189,7 @@ class Store:
         raise Unavailable('Repeated or stalled camera history')
     # Only the matched small-model output is consumed. Retain the complete vehicle state history.
     del states['modelV2']
-    return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp, 'model': model.value}, gaps)
+    return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp if model else None, 'model': model.value if model else None}, gaps)
 
 
 def navigation(rows, query):
