@@ -238,14 +238,14 @@ class SelectedModel(EdgeModel):
   def masked_attention(self, q, k, v, mask, *, expert=False):
     batch,heads,queries,width = q.shape
     kv_heads,keys = k.shape[1:3]
-    assert queries in (16,32,48,64) and mask.shape in ((keys,),(queries,keys))
+    assert queries in (16,32,48,64) and (expert or mask.shape in ((keys,),(queries,keys)))
     if expert:
       # Prompt keys come straight from this layer's cache; the expert runs its 28 layers in order on every Euler step.
-      assert self.trajectory_active and not self.verifying and mask.shape == (keys,) == (2368,) and q.shape == (1,16,64,128)
+      assert self.trajectory_active and not self.verifying and keys == 64 and mask.shape == (2368,) and q.shape == (1,16,64,128)
       layer = self.expert_layer % len(self.cache)
       self.expert_layer += 1
       self.trace_counts['expert_attention'] += 1
-      return frozen_ops.expert_attention(q,k[:,:,2304:],v[:,:,2304:],self.cache[layer],mask.float().contiguous())
+      return frozen_ops.expert_attention(q,k,v,self.cache[layer],mask.float().contiguous())
     packed_k = _pack(k)
     scores = Tensor.empty(batch,heads,queries,keys,device=q.device,dtype=q.dtype)
     scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,
@@ -262,8 +262,9 @@ class SelectedModel(EdgeModel):
       return self.masked_attention(q,k,v,mask)
     if mask is None and q.shape[2] >= 128 and q.shape[-1] == 72 and not causal:
       return frozen_ops.attention(q,k,v)
-    if q.dtype == dtypes.bfloat16 and q.shape[2] == 64 and mask is not None and mask.numel() == k.shape[2] and not causal:
-      return self.masked_attention(q,k,v,mask,expert=self.trajectory_active)
+    expert = self.trajectory_active and not self.verifying
+    if q.dtype == dtypes.bfloat16 and q.shape[2] == 64 and mask is not None and mask.numel() == k.shape[2]+(2304 if expert else 0) and not causal:
+      return self.masked_attention(q,k,v,mask,expert=expert)
     return super().attention(q,k,v,mask,causal)
 
   def vision_pair_layer(self, x, prefix):
@@ -330,8 +331,10 @@ class SelectedModel(EdgeModel):
         assigned = Tensor(cache.uop.after(store))
         end = cache.shape[3] if not isinstance(cache_pos,int) else cache_pos+x.shape[1]
         k,v = (assigned[i,:,:,:end] for i in range(2))
-      elif cache is not None:
+      elif cache is not None and not (self.trajectory_active and not self.verifying):
         k,v = (old.cat(new,dim=2) for old,new in zip(cache,(k,v),strict=True))
+      # The diffusion expert reads the 2304 prompt rows straight from the layer cache; k and v hold only its 64 new rows.
+      # Concatenating them here copied the whole cache on every layer and Euler step.
       causal = isinstance(cache_pos,int) and cache_pos == 0
       if (not self.verifying and not self.trajectory_active and cache_pos is not None and not isinstance(cache_pos,int)
           and q.shape == (1,16,1,128) and cache.shape == (2,1,8,2304,128) and mask is not None and mask.numel() == 2304):
