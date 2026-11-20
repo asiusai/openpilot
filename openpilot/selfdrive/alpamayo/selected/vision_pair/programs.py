@@ -17,7 +17,7 @@ from tinygrad.uop.ops import AxisType, KernelInfo, Ops, ParamArg, ProgramInfo, U
 from ..frozen import ASSETS, TINYGRAD_REVISION, checked
 
 ASSET = Path(__file__).with_name('gfx1200.json.gz')
-SHA256 = '0dbc5b45091645ff958a810ce966224180b5dd853efffb165b111c9810bb5ce4'
+SHA256 = 'fcbf578de29c69ad9b118d8ef3c2b5aeb1b067d025e4628482090f5eb76326ff'
 TARGET = Target('AMD', 'LLVM', 'gfx1200', 'USB')
 CLASSES = {c.__name__: c for c in (Opt, Estimates, Target, KernelInfo, ParamArg, ProgramInfo)}
 ENUMS = {c.__name__: c for c in (Ops, AxisType, AddrSpace, OptOps)}

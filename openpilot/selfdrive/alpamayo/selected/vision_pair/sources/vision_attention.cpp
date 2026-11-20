@@ -2,6 +2,10 @@
 #define DEV __attribute__((device)) __attribute__((always_inline)) inline
 typedef unsigned short u16;
 typedef unsigned short u8 __attribute__((ext_vector_type(8)));
+DEV u8 load_plain(const u16 *source,int head,int row,int dim) {
+  if(row>=720 || dim>=72) return (u8){};
+  return *(const u8 *)(source+(head*720+row)*72+dim);
+}
 DEV u8 load_eight(const u16 *source,int head,int row,int dim) {
   if(row>=720 || dim>=72) return (u8){};
   return *(const volatile u8 *)(source+(head*720+row)*72+dim);
@@ -47,7 +51,7 @@ DEV f8 transpose_probability(f8 x, int lane) {
   for(int j=0;j<8;j++) x[j]=lane_read(x[j],source);
   return x;
 }
-extern "C" __attribute__((global,amdgpu_flat_work_group_size(1,256)))
+extern "C" __attribute__((global,amdgpu_flat_work_group_size(1,256),amdgpu_waves_per_eu(8,8)))
 void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
 #if 0
 ,const float *mask
@@ -61,7 +65,7 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
   __attribute__((shared,aligned(16))) short probabilities[8*16*(16+0)];
   #if 1
   // K rows and transposed V rows are 16-byte aligned for one vector access per lane.
-  __attribute__((shared,aligned(16))) short shared_k[32*(D*16+8)],shared_vt[D*16*40];
+  __attribute__((shared,aligned(16))) short shared_k2[2][32*(D*16+8)],shared_vt2[2][D*16*40];
   #endif
   short *prob=probabilities+wave*16*(16+0);
   s8 query[D];
@@ -73,17 +77,29 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
   f8 accum[D]={}; float denom=0.0f, maxima=-__builtin_inff();
   int limit=(group+1)*8*16;
   int end=0?(K<limit?K:limit):K;
-  for(int start=0;start<end;start+=32) {
-    #if 1
-    for(int index=thread*8;index<32*D*16;index+=256*8) {
+  // Double buffer: block j+1 is fetched into registers while block j is computed. Arithmetic is unchanged.
+  constexpr int SLOTS=(32*D*16+256*8-1)/(256*8);
+  u8 pk[SLOTS],pv[SLOTS];
+  auto fetch=[&](int base) {
+    for(int s=0;s<SLOTS;s++) { int index=thread*8+s*256*8; if(index<32*D*16) {
       int row=index/(D*16),dim=index%(D*16);
-      u8 loaded_k=load_eight(k,kh,start+row,dim), loaded_v=load_eight(v,kh,start+row,dim);
-      *(u8*)(shared_k+key_index(row,dim))=loaded_k;
-      for(int i=0;i<8;i++) shared_vt[(dim+i)*40+row]=loaded_v[i];
-    }
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
-    #endif
+      pk[s]=load_plain(k,kh,base+row,dim); pv[s]=load_plain(v,kh,base+row,dim); } }
+  };
+  auto stage=[&](int buffer) {
+    for(int s=0;s<SLOTS;s++) { int index=thread*8+s*256*8; if(index<32*D*16) {
+      int row=index/(D*16),dim=index%(D*16);
+      *(u8*)(shared_k2[buffer]+key_index(row,dim))=pk[s];
+      for(int i=0;i<8;i++) shared_vt2[buffer][(dim+i)*40+row]=pv[s][i]; } }
+  };
+  fetch(0); stage(0);
+  __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
+  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
+  int buffer=0;
+  for(int start=0;start<end;start+=32) {
+    short *shared_k=shared_k2[buffer], *shared_vt=shared_vt2[buffer];
+    bool more=start+32<end;
+    if(more) fetch(start+32);
+    if(tile*16<R) {  // waves whose 16 query rows are all padding only stage K/V
     f8 scores[32/16]={};
     for(int sub=0;sub<32/16;sub++) for(int d=0;d<D;d++) {
       s8 key=*(const s8*)(shared_k+key_index(sub*16+lane%16,d*16+(lane/16)*8));
@@ -93,7 +109,7 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
     float localmax=-__builtin_inff();
     for(int sub=0;sub<32/16;sub++) for(int i=0;i<8;i++) {
       int col=start+sub*16+(lane/16)*8+i;
-      scores[sub][i]=col<K?scores[sub][i]*0.11785113019775792f:-__builtin_inff();
+      scores[sub][i]=(start+32<=K || col<K)?scores[sub][i]*0.11785113019775792f:-__builtin_inff();
       localmax=__builtin_fmaxf(localmax,scores[sub][i]);
     }
     float next=__builtin_fmaxf(maxima,__builtin_fmaxf(localmax,shuffle<0x401f>(localmax)));
@@ -107,7 +123,8 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
       t[i]+=shuffle<0x401f>(t[i]);
     }
     float total_sum=((t[0]+t[4])+(t[2]+t[6]))+((t[1]+t[5])+(t[3]+t[7]));
-    for(int i=0;i<8;i++) {
+    // x*1.0f==x exactly: skip the rescale when no row of this wave raised its maximum.
+    if(__builtin_amdgcn_ballot_w32(scale!=1.0f)) for(int i=0;i<8;i++) {
       float row_scale=lane_read(scale,(lane/16)*8+i);
       for(int d=0;d<D;d++) accum[d][i]*=row_scale;
     }
@@ -145,11 +162,12 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
     #endif
     #endif
     }
-    #if (0 || 0 || 1) && 1
-    // All waves must finish reading shared K/V before the next block replaces it.
+    }
+    if(more) stage(buffer^1);
+    // Block j+1 is visible, and every wave finished reading the buffer that block j+2 will replace.
     __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
-    #endif
+    buffer^=1;
   }
   for(int d=0;d<D;d++) for(int i=0;i<8;i++) {
     int row=tile*16+(lane/16)*8+i;

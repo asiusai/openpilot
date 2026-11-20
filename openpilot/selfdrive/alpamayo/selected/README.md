@@ -79,6 +79,8 @@ Startup creates the 56 four-bit matrices from the verified FP8 weights. They use
 Draft attention retains its original QK, softmax, and PV arithmetic. Its 16- and 32-row products use 1x2 and 2x2 output tiles.
 Output tiles change only which outputs one wave computes. Each output keeps its reduction order, so results stay bit-identical.
 Smaller expert tiles reduced diffusion from 27.6 to 21.9 ms on Karel. The 32 prefill heads take one batched argmax (2.6 ms less).
+Both online-softmax attention kernels skip the accumulator rescale when no row of a wave raised its maximum; the scale is then exactly 1.
+Vision attention also prefetches the next K/V block, skips padding-only waves and runs at eight waves per SIMD (0.20 to 0.15 ms per layer).
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
 
