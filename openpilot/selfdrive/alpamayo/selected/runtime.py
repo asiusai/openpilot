@@ -182,8 +182,11 @@ class Runtime:
       self.model.allocate_expert_packs()
       from . import graph_cache
       from tinygrad.codegen import to_program_config
+      from tinygrad.helpers import PROFILE
       graph_cache.configure(self.config.cache_dir/'graphs',{'model':self.model},
+                            # Profiled graphs carry timestamp commands; they never mix with production graphs.
                             (TINYGRAD_REVISION,self.model.weight_digest,manifest(),[(v.key,v.value) for v in to_program_config],
+                             bool(PROFILE.value),
                              hashlib.sha256(self.config.prefill_calibration.read_bytes()).hexdigest()))
       self.prefill = SpeculativePrefill(self.model)
       self.decoder = Decoder(self.model,self.draft,self.anchor)
