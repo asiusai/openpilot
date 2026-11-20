@@ -7,7 +7,7 @@ import numpy as np
 
 PERIOD = 500_000_000
 FREE = 0  # Free-running: each prediction starts when the previous one finishes.
-PERIODS = (FREE, 250_000_000, 500_000_000)
+PERIODS = (FREE, 100_000_000, 250_000_000, 500_000_000)
 FREE_WINDOW = 400_000_000  # Free-running supervisor: slot bookkeeping deadline after selection.
 MAX_LATENCY = 750_000_000  # Camera query to plan ready; complex scenes reason for up to ~400 ms in the car.
 MAX_PLAN_AGE = 1_500_000_000  # A plan drives while its camera query is at most this old; its horizon is 6.4 s.
@@ -30,7 +30,7 @@ def configured_period():
   path = os.environ.get('ALPAMAYO_CONFIG')
   period = json.loads(Path(path).read_text()).get('period_ms', 500)*1_000_000 if path and os.path.isfile(path) else PERIOD
   if period not in PERIODS:
-    raise ValueError('Alpamayo planner requires a free-running, 250 or 500 ms period')
+    raise ValueError('Alpamayo planner requires a free-running, 100, 250 or 500 ms period')
   return period
 
 

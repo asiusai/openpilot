@@ -15,6 +15,8 @@ CAMERA_FRAME_NS = 50_000_000  # 20 FPS front cameras: frame IDs advance by perio
 HELD_FRAMES_NS = 2_600_000_000  # Free-running: the worker keeps projections covering the 2 s history.
 ANCHOR_WAIT_NS = 200_000_000  # Allows two-camera priming in this slot after a short overrun.
 START_LATENESS_NS = 200_000_000  # the worker predicts a slot only if it picks it up within this time of its opening
+RING_LATENESS_NS = 110_000_000  # the same with 100 ms slots, where a later slot opens soon after
+RING_STARVATION_NS = 400_000_000  # with 100 ms slots, a slot after this long without a prediction uses START_LATENESS_NS
 
 def planner_mode():
   return (bool(os.environ.get('ALPAMAYO_CONFIG')) and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'
@@ -82,8 +84,8 @@ def main():
   from openpilot.selfdrive.alpamayo.runtime import private_output, ram_handoff, storage_ok
   config_path = Path(os.environ['ALPAMAYO_CONFIG']).resolve()
   config = json.loads(config_path.read_text())
-  if planner_mode() and (config.get('period_ms', 500) not in (0, 250, 500) or config['inference'].get('variant') != 'selected'):
-    raise ValueError('Planner evaluation requires the selected free-running, 250 or 500 ms configuration')
+  if planner_mode() and (config.get('period_ms', 500) not in (0, 100, 250, 500) or config['inference'].get('variant') != 'selected'):
+    raise ValueError('Planner evaluation requires the selected free-running, 100, 250 or 500 ms configuration')
   python = Path(config['python'])
   if not python.is_file() or python == Path(sys.executable):
     raise ValueError('Configure a separate, pinned Alpamayo Python environment')
@@ -116,13 +118,14 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
   from openpilot.selfdrive.alpamayo.capture import NativeProducer, device_healthy, healthy
   from openpilot.selfdrive.alpamayo.frontend import AwaitingFrame, Store, Unavailable
   from openpilot.selfdrive.alpamayo.planner import FREE_WINDOW, deliverable
-  from openpilot.selfdrive.alpamayo.frontend import CAMERAS, Selection
+  from openpilot.selfdrive.alpamayo.frontend import CAMERAS, Selection, anchor_window, slot_exposures
   from openpilot.selfdrive.alpamayo.runtime import FixedSlots, memory_ok, save_selection, storage_ok
   free = config.get('period_ms', 500) == 0
   slots = FixedSlots(500 if free else config.get('period_ms', 500))
-  rolling = not free and slots.period_ms in (250, 500)
+  rolling = not free and slots.period_ms in (100, 250, 500)
+  exposures = slot_exposures(slots.period_ns) if rolling else 2
   held = {c: {} for c in CAMERAS}  # Free-running: frames the worker retains, {camera: {frame_id: sof}}.
-  anchor_wait = min(ANCHOR_WAIT_NS, slots.period_ns*2//5)
+  anchor_wait = min(ANCHOR_WAIT_NS, max(slots.period_ns*2//5, 80_000_000))  # a frame is ready about 41 ms after its SOF
   frames_per_slot = slots.period_ns//CAMERA_FRAME_NS
   pm = None
   if planner_mode():
@@ -250,7 +253,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
         if slot is not None:
           if admission is not None and rolling:
             # Superseded before dispatch: encode only its camera pair so later queries find their -0.5/-1/-2 s history.
-            backlog.append(dict(admission, anchor_only=True, expires_ns=admission['slot_start_ns']+4*slots.period_ns))
+            backlog.append(dict(admission, anchor_only=True, expires_ns=admission['slot_start_ns']+anchor_window(slots.period_ns)))
           admission = dict(slot, expires_ns=slot['slot_start_ns']+2*slots.period_ns)
         # One input can wait while the worker runs: the next slot is selected as soon as it opens, and the worker decides on
         # pickup whether it is still timely enough to predict (otherwise it only anchors the camera pair).
@@ -269,7 +272,7 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
               raise Unavailable('Busy or late slot')
             try:
               # A slot can start late (grid-snapped) or be anchored after newer slots opened; its frames keep their capture times.
-              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if rolling else None,
+              selected = store.select(selected_ns, last_query, last_current, half_second_slot=slot['slot_start_ns'] if rolling else None, exposures=exposures,
                                       max_age_ns=slot['expires_ns']-slot['slot_start_ns'] if rolling else 250_000_000)
             except AwaitingFrame:
               # The matched modelV2 can arrive after this slot opens. Keep the same opening, cutoff and deadline.

@@ -23,7 +23,8 @@ import numpy as np
 
 from openpilot.selfdrive.alpamayo.segments import FrontImages
 
-from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_SLACK_NS, FRAME_TOLERANCE_NS, OFFSETS_NS, ROLLING_PERIODS_NS, Frame, Selection, State, Unavailable
+from openpilot.selfdrive.alpamayo.frontend import (CAMERAS, FRAME_SLACK_NS, FRAME_TOLERANCE_NS, OFFSETS_NS, ROLLING_PERIODS_NS, Frame, Selection, State,
+                                                   Unavailable, anchor_window, ring_offsets, slot_exposures)
 
 INPUT_LIMIT = 32*1024**2
 HEADER_LIMIT = 4*1024**2
@@ -226,7 +227,9 @@ def valid_snapshot_views(refs, context):
   views = [ref['view'] for ref in refs]
   if context.get('early') is True:
     return views in ([1, 6], [1, 6, 1, 6]) and type(context.get('slot_start_ns')) is int
-  return views == [1]*5+[6]*5 or (views == [1, 1, 6, 6] and context.get('period_ms') in (250, 500) and type(context.get('slot_start_ns')) is int)
+  period = context.get('period_ms')
+  return views == [1]*5+[6]*5 or (period in (100, 250, 500) and views == [1]*slot_exposures(period*1_000_000)+[6]*slot_exposures(period*1_000_000)
+                                  and type(context.get('slot_start_ns')) is int)
 
 
 def save_selection(path, selected, context, held=None):
@@ -339,18 +342,21 @@ def validate_input(arrays, meta):
   if rolling and (period not in ROLLING_PERIODS_NS or not 0 <= meta['slot_start_ns']-meta['query_ns'] <= FRAME_TOLERANCE_NS or
                   not meta['slot_start_ns'] <= meta['selected_ns'] < meta['slot_start_ns']+period):
     raise ValueError('Invalid half-second history context')
+  ring = len(ring_offsets(period)) if rolling else 0
   for i, (ref, offset) in enumerate(zip(meta['frames'], OFFSETS_NS*2, strict=True)):
     desired = meta['query_ns']+offset
     capture = ref['capture_ns']
     causal = -FRAME_SLACK_NS <= desired-capture <= FRAME_TOLERANCE_NS and capture <= meta['query_ns']
-    if rolling and i % 5 < 3:
-      # Camera jitter can put a real earlier slot's anchor on either side of the nominal offset.
-      # A superseded slot's anchor can be selected up to four periods after its opening (still after its capture).
+    if rolling and i % 5 < ring:
+      # Camera jitter can put a real earlier slot's anchor on either side of the nominal offset. A missed slot is replaced
+      # by a neighbouring one. A superseded slot's anchor can be selected up to four periods after its opening (still after its capture).
       source = meta['slot_start_ns']+offset
+      anchor = ref.get('anchor_slot_ns')
       origin, watermark = ref.get('anchor_query_ns', 0), ref.get('anchor_selected_ns', 0)
       paired = meta['frames'][(i+5) % 10]
-      causal = (ref.get('anchor_slot_ns') == source and 0 <= source-origin <= FRAME_TOLERANCE_NS and
-                source <= watermark < source+4*period and capture <= ref['ready_ns'] <= watermark and
+      causal = (type(anchor) is int and abs(anchor-source) <= period and anchor < meta['slot_start_ns'] and
+                anchor == paired.get('anchor_slot_ns') and 0 <= anchor-origin <= FRAME_TOLERANCE_NS and
+                anchor <= watermark < anchor+anchor_window(period) and capture <= ref['ready_ns'] <= watermark and
                 origin == paired.get('anchor_query_ns') and watermark == paired.get('anchor_selected_ns') and
                 0 <= origin-capture <= FRAME_TOLERANCE_NS and (ref['view'] != 6 or origin == capture) and
                 abs(desired-capture) <= FRAME_TOLERANCE_NS and capture < meta['query_ns'])
@@ -454,7 +460,7 @@ def load_adapter(config):
 def worker(config, directory, handoff):
   from openpilot.selfdrive.alpamayo.frontend import Preparer, Priming, Unavailable
   from openpilot.selfdrive.alpamayo.selected.policy import NoTrajectoryAnchor, PromptTooLong
-  from openpilot.selfdrive.alpamayo.shadowd import START_LATENESS_NS, planner_mode
+  from openpilot.selfdrive.alpamayo.shadowd import RING_LATENESS_NS, RING_STARVATION_NS, START_LATENESS_NS, planner_mode
   from openpilot.selfdrive.alpamayo.planner import packet
   root = Path(directory)
   handoff = Path(handoff)
@@ -474,10 +480,10 @@ def worker(config, directory, handoff):
     sampler = partial(calibrated_image, cache_dir=config['cache'])
   segmented = config.get('retained_cpu_inputs', False)
   period_ms = config.get('period_ms', 500)
-  if type(segmented) is not bool or (segmented and (sampler is None or period_ms not in (0, 250, 500))):
-    raise ValueError('retained_cpu_inputs requires the selected free-running, 250 or 500 ms worker')
+  if type(segmented) is not bool or (segmented and (sampler is None or period_ms not in (0, 100, 250, 500))):
+    raise ValueError('retained_cpu_inputs requires the selected free-running, 100, 250 or 500 ms worker')
   preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented, free=period_ms == 0,
-                      period_ns=period_ms*1_000_000 if period_ms in (250, 500) else 500_000_000)
+                      period_ns=period_ms*1_000_000 if period_ms in (100, 250, 500) else 500_000_000)
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
@@ -515,7 +521,7 @@ def worker(config, directory, handoff):
   early_ready = []  # (views, deadline_ns): projected by the early thread, encoded on the main thread between predictions
   lookahead = {}  # 'pair': (projected images, anchor_inputs) of the queued slot; 'identity': the last examined input file
   lookahead_lock = threading.Lock()  # held while the early thread projects a queued slot
-  predicting = threading.Event()  # set while the main thread runs the GPU prediction
+  predicting = threading.Event()  # set while the main thread runs a prediction or an anchor encode
   def queued_inputs(views):
     # Patches the early thread made from these exact projected bytes while the previous prediction ran, else None.
     images, inputs = lookahead.pop('pair', ((), None))
@@ -559,9 +565,9 @@ def worker(config, directory, handoff):
         return False
       lookahead['identity'] = identity
       with lookahead_lock, load_selection(path) as (selected, context):
-        if len(selected.frames) != 4 or not predicting.is_set():  # anchor-only slots also use the projected pair
+        if len(selected.frames) != 2*preparer.per_slot or not predicting.is_set():  # anchor-only slots also use the projected pair
           return False
-        views = preparer.early(selected)[1::2]  # wide and road current exposures, as rolling_images passes them
+        views = preparer.early(selected)[preparer.per_slot-1::preparer.per_slot]  # wide and road current exposures, as rolling_images passes them
         lookahead['pair'] = tuple(image for image, _ in views), adapter.anchor_inputs(views)
         lookahead['at'] = time.monotonic_ns()
       return True
@@ -581,15 +587,23 @@ def worker(config, directory, handoff):
     # The next slot's three older front images are already in the anchor ring, and its -0.1 s front image is encoded
     # early. Their prompt rows go to the GPU while it is idle; the next prediction checks that its own early parts
     # match before it skips them.
-    if not (segmented and hasattr(adapter, 'prefill_ahead') and len(preparer.anchors) == preparer.lags[0]):
+    images = preparer.next_front_images() if segmented and hasattr(adapter, 'prefill_ahead') else None
+    if images is None:
       return
-    images = [preparer.anchors[-lag][1][0][0] for lag in preparer.lags]+([early_front] if early_front is not None else [])
+    # A next slot picked up too late only anchors its camera pair; its early parts would waste GPU and worker time.
+    now = time.monotonic_ns()
+    lateness = START_LATENESS_NS if period_ms in (250, 500) or now-last_prediction_ns > RING_STARVATION_NS else RING_LATENESS_NS
+    if now > preparer.anchors[-1][0]+preparer.period+lateness:
+      return
+    if early_front is not None and len(images) == 3:
+      images.append(early_front)
     try:
       marks[f'prefill_ahead_{len(images)}_ns'] = time.monotonic_ns()
       marks[f'prefill_ahead_{len(images)}'] = adapter.prefill_ahead(images)
     except Exception as error:  # noqa: BLE001 - only the shortcut is lost
       print(f'Early prefill skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
   marks = {}  # monotonic marks of the worker loop, attached to the next prediction record
+  last_prediction_ns = 0  # when the last prediction finished
   writer, count = PredictionWriter(), 0
   stopping = False
   def stop(*_):
@@ -625,12 +639,17 @@ def worker(config, directory, handoff):
         marks['loaded_ns'] = time.monotonic_ns()
         with lookahead_lock:  # a queued-slot projection in progress finishes sooner than a second projection
           admitted = time.monotonic_ns()
-        if (period_ms in (250, 500) and not context.get('anchor_only') and 'slot_start_ns' in context and
-            admitted-context['slot_start_ns'] > START_LATENESS_NS):
+        # With 100 ms slots every slot is a history anchor anyway, so a slot queued behind a prediction is only encoded
+        # and the next, fresher slot predicts.
+        # A run of late pickups must not starve predictions: after RING_STARVATION_NS without one, the 250 ms rule applies.
+        lateness = START_LATENESS_NS if period_ms in (250, 500) or admitted-last_prediction_ns > RING_STARVATION_NS else RING_LATENESS_NS
+        if (period_ms in (100, 250, 500) and not context.get('anchor_only') and 'slot_start_ns' in context and
+            admitted-context['slot_start_ns'] > lateness):
           # Queued behind a slow prediction: keep only this slot's camera pair, which bounds query-to-plan latency.
           context['anchor_only'] = True
-          print(f'alpamayo slot {context["slot_start_ns"]} anchored: picked up {(admitted-context["slot_start_ns"])/1e6:.0f} ms late',
-                file=sys.stderr, flush=True)
+          if period_ms != 100:
+            print(f'alpamayo slot {context["slot_start_ns"]} anchored: picked up {(admitted-context["slot_start_ns"])/1e6:.0f} ms late',
+                  file=sys.stderr, flush=True)
         expires = context.get('expires_ns', context.get('slot_deadline_ns', admitted+1))
         if (not 0 <= admitted-selected.query_ns <= (1_000_000_000 if context.get('anchor_only') else 500_000_000) or
             (admitted >= expires and not context.get('anchor_only'))):
@@ -639,7 +658,7 @@ def worker(config, directory, handoff):
         if context.get('anchor_only'):
           preparer.rolling_images(selected, context['slot_start_ns'], anchor_only=True)  # Raises Priming; no prediction for this slot.
         marks['prepare_start_ns'] = time.monotonic_ns()
-        arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 4 else None)
+        arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 2*preparer.per_slot else None)
         meta.update(context)
         meta['prepared_ns'] = time.monotonic_ns()
         if meta['prepared_ns'] >= expires:
@@ -649,7 +668,8 @@ def worker(config, directory, handoff):
           result = run_prediction(adapter, arrays, meta, hash_inputs=False)
         finally:
           predicting.clear()
-        result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
+        last_prediction_ns = time.monotonic_ns()
+        result.update(startup=count < 5, **live_timing(selected, begin, last_prediction_ns, context if 'slot_start_ns' in context else None))
         result['worker_marks'], marks = marks, {}
         writer.check(wait=True)  # A failed previous write must stop this plan before publication.
         if stopping:
@@ -674,15 +694,31 @@ def worker(config, directory, handoff):
             print(f'alpamayo gpu metrics unavailable: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
       except (Unavailable, PromptTooLong, NoTrajectoryAnchor) as error:
         # Anchors are queued without waiting for the GPU: the next slot must not inherit this slot's encode time.
-        if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns']),
-                                                                                 wait=False, inputs=queued_inputs(error.anchors)):
+        # An anchor stays useful until its query is 1 s old; with 100 ms slots, several anchor-only slots can queue behind a prediction.
+        # The encode dispatch is mostly USB transfer: the early thread meanwhile projects the next queued slot.
+        primed = None
+        if isinstance(error, Priming) and sampler is not None:
+          inputs = queued_inputs(error.anchors)
+          predicting.set()
+          try:
+            primed = adapter.prime(error.anchors, selected.query_ns+1_000_000_000, wait=False, inputs=inputs)
+          finally:
+            predicting.clear()
+        if primed is False:
           error = Unavailable('Front-camera feature priming missed its slot deadline')
+        elif primed:
+          prefill_next()  # the anchor ring advanced; queue the following slot's early parts
         if isinstance(error, NoTrajectoryAnchor):
           # The inputs were valid: keep the camera history so the next slot predicts normally.
           print(f'alpamayo slot {context.get("slot_start_ns")} produced no plan: {error}', file=sys.stderr, flush=True)
         elif not isinstance(error, Priming):
-          preparer.anchors.clear()
-          print(f'alpamayo slot {context.get("slot_start_ns")} unavailable, history cleared: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+          # A late or expired slot leaves the ring valid: each anchor is checked against its own capture time. Content errors
+          # (a camera restart, a repeated exposure) clear it.
+          timing = isinstance(error, Unavailable) and any(text in str(error) for text in ('expired', 'missed its slot deadline'))
+          if not timing:
+            preparer.anchors.clear()
+          print(f'alpamayo slot {context.get("slot_start_ns")} unavailable{"" if timing else ", history cleared"}: {type(error).__name__}: {error}',
+                file=sys.stderr, flush=True)
         elif 'Repriming' in str(error):
           print(f'alpamayo slot {context.get("slot_start_ns")}: {error}', file=sys.stderr, flush=True)
         rejected = time.monotonic_ns()

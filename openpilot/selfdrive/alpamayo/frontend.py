@@ -18,7 +18,22 @@ CAMERAS = (1, 6)
 _stamp = attrgetter('stamp')
 OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
 HALF_SECOND_NS = 500_000_000
-ROLLING_PERIODS_NS = (250_000_000, 500_000_000)  # Both divide the -2, -1 and -0.5 s history offsets.
+ROLLING_PERIODS_NS = (100_000_000, 250_000_000, 500_000_000)  # Each divides the -2, -1 and -0.5 s history offsets.
+
+
+def ring_offsets(period_ns):
+  """History offsets whose images are earlier slots' current exposures. With 100 ms slots the -0.1 s image is one too."""
+  return tuple(offset for offset in OFFSETS_NS[:-1] if offset % period_ns == 0)
+
+
+def anchor_window(period_ns):
+  """How long after its opening a superseded slot can still be selected and encoded as a history anchor."""
+  return max(4*period_ns, 800_000_000)
+
+
+def slot_exposures(period_ns):
+  """Exposures per camera that a rolling slot sends: the current one, and the -0.1 s one unless the ring holds it."""
+  return len(OFFSETS_NS)-len(ring_offsets(period_ns))
 FRAME_TOLERANCE_NS = 150_000_000
 CAMERA_PERIOD_NS = 49_000_000  # 20 Hz frames jitter by ~0.2 ms: an older query means a newer frame exposed by the opening is on its way.
 QUERY_WAIT_NS = 60_000_000
@@ -150,7 +165,7 @@ class Store:
         rows.pop(0)
 
   def select(self, now, last_query=0, last_current=None, *, half_second_slot=None, cached=None, cached_offsets=(0, 1, 2),
-             max_age_ns=250_000_000):
+             max_age_ns=250_000_000, exposures=2):
     """cached: {camera: frame IDs the worker already holds}. For the listed history offsets, prefer the newest held frame
     inside the same causal window, so free-running inference re-encodes as few images as possible."""
     with self.lock:
@@ -171,7 +186,7 @@ class Store:
       raise AwaitingFrame('No fresh query')
     if half_second_slot is not None and not (query <= half_second_slot <= now and half_second_slot-query <= FRAME_TOLERANCE_NS):
       raise AwaitingFrame('No fresh half-second anchor')
-    offsets = OFFSETS_NS if half_second_slot is None else OFFSETS_NS[-2:]
+    offsets = OFFSETS_NS if half_second_slot is None else OFFSETS_NS[-exposures:]
     frames = []
     for camera in CAMERAS:
       ring = rings[camera]
@@ -243,16 +258,18 @@ class Preparer:
     self.sampler = sampler
     self.segmented = segmented
     if period_ns not in ROLLING_PERIODS_NS:
-      raise ValueError('Rolling front history requires a 250 or 500 ms slot period')
+      raise ValueError('Rolling front history requires a 100, 250 or 500 ms slot period')
     if free and not segmented:
       raise ValueError('Free-running inference requires retained CPU inputs')
     self.free = free
     self.on_current = None  # Called with a complete slot's projected current pair before the rest of preparation.
     self.retained = OrderedDict()  # Free-running: (camera, frame_id, sof, calibration) -> projected bytes.
     self.period = period_ns
-    # Older history images are the current exposures of earlier slots: -2, -1 and -0.5 s back.
-    self.lags = tuple(-offset//period_ns for offset in OFFSETS_NS[:3])
-    self.anchors = deque(maxlen=self.lags[0])
+    # Older history images are the current exposures of earlier slots: -2, -1 and -0.5 s back (and -0.1 s with 100 ms slots).
+    self.ring = ring_offsets(period_ns)
+    self.lags = tuple(-offset//period_ns for offset in self.ring)
+    self.per_slot = slot_exposures(period_ns)
+    self.anchors = deque(maxlen=self.lags[0]+2)  # two spare entries: a missed slot can be replaced by its neighbour
     self.early_views = OrderedDict()  # (camera, frame_id, sof, calibration) -> projected bytes of a predicted -0.1 s exposure
     self.early_lock = threading.Lock()  # early() runs on the worker's early-encoding thread
 
@@ -333,51 +350,69 @@ class Preparer:
                 'camera_profile': 'calibrated_vehicle_history', 'image_cache_hits': hits, 'camera_gaps': selected.camera_gaps}
     return arrays, metadata
 
+  def older(self, opening, query):
+    """Earlier slots' current exposures for each ring offset, per camera; None while the ring lacks one.
+
+    A missed slot is replaced by a neighbouring slot when its exposures still lie within FRAME_TOLERANCE_NS of the offset.
+    """
+    slots = dict(self.anchors)
+    chosen = []
+    for offset in self.ring:
+      target = opening+offset
+      chosen.append(next((s for s in (target, target-self.period, target+self.period) if s in slots and s < opening and
+                          all(abs(query+offset-ref['capture_ns']) <= FRAME_TOLERANCE_NS for _, ref in slots[s])), None))
+    if None in chosen or len(set(chosen)) != len(chosen):
+      return None
+    return [[slots[s][i] for s in chosen] for i in range(len(CAMERAS))]
+
+  def next_front_images(self):
+    """The next slot's ring images of the first camera (before its own exposures arrive), for early prefill; else None."""
+    if not self.anchors:
+      return None
+    opening = self.anchors[-1][0]+self.period
+    older = self.older(opening, opening)
+    return None if older is None else [image for image, _ in older[0]]
+
   def rolling_images(self, selected, opening, *, anchor_only=False):
     """Only retain owned, calibrated pixels. The worker unmaps the input after each slot."""
-    query, frames = selected.query_ns, selected.frames
+    query, frames, per = selected.query_ns, selected.frames, self.per_slot
     # A superseded slot is anchored after newer slots opened; its frames still carry their own capture times.
-    window = self.period*(4 if anchor_only else 1)
-    if not (len(frames) == 4 and opening <= selected.selected_ns < opening+window and
+    window = anchor_window(self.period) if anchor_only else self.period
+    if not (len(frames) == per*len(CAMERAS) and opening <= selected.selected_ns < opening+window and
             0 <= opening-query <= FRAME_TOLERANCE_NS and frames[-1].sof_ns == query):
       raise Unavailable('Front query is outside its slot')
-    reason = 'Priming front-camera anchors'
     if self.anchors and opening <= self.anchors[-1][0]:
       raise Unavailable('Front slot did not advance')
-    if self.anchors and opening != self.anchors[-1][0]+self.period:
-      self.anchors.clear()
-      reason = 'Repriming after a missed slot'
     for i, camera in enumerate(CAMERAS):
-      prior, current = frames[2*i:2*i+2]
-      if not (prior.camera == current.camera == camera and prior.frame_id < current.frame_id and prior.sof_ns < current.sof_ns and
-              -FRAME_SLACK_NS <= query-100_000_000-prior.sof_ns <= FRAME_TOLERANCE_NS and 0 <= query-current.sof_ns <= FRAME_TOLERANCE_NS and
-              max(prior.ready_ns, current.ready_ns) <= selected.selected_ns):
+      exposures = frames[per*i:per*i+per]
+      current = exposures[-1]
+      if not (all(f.camera == camera for f in exposures) and 0 <= query-current.sof_ns <= FRAME_TOLERANCE_NS and
+              max(f.ready_ns for f in exposures) <= selected.selected_ns):
         raise Unavailable('Missing, repeated or stale front exposure')
+      if per == 2:
+        prior = exposures[0]
+        if not (prior.frame_id < current.frame_id and prior.sof_ns < current.sof_ns and
+                -FRAME_SLACK_NS <= query-100_000_000-prior.sof_ns <= FRAME_TOLERANCE_NS):
+          raise Unavailable('Missing, repeated or stale front exposure')
       if self.anchors:
-        _, last_pair = self.anchors[-1]
-        _, last = last_pair[i]
-        if last['capture_ns'] >= prior.sof_ns or last['frame_id'] >= prior.frame_id:
+        _, last = self.anchors[-1][1][i]
+        if last['capture_ns'] >= exposures[0].sof_ns or last['frame_id'] >= exposures[0].frame_id:
           raise Unavailable('Front exposure did not advance')
-    older = []
-    if len(self.anchors) == self.lags[0]:
-      older = [[self.anchors[-lag][1][i] for lag in self.lags] for i in range(len(CAMERAS))]
-      if any(abs(query+offset-ref['capture_ns']) > FRAME_TOLERANCE_NS for view in older for (_, ref), offset in zip(view, OFFSETS_NS[:3], strict=True)):
-        self.anchors.clear()
-        older = []
-        reason = 'Repriming after a capture gap'
-    complete = bool(older) and not anchor_only
-    # The six older images come directly from the anchor ring. These exposures must advance, so project their actual bytes once.
-    fresh, hits = self.project(frames if complete else frames[1::2], selected.states, reuse=False)
-    current_views = fresh[1::2] if complete else fresh
+    older = self.older(opening, query)
+    complete = older is not None and not anchor_only
+    # The older images come directly from the anchor ring. These exposures must advance, so project their actual bytes once.
+    fresh, hits = self.project(frames if complete else frames[per-1::per], selected.states, reuse=False)
+    current_views = fresh[per-1::per] if complete else fresh
     if complete and self.on_current is not None:
       self.on_current([(image, ref) for image, ref in current_views])
     self.anchors.append((opening, [(image, dict(ref, anchor_slot_ns=opening, anchor_query_ns=query, anchor_selected_ns=selected.selected_ns))
                                   for image, ref in current_views]))
     if anchor_only:
       raise Priming('Retaining current camera pair after worker overrun', self.anchors[-1][1])
-    if not older:
-      raise Priming(f'{reason} ({len(self.anchors)}/{self.lags[0]} slots)', self.anchors[-1][1])
-    return [frame for i, view in enumerate(older) for frame in (*view, *fresh[2*i:2*i+2])], hits+6
+    if older is None:
+      reason = 'Repriming after missed slots or a capture gap' if len(self.anchors) == self.anchors.maxlen else 'Priming front-camera anchors'
+      raise Priming(f'{reason} ({len(self.anchors)} of {self.lags[0]} slots)', self.anchors[-1][1])
+    return [frame for i, view in enumerate(older) for frame in (*view, *fresh[per*i:per*i+per])], hits+len(self.ring)*len(CAMERAS)
 
   def project(self, frames, states, *, reuse=True):
     from openpilot.selfdrive.alpamayo.geometry import calibrated_image
