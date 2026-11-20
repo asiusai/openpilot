@@ -189,7 +189,11 @@ class SelectedModel(EdgeModel):
       return self.packed_linear(packed,x_scale,name,shape)
     if name in self.expert_weights and rows == 64:
       quantized,x_scale = self.quantize(x) if quantized_input is None else quantized_input
-      return amd_gemm.gemm(quantized,weight,(x_scale,scale),bias,dtype=x.dtype).reshape(*shape,weight.shape[0])
+      # 64 rows give a 64x64 tile too few waves to stream the weights. Smaller output tiles keep each output's
+      # reduction order (bit-identical) and take 36 instead of 79 us per expert layer.
+      assert x.dtype == dtypes.bfloat16
+      tile = (1,2) if weight.shape[0] <= 512 else (2,2)
+      return tiled_gemm.gemm(quantized,weight,(x_scale,scale),tile=tile,bias=bias).reshape(*shape,weight.shape[0])
     if name in self.bf16_weights and rows >= 128:
       assert quantized_input is None and x.dtype == dtypes.bfloat16
       if x.ndim == 3 and x.shape[0] > 1 and x.shape[1]%16 and weight.shape[0]%64:
@@ -223,9 +227,10 @@ class SelectedModel(EdgeModel):
       # The expert mask is one FP32 value per key; apply it in the score kernel's epilogue (bit-identical, one launch fewer).
       assert mask.shape == (keys,)  # 0 or -inf per key: exact in FP32 whatever its weak float dtype
       scores = Tensor.custom_kernel(scores,_pack(q),packed_k,mask.float().contiguous(),
-                                    fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
+                                    fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,tile=(2,2)))[0]
     else:
-      scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True))[0]
+      scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,
+                                                                         tile=(queries//16,2)))[0]
       scores = (scores.float()+mask).cast(q.dtype).contiguous()
     probs = Tensor.empty(batch,heads,round_up(queries,16),round_up(keys,16),device=q.device,dtype=q.dtype)
     probs = Tensor.custom_kernel(probs,scores,fxn=_softmax)[0]
@@ -240,7 +245,7 @@ class SelectedModel(EdgeModel):
       self.trace_counts['pv'] += 1
       self.trace_counts['qk'] += 1
       return Tensor.custom_kernel(out,probs,packed_v,fxn=lambda *args: self.pv_program)[0]
-    return Tensor.custom_kernel(out,probs,packed_v,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,width,keys)))[0]
+    return Tensor.custom_kernel(out,probs,packed_v,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,width,keys),tile=(queries//16,2)))[0]
 
   def attention(self, q, k, v, mask=None, causal=False):
     if self.verifying:

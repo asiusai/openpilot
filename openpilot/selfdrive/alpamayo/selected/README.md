@@ -55,7 +55,7 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; the prefill verifies up to 31 draft tokens with 32 independent heads |
 | Continuation | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
-| Expert | Three Euler steps; restored BF16 action projections; exact scoped 2x2 PV kernel |
+| Expert | Three Euler steps; restored BF16 action projections; exact scoped 2x2 PV kernel; 2x2 score tiles; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
 Each prediction uploads uncached images in one pixel transfer. The GPU expands the byte patches to BF16 and encodes up to two images per call.
@@ -76,7 +76,9 @@ Expert attention adds the per-key mask inside the score kernel epilogue with the
 Expert PV applies only inside trajectory execution.
 During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.
 Startup creates the 56 four-bit matrices from the verified FP8 weights. They use 567 MiB of additional GPU memory; prompt processing still uses FP8 weights.
-Draft attention retains its original QK, softmax, and PV arithmetic.
+Draft attention retains its original QK, softmax, and PV arithmetic. Its 16- and 32-row products use 1x2 and 2x2 output tiles.
+Output tiles change only which outputs one wave computes. Each output keeps its reduction order, so results stay bit-identical.
+Smaller expert tiles reduced diffusion from 27.6 to 21.9 ms on Karel. The 32 prefill heads take one batched argmax (2.6 ms less).
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
 

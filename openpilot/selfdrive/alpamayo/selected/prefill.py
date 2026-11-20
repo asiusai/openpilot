@@ -65,14 +65,16 @@ class SpeculativePrefill(PaddedPrefill):
     model = self.model
     for i in range(model.config['vlm_config']['text_config']['num_hidden_layers']):
       x = model.text_layer(x,cos,sin,f'vlm.model.language_model.layers.{i}',model.cache[i],None,cache_pos=0)
-    rows,targets,checks = [],[],[]
+    rows = []
     for index in range(heads):
       hidden = model.norm(x[:,length-1+index:length+index],'vlm.model.language_model.norm',rms=True)
-      logits = model.linear(hidden,'vlm.lm_head').realize()
-      rows.append(logits)
-      targets.append(model.output_token_mapping[logits.reshape(-1).argmax()].reshape(1))
-      checks.append(logits.isfinite().all().cast(dtypes.int32).reshape(1))
-    return rows[0],Tensor.cat(*rows,dim=1).contiguous().realize(),Tensor.cat(*targets,*checks).contiguous().realize()
+      rows.append(model.linear(hidden,'vlm.lm_head').realize())
+    logits = Tensor.cat(*rows,dim=1).contiguous().realize()
+    # One batched argmax and finiteness check. Per-head reductions fused into one serial 2.6 ms kernel.
+    table = logits.reshape(heads,-1)
+    targets = model.output_token_mapping[table.argmax(axis=1)]
+    checks = table.isfinite().all(axis=1).cast(dtypes.int32)
+    return rows[0],logits,Tensor.cat(targets,checks).contiguous().realize()
 
   def __call__(self, x, cos, sin, max_tokens, length):
     from .policy import PromptTooLong

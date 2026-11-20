@@ -17,11 +17,11 @@ def _pack(x):
   return x.reshape(batch, heads, padded_rows//16, 16, padded_width//16, 4, 4).permute(0, 1, 2, 4, 5, 3, 6).contiguous()
 
 
-def _matmul(out, a, b, *mask, shape, causal=False, scaled=False):
+def _matmul(out, a, b, *mask, shape, causal=False, scaled=False, tile=(4, 4)):
   batch, heads, kv_heads, rows, columns, width = shape
   padded_rows, padded_columns, padded_width = (round_up(n, 16) for n in (rows, columns, width))
   head = UOp.range(batch*heads, 0)
-  m, n, k = UOp.range(round_up(rows, 64), 1), UOp.range(round_up(columns, 64), 2), UOp.range(padded_width, 3)
+  m, n, k = UOp.range(round_up(rows, 16*tile[0]), 1), UOp.range(round_up(columns, 16*tile[1]), 2), UOp.range(padded_width, 3)
   def index(h, row, length):
     return ((h*(length//16)+row//16)*(padded_width//16)+k//16)*256+(k%16//4)*64+(row%16)*4+k%4
   aa = a.flatten().index(index(head, m, padded_rows).valid(m < rows))
@@ -39,9 +39,12 @@ def _matmul(out, a, b, *mask, shape, causal=False, scaled=False):
   schedule = Scheduler(store.end(head, m, n).sink(arg=KernelInfo()), Device[Device.DEFAULT].renderer)
   schedule.convert_loop_to_global()
   ranges = schedule.apply_opt(Opt(OptOps.TC, 0, (-1, 0, 1)))
-  for i in (1, 0):
-    schedule.apply_opt(Opt(OptOps.SPLIT, schedule.rngs.index(ranges[i]), (4, AxisType.UPCAST)))
-  return schedule.get_optimized_ast(name_override='alpamayo_attention_scores' if scaled else 'alpamayo_attention_values')
+  # Output tiles change only which outputs one wave computes; every output keeps its reduction order.
+  for i, size in ((1, tile[0]), (0, tile[1])):
+    if size > 1:
+      schedule.apply_opt(Opt(OptOps.SPLIT, schedule.rngs.index(ranges[i]), (size, AxisType.UPCAST)))
+  name = 'alpamayo_attention_scores' if scaled else 'alpamayo_attention_values'
+  return schedule.get_optimized_ast(name_override=name if tile == (4, 4) else f'{name}_{tile[0]}x{tile[1]}')
 
 
 def _warp_reduce(value, maximum=False):
