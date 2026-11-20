@@ -4,17 +4,17 @@
  "target": "gfx1200",
  "objects": [
   {
-   "kind": "prefill_attention",
+   "kind": "prefill_cache_attention",
    "args": [
     16,
     8,
     2112,
-    2112,
+    2304,
     128
    ],
-   "source_sha256": "87b49cb8b5ccad12f5c5b0bc6bd5f3bde463b636a46d5ad7293c8277ae458cec",
-   "binary_sha256": "7b44d87254756f372b3371d4f8a5ad3e8f36f28d4a3a9be0b093e25a2e609031",
-   "bytes": 16448
+   "source_sha256": "5f30cc5709a405e8ab6d632664ca2a3d3495710a916ff1a4ec7c94a96696b245",
+   "binary_sha256": "0194e8758d2bfd457a68a4bfd21238a38d113e8ac66aa76c4ca30521e966a868",
+   "bytes": 12488
   },
   {
    "kind": "vision_attention",
@@ -221,13 +221,119 @@
    "source_sha256": "67d2f6abfa61414c441445c6f7d53825e348d752fa3c89bf1e9f5f35b58c6aeb",
    "binary_sha256": "c9ec72fbf8e5f12d5f78fdb7a4956d034ac445ff5fd1ddcc9ffd7626392ac1ed",
    "bytes": 5680
+  },
+  {
+   "kind": "vision_norm_max",
+   "args": [
+    1440,
+    1152,
+    1e-06
+   ],
+   "source_sha256": "f9b6b937e7755641c88d091bab78cccf8ddb6e08dd0121fa1e745e18ab3adb71",
+   "binary_sha256": "54b48a964b55b76b6a3143f753cb42844f19268a8273287378701386e2ed7cd3",
+   "bytes": 11184
+  },
+  {
+   "kind": "vision_qkv",
+   "args": [
+    1440,
+    3456,
+    1152
+   ],
+   "source_sha256": "cf644377066896cb383ce126fbde389c675666626e32acb8c9768f3572b83408",
+   "binary_sha256": "d043d325be0ecc780df62c631324189a08264f1cdba94f9ab2635f814a3a6862",
+   "bytes": 18968
+  },
+  {
+   "kind": "vision_attention_max",
+   "args": [
+    16,
+    16,
+    720,
+    720,
+    72
+   ],
+   "source_sha256": "6f70190716baa4d9f22fb5e31df9f00226159516efbef6cd5536b361c3791966",
+   "binary_sha256": "6f881d8201f0b2d9b934d1a48d5cfa15af04fddcb2b9761c90075072191feecd",
+   "bytes": 23336
+  },
+  {
+   "kind": "vision_o_residual",
+   "args": [
+    1440,
+    1152,
+    1152
+   ],
+   "source_sha256": "5fbdf8a5590eeda941385ffe6245f8848e4113a3a81481eb4f844b42f6477811",
+   "binary_sha256": "0787beb5ea7518e46b928e2eb4d8f0f86e668b74f9e08eabf7e4bafb32a03251",
+   "bytes": 28688
+  },
+  {
+   "kind": "vision_fc1_gelu_max",
+   "args": [
+    1440,
+    4304,
+    1152
+   ],
+   "source_sha256": "c85f36b4ae348d5c8fde4821f33726d286c7b14a55eafa5deb28c40a8d46defb",
+   "binary_sha256": "6687c8d9b85248a9f936b6e015f62598498b3aeb45c7617d46d11178467013ea",
+   "bytes": 54424
+  },
+  {
+   "kind": "vision_partial_max",
+   "args": [
+    675
+   ],
+   "source_sha256": "4ebb55084b2d2b5b5c312e1366e335c1f9224b5cb316e46a6315d161de6cb1c6",
+   "binary_sha256": "17088aa55fd1fb914785b939f691e8a802afd7f79d29b012997593305d5eccca",
+   "bytes": 4128
+  },
+  {
+   "kind": "vision_fc2_residual",
+   "args": [
+    1440,
+    1152,
+    4304
+   ],
+   "source_sha256": "f5e4e80f35c45c787fc330115fe3fcc8d31944e17240deeb0b88e89b37aa8951",
+   "binary_sha256": "310bc683b0cc9ed128e42c5a49640ec668aa0a124d0e24c367cea4eb3c5451ea",
+   "bytes": 39960
+  },
+  {
+   "kind": "projector_gemm",
+   "args": [
+    360,
+    11520,
+    4608
+   ],
+   "source_sha256": "aba8a25fb3e3dd97afe7fccc9385e0635357cbf70c016036818135e15bbfb05e",
+   "binary_sha256": "1a9cb3ccb7ef2514d0aa992ea06e2aec11955fa900d5d8c6f9884512df04b4b3",
+   "bytes": 17424
+  },
+  {
+   "kind": "projector_gemm",
+   "args": [
+    360,
+    2048,
+    11520
+   ],
+   "source_sha256": "941d0426a5e72589d70d2f9be17b86c11f29df62fbdc60a6dac23b907d1a2e10",
+   "binary_sha256": "a5a773d6f5d73606b5a479cc211f84e50f3388a2e0bdfc5d721ac241f77d64ab",
+   "bytes": 23056
+  },
+  {
+   "kind": "expert_attention",
+   "args": [
+    16,
+    8,
+    64,
+    2304,
+    128
+   ],
+   "source_sha256": "adcb367c1d03b44a2a745d2f62bf295309146057004a3a6c6b046ff6c8267764",
+   "binary_sha256": "4744f42b6523b230c7a51283c2b1cfd80493cd8ed82a956f64ba8a65bdbc3101",
+   "bytes": 28736
   }
  ],
- "expert_pv": {
-  "program_key": "60a9c413ed3944c9daa71121b6189e68005ae4296f7bc356adbf02295e1bbe59",
-  "input_ast_key": "12ecfadc7ea643915bb38d96e9a91da5588e391f51c0dee3190b376595b33dc2",
-  "binary_sha256": "7e6122334218c2f4723614a59620b32806f49ff527ac533725557c9a894deef2",
-  "llvm_sha256": "2b978f95330490c7cf0ed1de95a4ee5cdd3fd44062c1e0c130f159f353b93a1e"
- },
  "vocabulary_sha256": "a31437be0e5b900d3028ec8fb809bcb86e767ef1e703f727b052675fca9f18b0"
 }

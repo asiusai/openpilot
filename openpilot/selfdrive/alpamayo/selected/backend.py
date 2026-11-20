@@ -1,13 +1,10 @@
 """Process-local LLVM backend configuration for the selected recipe."""
 import ctypes
-import hashlib
 from tinygrad import Device, dtypes
-from tinygrad.codegen import do_to_program
 from tinygrad.device import Compiled
 from tinygrad.runtime.support.compiler_llvm import AMDLLVMCompiler, LLVMCompiler
 from tinygrad.uop.ops import UOp
-from .frozen import ASSETS, checked, manifest, verify_assets
-from .kernels.expert_pv import kernel
+from .frozen import verify_assets
 
 
 class WGPCompiler(AMDLLVMCompiler):
@@ -50,34 +47,6 @@ class Backend:
     ops_amd.dispatch_packet = self.packet = typed_packet
     Compiled.wait_timeout_ms = timeout_ms
     Backend.active = True
-
-  def pv_program(self):
-    expected = manifest()['expert_pv']
-    shapes = ((1,16,64,128), (1,16,64,2368), (1,8,8,148,4,16,4))
-    args = [UOp.placeholder(shape, dtypes.bfloat16, i) for i, shape in enumerate(shapes)]
-    ast = kernel(*args, shape=(1,16,8,64,128,2368), tile_m=2, tile_n=2)
-    binary = checked(ASSETS/'gfx1200/expert-pv.elf', expected['binary_sha256'])
-    def frozen_compile(source):
-      if hashlib.sha256(source.encode()).hexdigest() != expected['llvm_sha256']:
-        raise ValueError('Expert PV LLVM source changed')
-      return binary
-    compiler = self.device.renderer.compiler
-    previous = compiler.__dict__.get('compile_cached')
-    had_override = 'compile_cached' in compiler.__dict__
-    compiler.compile_cached = frozen_compile
-    try:
-      value = do_to_program(ast, self.device.renderer)
-    finally:
-      if had_override:
-        compiler.compile_cached = previous
-      else:
-        del compiler.compile_cached
-    actual = {'program_key':value.key.hex(), 'input_ast_key':ast.key.hex(),
-              'binary_sha256':hashlib.sha256(value.src[3].arg).hexdigest(),
-              'llvm_sha256':hashlib.sha256(value.src[2].arg.encode()).hexdigest()}
-    if actual != expected:
-      raise ValueError('Expert PV PROGRAM identity changed')
-    return value
 
   def close(self):
     if self.closed:

@@ -70,37 +70,46 @@ def norm_quantize(x, weight, scale):
   return Tensor.custom_kernel(out, x.contiguous().realize(), weight.contiguous().realize(), scale, fxn=norm_fp8_program)[0]
 
 
-def pack_values(v):
-  batch,heads,keys,width = v.shape
-  return (v.bitcast(dtypes.uint16).pad(((0,0),(0,0),(0,(-keys)%16),(0,(-width)%16)))
-          .reshape(batch,heads,(keys+15)//16,2,8,(width+15)//16,16)
-          .permute(0,1,5,2,3,6,4).contiguous().bitcast(dtypes.bfloat16))
-
-
-def attention_program(out, q, k, v, *, shape, causal):
+def attention_program(out, q, k, v, *, shape):
   batch,heads,rows,width = shape
   keys,kv_heads = k.shape[2],k.shape[1]
-  prefill = width == 128
-  if (prefill and not causal) or (not prefill and causal):
-    raise ValueError('Frozen attention causal policy changed')
-  name = 'agent_attention_rowsoftmax' if prefill else 'alpamayo_online'
   dependency = q.flatten()[0].load()+k.flatten()[0].load()+v.flatten()[0].load()
-  if not prefill:
-    dependency = dependency+0  # Preserve the original unmasked PROGRAM dependency expression.
+  dependency = dependency+0  # Preserve the original unmasked PROGRAM dependency expression.
   sink = UOp.sink(out.flatten()[0].store(dependency),
-                 UOp.special(batch*heads*((rows+127)//128), 'gidx0'), UOp.special(256, 'lidx0'), arg=KernelInfo(name=name))
-  return frozen_program(sink, 'prefill_attention' if prefill else 'vision_attention', (heads,kv_heads,rows,keys,width))
+                 UOp.special(batch*heads*((rows+127)//128), 'gidx0'), UOp.special(256, 'lidx0'), arg=KernelInfo(name='alpamayo_online'))
+  return frozen_program(sink, 'vision_attention', (heads,kv_heads,rows,keys,width))
 
 
-def attention(q, k, v, causal=False):
+def attention(q, k, v):
+  """Vision encoder attention (non-causal, 72-wide heads)."""
   assert q.dtype == k.dtype == v.dtype == dtypes.bfloat16
-  assert q.shape[-1] == k.shape[-1] == v.shape[-1] and q.shape[-1] in (72,128)
+  assert q.shape[-1] == k.shape[-1] == v.shape[-1] == 72
   assert q.shape[0] == k.shape[0] == v.shape[0] and k.shape == v.shape
   out = Tensor.empty(q.shape, device=q.device, dtype=q.dtype)
-  if q.shape[2] >= 1024:
-    v = pack_values(v)
-  return Tensor.custom_kernel(out,q.contiguous(),k.contiguous(),v.contiguous(),
-                             fxn=partial(attention_program,shape=q.shape,causal=causal))[0]
+  return Tensor.custom_kernel(out,q.contiguous(),k.contiguous(),v.contiguous(),fxn=partial(attention_program,shape=q.shape))[0]
+
+
+PREFILL_ATTENTION = (16, 8, 2112, 2304, 128)
+
+
+def prefill_attention_program(out, q, kv):
+  dependency = q.flatten()[0].load()+kv.flatten()[0].load()
+  sink = UOp.sink(out.flatten()[0].store(dependency), UOp.special(1056, 'gidx0'), UOp.special(64, 'lidx0'),
+                  arg=KernelInfo(name='agent_prefill_cache_attention'))
+  return frozen_program(sink, 'prefill_cache_attention', PREFILL_ATTENTION)
+
+
+def prefill_attention(q, kv):
+  """Causal prefill attention reading K and V rows below 2112 directly from the (2,1,8,2304,128) KV cache.
+
+  Each 64-thread workgroup holds the two query heads of one KV head for one 16-row tile; V loads use the gfx12
+  transposing load. The online softmax keeps the original per-row 32-key block order and rounding.
+  """
+  heads,kv_heads,rows,capacity,width = PREFILL_ATTENTION
+  assert q.shape == (1,heads,rows,width) and kv.shape == (2,1,kv_heads,capacity,width)
+  assert q.dtype == kv.dtype == dtypes.bfloat16
+  out = Tensor.empty(q.shape, device=q.device, dtype=q.dtype)
+  return Tensor.custom_kernel(out,q.contiguous(),kv,fxn=prefill_attention_program)[0]
 
 
 def mlp_program(out, x, weight, xs, ws, output_scale, *, rows):
@@ -119,3 +128,94 @@ def fused_mlp(x, weight, xs, ws, output_scale, rows):
   assert xs.numel() == ws.numel() == output_scale.numel() == 1
   out = Tensor.empty((rows+15)//16*16,weight.shape[0],device=x.device,dtype=dtypes.fp8e4m3)
   return Tensor.custom_kernel(out,x,weight,xs,ws,output_scale,fxn=partial(mlp_program,rows=rows))[0]
+
+
+def hip_program(kind, args, name, grid, local, outputs):
+  """PROGRAM for a frozen multi-output HIP object; every output gets a declared store."""
+  def program(*buffers):
+    dependency = sum(b.flatten()[0].load().float() for i,b in enumerate(buffers) if i not in outputs)
+    stores = [buffers[i].flatten()[0].store(dependency.cast(getattr(buffers[i].dtype,'base',buffers[i].dtype))) for i in outputs]
+    sink = UOp.sink(*stores, UOp.special(grid,'gidx0'), UOp.special(local,'lidx0'), arg=KernelInfo(name=name))
+    return frozen_program(sink, kind, args)
+  return program
+
+
+def hip_call(buffers, outputs, *, kind, args, name, grid, local):
+  """buffers in the kernel's argument order; outputs are the written positions."""
+  results = Tensor.custom_kernel(*buffers, fxn=hip_program(kind, args, name, grid, local, outputs))
+  results = tuple(results[i] for i in outputs)
+  Tensor.realize(*results)  # one launch writes every output
+  return results
+
+
+# Two-image (1440-row) FP8 vision layer objects. Inputs use amd_gemm.pack / vision_tiles.pack_images layouts.
+PAIR_ROWS, VISION_WIDTH, VISION_MLP = 1440, 1152, 4304
+
+
+def vision_norm_max(x, weight, bias):
+  """alpamayo_norm LayerNorm (eps 1e-6) with one wave per row, plus each row's |output| maximum."""
+  assert x.shape == (2,720,VISION_WIDTH) and x.dtype == weight.dtype == bias.dtype == dtypes.bfloat16
+  out = Tensor.empty(x.shape, device=x.device, dtype=x.dtype)
+  partial = Tensor.empty(PAIR_ROWS, device=x.device, dtype=dtypes.float32)
+  return hip_call((out, x.contiguous(), weight, bias, partial), (0, 4), kind='vision_norm_max', args=(PAIR_ROWS, VISION_WIDTH, 1e-6),
+                  name='alpamayo_norm_fast', grid=360, local=128)
+
+
+def vision_qkv(packed_x, weight, scales, bias, row_scales):
+  """Merged Q/K/V projection writing (2,16,720,72) heads directly; per-projection weight scales."""
+  outs = tuple(Tensor.empty(2,16,720,72, device=packed_x.device, dtype=dtypes.bfloat16) for _ in range(3))
+  return hip_call((*outs, packed_x, weight, row_scales, scales, bias), (0, 1, 2), kind='vision_qkv', args=(PAIR_ROWS, 3*VISION_WIDTH, VISION_WIDTH),
+                  name='qkv_k', grid=1620, local=32)
+
+
+def vision_attention_max(q, k, v):
+  """The vision online attention with each wave's |output| maximum (2*16*6*8 partials)."""
+  assert q.shape == k.shape == v.shape == (2,16,720,72)
+  out = Tensor.empty(q.shape, device=q.device, dtype=q.dtype)
+  partial = Tensor.empty(2*16*6*8, device=q.device, dtype=dtypes.float32)
+  return hip_call((out, q, k, v, partial), (0, 4), kind='vision_attention_max', args=(16,16,720,720,72),
+                  name='alpamayo_online', grid=192, local=256)
+
+
+def vision_gemm(packed_x, weight, row_scales, scale, bias, residual=None, *, kind, name, columns, width, grid, local):
+  out = Tensor.empty(2,720,columns, device=packed_x.device, dtype=dtypes.bfloat16)
+  buffers = (out, packed_x, weight, row_scales, scale, bias)+(() if residual is None else (residual.contiguous(),))
+  return hip_call(buffers, (0,), kind=kind, args=(PAIR_ROWS, columns, width), name=name, grid=grid, local=local)[0]
+
+
+def vision_fc1_gelu(packed_x, weight, row_scales, scale, bias):
+  """FC1 followed by the original GELU (BF16 in and out), plus 1350 per-tile |GELU| maxima as float bits."""
+  out = Tensor.empty(2,720,VISION_MLP, device=packed_x.device, dtype=dtypes.bfloat16)
+  partial = Tensor.empty(1350, device=packed_x.device, dtype=dtypes.uint32)
+  return hip_call((out, packed_x, weight, row_scales, scale, bias, partial), (0, 6), kind='vision_fc1_gelu_max',
+                  args=(PAIR_ROWS, VISION_MLP, VISION_WIDTH), name='fc1_k', grid=675, local=64)
+
+
+def vision_partial_max(partial):
+  out = Tensor.empty(2, device=partial.device, dtype=dtypes.uint32)
+  return hip_call((out, partial), (0,), kind='vision_partial_max', args=(675,), name='partial_max', grid=2, local=256)[0]
+
+
+PROJECTOR = {'vlm.model.projector.linear_fc1': (11520, 4608, 1440), 'vlm.model.projector.linear_fc2': (2048, 11520, 176)}
+
+
+def projector_gemm(name, packed_x, weight, row_scales, scale, bias):
+  """Two-image (360-row) projector GEMM with per-row scales."""
+  columns, width, grid = PROJECTOR[name]
+  out = Tensor.empty(360, columns, device=packed_x.device, dtype=dtypes.bfloat16)
+  return hip_call((out, packed_x, weight, row_scales, scale, bias), (0,), kind='projector_gemm', args=(360, columns, width),
+                  name='pj_k', grid=grid, local=32)[0]
+
+
+def expert_attention(q, k_new, v_new, cache, mask):
+  """Diffusion expert attention in one launch: BF16 scores, FP32 key mask, softmax and PV with the original rounding.
+
+  Keys are the 2304 prompt rows read directly from the layer's KV cache, then the 64 new action rows.
+  The kernel stages probabilities in a scratch buffer that it writes.
+  """
+  assert q.shape == (1,16,64,128) and k_new.shape == v_new.shape == (1,8,64,128) and cache.shape == (2,1,8,2304,128)
+  assert q.dtype == k_new.dtype == v_new.dtype == cache.dtype == dtypes.bfloat16 and mask.shape == (2368,) and mask.dtype == dtypes.float32
+  out = Tensor.empty(q.shape, device=q.device, dtype=q.dtype)
+  scratch = Tensor.empty(64*148*32*8, device=q.device, dtype=dtypes.uint16)
+  return hip_call((out, q.contiguous(), k_new.contiguous(), v_new.contiguous(), cache, mask, scratch), (0, 6),
+                  kind='expert_attention', args=(16,8,64,2304,128), name='alpamayo_expert_attention', grid=64, local=256)[0]

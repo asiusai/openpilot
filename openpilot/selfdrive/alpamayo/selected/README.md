@@ -55,7 +55,7 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; the prefill verifies up to 31 draft tokens with 32 independent heads |
 | Continuation | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
-| Expert | Three Euler steps; restored BF16 action projections; exact scoped 2x2 PV kernel; 2x2 score tiles; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
+| Expert | Three Euler steps; restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
 Each prediction uploads uncached images in one pixel transfer. The GPU expands the byte patches to BF16 and encodes up to two images per call.
@@ -73,18 +73,19 @@ A 2025-token prompt plus compact navigation text leaves room for all 32 heads; a
 Padding rows follow the prompt, so real prompt rows and their KV are identical for any padded length.
 Every padding row has the position of a placed draft token, placed or not. The ~1 MB prefill rotary tables thus change only with the
 actual prompt length. A changed draft length previously re-uploaded them, which cost about 29 ms on 23% of slots.
-Expert attention adds the per-key mask inside the score kernel epilogue with the original BF16 and FP32 rounding.
-Expert PV applies only inside trajectory execution.
+Expert attention is one frozen launch per layer and Euler step: BF16 scores, FP32 key mask, softmax and PV with the original rounding,
+summation trees and WMMA slot order. It reads the 2304 prompt KV rows straight from the layer's cache; no per-diffusion packing remains.
 During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.
 Startup creates the 56 four-bit matrices from the verified FP8 weights. They use 567 MiB of additional GPU memory; prompt processing still uses FP8 weights.
 Draft attention retains its original QK, softmax, and PV arithmetic. Its 16- and 32-row products use 1x2 and 2x2 output tiles.
 Output tiles change only which outputs one wave computes. Each output keeps its reduction order, so results stay bit-identical.
 Smaller expert tiles reduced diffusion from 27.6 to 21.9 ms on Karel. The 32 prefill heads take one batched argmax (2.6 ms less).
-Both online-softmax attention kernels skip the accumulator rescale when no row of a wave raised its maximum; the scale is then exactly 1.
-Vision attention also prefetches the next K/V block, skips padding-only waves and runs at eight waves per SIMD (0.20 to 0.15 ms per layer).
-Vision FP8 quantization reduces the per-image maximum in one fused pass and writes the packed FP8 layout directly.
-GELU outputs are not stored; the maximum and the packing quantizer recompute them. BF16 vision linears use 3x4 tiles except FC1.
-The frozen pair plan holds 37 programs. FP8 vision projections add the residual in their epilogue. A regenerated plan keeps the programs of unchanged operations and compiles only changed ones.
+Prefill attention reads K and V rows below 2112 straight from the KV cache (no K copy or V packing). Each 64-thread workgroup holds the
+two query heads of one KV head for one 16-row tile; V uses the gfx12 transposing load. Online softmax rescales skip rows whose maximum did not change.
+Two-image FP8 vision layers use fused frozen objects: LayerNorm and attention also emit |output| maxima for the next FP8 scale,
+one merged Q/K/V projection writes attention heads directly, FC1 applies GELU and emits maxima, and O and FC2 add the residual.
+Each image's FP8 scale still uses the `grouped_quantize` expressions. Single-image encodes keep the general path.
+The frozen pair plan holds 38 programs. A regenerated plan keeps the programs of unchanged operations and compiles only changed ones.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
 
@@ -116,7 +117,7 @@ The tokenizer and input adapter load on a thread while the weights upload. Packi
 The GPU runs at its highest clock level (`AM_PERF_LEVEL=high`) under the 144 W power limit, so short idle gaps do not slow the next stage.
 Changing these artifacts requires a separate numerical qualification.
 
-The selected dispatcher uses 21 HIP source/object pairs and the expert PV object under `assets/gfx1200`.
+The selected dispatcher uses 30 HIP source/object pairs under `assets/gfx1200`.
 Startup checks their hashes against `assets/manifest.json`.
 HIP/COMGR compilation is unnecessary on ARM. Ordinary tinygrad LLVM kernels still require LLVM22.
 The compiler pool uses at most one process per CPU available to the worker. Its SQLite cache persists across production launches.

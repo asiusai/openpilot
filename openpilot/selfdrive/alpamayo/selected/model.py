@@ -11,7 +11,6 @@ from tinygrad.uop.ops import UOp
 from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 
-PROMPT_TILES = 2304//16  # Expert attention keys: 2304 prompt rows, then 64 action rows.
 PREFILL_ROWS = 2112  # Padded prompt rows: 2025 base tokens, compact navigation text and the 31-token verified draft (33 x 64).
 from . import amd_gemm, amd_decode, weights
 from .serial_attention import direct as serial_cache_attention
@@ -25,7 +24,7 @@ class PackedActivation:
 
 
 class SelectedModel(EdgeModel):
-  def __init__(self, checkpoint, fp8_cache, fixed_scales, pv_program):
+  def __init__(self, checkpoint, fp8_cache, fixed_scales):
     # Initialize shared state without loading the full BF16 weights first.
     self.config = json.loads((Path(checkpoint)/'config.json').read_text())
     self.weights,self.weight_scales = {},{}
@@ -36,8 +35,7 @@ class SelectedModel(EdgeModel):
     self.decode_jit = TinyJit(self._greedy_decode)
     self.images,self.verifying,self.trajectory_active = 0,False,False
     self.prefill_prefix,self.quantizer_slot = None,0
-    self.pv_program = pv_program
-    self.trace_counts = {'pv':0,'qk':0,'fused_mlp':0}
+    self.trace_counts = {'expert_attention':0,'fused_mlp':0}
     import time
     marks = [('start',time.monotonic())]
     def mark(name):
@@ -82,7 +80,21 @@ class SelectedModel(EdgeModel):
     mark('projector')
     self.w4_weights = serial_mlp.pack_weights(self)
     mark('w4_pack')
+    self.vision_qkv = self.merge_vision_qkv()
+    mark('vision_qkv')
     self.load_ms = {b[0]:round((b[1]-a[1])*1e3) for a,b in zip(marks,marks[1:])}
+
+  def merge_vision_qkv(self):
+    # Packed Q/K/V matrices, scales and biases of the FP8 vision layers side by side for the merged pair projection.
+    merged = {}
+    for i in range(2,self.config['vlm_config']['vision_config']['num_hidden_layers']):
+      prefix = f'vlm.model.visual.encoder.layers.{i}.self_attn'
+      names = [f'{prefix}.{n}_proj' for n in 'qkv']
+      merged[f'{prefix}.qkv.matrix'] = Tensor.cat(*[amd_gemm.pack(self.weights[n+'.weight']) for n in names]).contiguous()
+      merged[f'{prefix}.qkv.scale'] = Tensor.cat(*[self.weight_scales[n+'.weight'].reshape(1) for n in names]).contiguous()
+      merged[f'{prefix}.qkv.bias'] = Tensor.cat(*[self.weights[n+'.bias'] for n in names]).contiguous()
+    Tensor.realize(*merged.values())
+    return merged
 
   def reset(self):
     self.cache = self.prompt_length = self.greedy_shape = None
@@ -179,7 +191,7 @@ class SelectedModel(EdgeModel):
       # Only FP8 vision projections add the residual in their epilogue.
       assert self.images and scale is not None and name.endswith('.self_attn.out_proj') and x.dtype == residual.dtype == dtypes.bfloat16
       quantized,x_scale = self.quantize(x) if quantized_input is None else quantized_input
-      return tiled_gemm.gemm(quantized,weight,(x_scale,scale),row_scale=True,bias=bias,residual=residual).reshape(*shape,weight.shape[0])
+      return tiled_gemm.gemm(quantized,weight,(x_scale,scale),tile=(3,3),row_scale=True,bias=bias,residual=residual).reshape(*shape,weight.shape[0])
     if self.images and scale is not None:
       if name.startswith(('vlm.model.visual.embeddings.','vlm.model.projector.')):
         count = self.images
@@ -191,7 +203,9 @@ class SelectedModel(EdgeModel):
         finally:
           self.images = count
       quantized,x_scale = self.quantize(x) if quantized_input is None else quantized_input
-      return tiled_gemm.gemm(quantized,weight,(x_scale,scale),row_scale=True,bias=bias).reshape(*shape,weight.shape[0])
+      # 3x3 output tiles are 12% faster than 4x4 for the 1440-row projections; reduction order is unchanged.
+      tile = (3,3) if (x.numel()//x.shape[-1]) % 48 == 0 and weight.shape[0] % 48 == 0 else (4,4)
+      return tiled_gemm.gemm(quantized,weight,(x_scale,scale),tile=tile,row_scale=True,bias=bias).reshape(*shape,weight.shape[0])
     rows = x.numel()//x.shape[-1]
     if (name in self.w4_weights and x.shape == (1,1,weight.shape[1]) and x.dtype == dtypes.bfloat16 and heads is None
         and not (self.images or self.verifying or self.trajectory_active) and self.prefill_prefix is None):
@@ -222,56 +236,70 @@ class SelectedModel(EdgeModel):
     return frozen_ops.norm(x,self.weights[name+'.weight'],None if rms else self.weights[name+'.bias'],
                            rms,eps if eps is not None else 1e-5 if rms else 1e-6)
 
-  def expert_kv(self, k, v):
-    """Packed expert K/V: the prompt tiles were stored once per diffusion call; store only the 64 action rows."""
-    layer = self.expert_layer % len(self.cache)
-    self.expert_layer += 1
-    pk,pv = self.expert_packs[layer]
-    pk = Tensor(pk.uop.after(pk[:,:,PROMPT_TILES:].uop.store(_pack(k[:,:,PROMPT_TILES*16:]).uop)))
-    pv = Tensor(pv.uop.after(pv[:,:,:,PROMPT_TILES:].uop.store(_pack(v[:,:,PROMPT_TILES*16:].transpose(-2,-1)).uop)))
-    return pk,pv
-
   def masked_attention(self, q, k, v, mask, *, expert=False):
     batch,heads,queries,width = q.shape
     kv_heads,keys = k.shape[1:3]
     assert queries in (16,32,48,64) and mask.shape in ((keys,),(queries,keys))
-    packed_k,packed_v = self.expert_kv(k,v) if expert else (_pack(k),None)
-    scores = Tensor.empty(batch,heads,queries,keys,device=q.device,dtype=q.dtype)
     if expert:
-      # The expert mask is one FP32 value per key; apply it in the score kernel's epilogue (bit-identical, one launch fewer).
-      assert mask.shape == (keys,)  # 0 or -inf per key: exact in FP32 whatever its weak float dtype
-      scores = Tensor.custom_kernel(scores,_pack(q),packed_k,mask.float().contiguous(),
-                                    fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,tile=(2,2)))[0]
-    else:
-      scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,
-                                                                         tile=(queries//16,2)))[0]
-      scores = (scores.float()+mask).cast(q.dtype).contiguous()
+      # Prompt keys come straight from this layer's cache; the expert runs its 28 layers in order on every Euler step.
+      assert self.trajectory_active and not self.verifying and mask.shape == (keys,) == (2368,) and q.shape == (1,16,64,128)
+      layer = self.expert_layer % len(self.cache)
+      self.expert_layer += 1
+      self.trace_counts['expert_attention'] += 1
+      return frozen_ops.expert_attention(q,k[:,:,2304:],v[:,:,2304:],self.cache[layer],mask.float().contiguous())
+    packed_k = _pack(k)
+    scores = Tensor.empty(batch,heads,queries,keys,device=q.device,dtype=q.dtype)
+    scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,
+                                                                       tile=(queries//16,2)))[0]
+    scores = (scores.float()+mask).cast(q.dtype).contiguous()
     probs = Tensor.empty(batch,heads,round_up(queries,16),round_up(keys,16),device=q.device,dtype=q.dtype)
     probs = Tensor.custom_kernel(probs,scores,fxn=_softmax)[0]
     out = Tensor.empty(q.shape,device=q.device,dtype=q.dtype)
-    if not expert:
-      packed_v = _pack(v.transpose(-2,-1))
-    if expert:
-      assert self.trajectory_active and not self.verifying
-      assert q.shape == (1,16,64,128) and keys == 2368
-      assert probs.shape == (1,16,64,2368) and packed_v.shape == (1,8,8,148,4,16,4)
-      assert out.dtype == probs.dtype == packed_v.dtype == dtypes.bfloat16
-      self.trace_counts['pv'] += 1
-      self.trace_counts['qk'] += 1
-      return Tensor.custom_kernel(out,probs,packed_v,fxn=lambda *args: self.pv_program)[0]
+    packed_v = _pack(v.transpose(-2,-1))
     return Tensor.custom_kernel(out,probs,packed_v,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,width,keys),tile=(queries//16,2)))[0]
 
   def attention(self, q, k, v, mask=None, causal=False):
     if self.verifying:
       return self.masked_attention(q,k,v,mask)
-    if mask is None and q.shape[2] >= 128 and q.shape[-1] in (72,128):
-      return frozen_ops.attention(q,k,v,causal)
+    if mask is None and q.shape[2] >= 128 and q.shape[-1] == 72 and not causal:
+      return frozen_ops.attention(q,k,v)
     if q.dtype == dtypes.bfloat16 and q.shape[2] == 64 and mask is not None and mask.numel() == k.shape[2] and not causal:
       return self.masked_attention(q,k,v,mask,expert=self.trajectory_active)
     return super().attention(q,k,v,mask,causal)
 
+  def vision_pair_layer(self, x, prefix):
+    """FP8 vision layer for two images with fused frozen objects; same arithmetic as the general path.
+
+    Norms, attention and FC1 also emit |output| maxima; each image's FP8 scale uses grouped_quantize's expressions.
+    """
+    def scales(maximum):
+      scale = (maximum.reshape(2,1,1)/448).clamp(min_=1e-12).realize()
+      return scale,scale.reshape(2,1).expand(2,720).reshape(-1).contiguous()
+    def fp8(value, scale):
+      return (value.reshape(2,-1,value.shape[-1]).float()/scale).clamp(-448,448).cast(dtypes.fp8e4m3).reshape(-1,value.shape[-1])
+    def gemm_args(name):
+      return amd_gemm.pack(self.weights[name+'.weight']),self.weight_scales[name+'.weight'],self.weights[name+'.bias']
+    h,partial = frozen_ops.vision_norm_max(x,self.weights[prefix+'.layer_norm1.weight'],self.weights[prefix+'.layer_norm1.bias'])
+    scale,rows = scales(partial.reshape(2,720).max(axis=1))
+    q,k,v = frozen_ops.vision_qkv(amd_gemm.pack(fp8(h,scale)),*(self.vision_qkv[f'{prefix}.self_attn.qkv.{n}'] for n in ('matrix','scale','bias')),rows)
+    h,partial = frozen_ops.vision_attention_max(q,k,v)
+    scale,rows = scales(partial.reshape(2,-1).max(axis=1))
+    w,ws,b = gemm_args(prefix+'.self_attn.out_proj')
+    x = frozen_ops.vision_gemm(amd_gemm.pack(fp8(h.transpose(1,2).reshape(x.shape),scale)),w,rows,ws,b,x,kind='vision_o_residual',name='o_k',
+                               columns=1152,width=1152,grid=540,local=32)
+    h,partial = frozen_ops.vision_norm_max(x,self.weights[prefix+'.layer_norm2.weight'],self.weights[prefix+'.layer_norm2.bias'])
+    scale,rows = scales(partial.reshape(2,720).max(axis=1))
+    w,ws,b = gemm_args(prefix+'.mlp.fc1')
+    g,partial = frozen_ops.vision_fc1_gelu(vision_tiles.pack_images(fp8(h,scale).reshape(2,720,1152)),w,rows,ws,b)
+    scale,rows = scales(frozen_ops.vision_partial_max(partial).bitcast(dtypes.float32))
+    w,ws,b = gemm_args(prefix+'.mlp.fc2')
+    return frozen_ops.vision_gemm(vision_tiles.pack_images(fp8(g,scale).reshape(2,720,4304)),w,rows,ws,b,x,kind='vision_fc2_residual',name='fc2_k',
+                                  columns=1152,width=4304,grid=360,local=32).realize()
+
   def vision_layer(self, x, i):
     prefix = f'vlm.model.visual.encoder.layers.{i}'
+    if x.shape == (2,720,1152) and self.images == 2 and f'{prefix}.self_attn.q_proj.weight' in self.weight_scales:
+      return self.vision_pair_layer(x,prefix)
     h = self.norm(x,f'{prefix}.layer_norm1')
     quantized = self.quantize(h) if f'{prefix}.self_attn.q_proj.weight' in self.weight_scales else None
     q,k,v = (self.linear(h,f'{prefix}.self_attn.{n}_proj',quantized,heads=16).reshape(*h.shape[:2],16,72).transpose(1,2) for n in ('q','k','v'))
@@ -313,6 +341,8 @@ class SelectedModel(EdgeModel):
         if (not self.verifying and not self.trajectory_active and cache_pos is not None and not isinstance(cache_pos,int)
             and q.shape == (1,16,1,128) and cache.shape == (2,1,8,2304,128) and mask is not None and mask.numel() == 2304):
           h = serial_cache_attention(q,assigned,mask)
+        elif prefill and causal and mask is None:
+          h = frozen_ops.prefill_attention(q,assigned)
         else:
           h = self.attention(q,k,v,mask,causal)
       h = h.transpose(1,2).reshape(1,x.shape[1],2048)
@@ -356,31 +386,18 @@ class SelectedModel(EdgeModel):
     logits = self._language(x,cos[:,:,step:step+1],sin[:,:,step:step+1],position)
     return logits,token.float().realize()
 
-  def allocate_expert_packs(self):
-    # Persistent packed expert K/V, allocated before any captured or cached diffusion graph binds it.
-    # Not created in __init__: the frozen prefill graph pins that method's source.
-    if getattr(self,'expert_packs',None) is None:
-      self.expert_packs = [(Tensor.empty(1,8,PROMPT_TILES+4,8,4,16,4,dtype=self.dtype).contiguous().realize(),
-                            Tensor.empty(1,8,8,PROMPT_TILES+4,4,16,4,dtype=self.dtype).contiguous().realize())
-                           for _ in range(self.config['vlm_config']['text_config']['num_hidden_layers'])]
-
   def _trajectory(self, actions, cos, sin, length, steps, offset):
     if steps != 3 or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
       raise ValueError('Selected expert requires three Euler steps and 2304 KV rows')
-    before = self.trace_counts['pv'],self.trace_counts['qk']
-    # The prompt KV cache is constant during diffusion: pack it once per call, not once per Euler step and layer.
-    self.allocate_expert_packs()
-    for (pk,pv),plane in zip(self.expert_packs,self.cache,strict=True):
-      Tensor(pk.uop.after(pk[:,:,:PROMPT_TILES].uop.store(_pack(plane[0]).uop))).realize()
-      Tensor(pv.uop.after(pv[:,:,:,:PROMPT_TILES].uop.store(_pack(plane[1].transpose(-2,-1)).uop))).realize()
+    before = self.trace_counts['expert_attention']
     self.expert_layer = 0
     self.trajectory_active = True
     try:
       result = super()._trajectory(actions,cos,sin,length,steps,offset)
     finally:
       self.trajectory_active = False
-    if (self.trace_counts['pv']-before[0],self.trace_counts['qk']-before[1]) != (84,84):
-      raise ValueError('Selected expert PV coverage changed')
+    if self.trace_counts['expert_attention']-before != 84:
+      raise ValueError('Selected expert attention coverage changed')
     return result
 
   def encode_group(self, *pairs):
@@ -401,8 +418,12 @@ class SelectedModel(EdgeModel):
       x = Tensor.cat(*parts,dim=0)
       for index,name in enumerate(self.projector_weights):
         quantized,scale = self.quantize(x) if count == 1 else frozen_ops.grouped_quantize(x,count)
-        x = tiled_gemm.gemm(quantized,self.projector_weights[name],(scale,self.weight_scales[name+'.weight']),
-                            row_scale=count > 1,bias=self.weights.get(name+'.bias'))
+        if count == 2:
+          x = frozen_ops.projector_gemm(name,amd_gemm.pack(quantized),amd_gemm.pack(self.projector_weights[name]),scale,
+                                        self.weight_scales[name+'.weight'],self.weights[name+'.bias'])
+        else:
+          x = tiled_gemm.gemm(quantized,self.projector_weights[name],(scale,self.weight_scales[name+'.weight']),
+                              row_scale=count > 1,bias=self.weights.get(name+'.bias'))
         if index == 0:
           x = x.float().gelu(approximate='none').cast(self.dtype)
       x = x.realize().reshape(count,-1,x.shape[-1])

@@ -18,7 +18,7 @@ def checked(path, digest):
 @lru_cache(None)
 def manifest():
   value = json.loads((ASSETS/'manifest.json').read_text())
-  if value['tinygrad_revision'] != TINYGRAD_REVISION or value['target'] != 'gfx1200' or len(value['objects']) != 20:
+  if value['tinygrad_revision'] != TINYGRAD_REVISION or value['target'] != 'gfx1200' or len(value['objects']) != 30:
     raise ValueError('Unsupported selected kernel manifest')
   return value
 
@@ -40,7 +40,6 @@ def object_pair(kind, args):
 def verify_assets():
   for record in manifest()['objects']:
     object_pair(record['kind'], tuple(record['args']))
-  checked(ASSETS/'gfx1200/expert-pv.elf', manifest()['expert_pv']['binary_sha256'])
   checked(ASSETS/'coc_vocab.json', manifest()['vocabulary_sha256'])
 
 

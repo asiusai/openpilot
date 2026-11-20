@@ -14,7 +14,7 @@ PREFIX = 'vlm.model.visual.encoder.layers.'
 PROJECTIONS = ('self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.out_proj', 'mlp.fc1', 'mlp.fc2')
 BULK_LAYOUT = 'f052598ec86566ec63f98908ecf412b6e20e3f5cb4f5de5d47137dc02ade9fb0'
 CHECKPOINT = 'f0471a81f8a1b191eb92c12639660a7bbcf831ff379d1b0d724fba23c533785d'
-ORDERED_PROGRAMS = '35cf7c6b22e935a26b3a1c17ad1bfa1fee48c78ae414be316498d43a9a00a7ad'
+ORDERED_PROGRAMS = '0b03fa0ebc356b2aaa7a35383501ed83ab8b4f625cbaf9a236c2b5f3850711b8'
 
 
 def root(t):
@@ -29,7 +29,7 @@ class VisionWeights:
     self.model = model
     self.roles = [
       (field, name, t, t.uop)
-      for field in ('weights', 'weight_scales', 'bf16_weights', 'projector_weights')
+      for field in ('weights', 'weight_scales', 'bf16_weights', 'projector_weights', 'vision_qkv')
       for name, t in getattr(model, field).items()
       if name.startswith(('vlm.model.visual.', 'vlm.model.projector.'))
     ]
@@ -65,7 +65,12 @@ def layer_inputs(model, x, i):
   p = PREFIX + str(i) + '.'
   args = {'activation': x}
   args.update({s + '.' + k: model.weights[p + s + '.' + k] for s in ('layer_norm1', 'layer_norm2') for k in ('weight', 'bias')})
+  if i >= 2:
+    # The fused pair layer reads the merged Q/K/V projection instead of the three separate ones.
+    args.update({'self_attn.qkv.' + k: model.vision_qkv[p + 'self_attn.qkv.' + k] for k in ('matrix', 'scale', 'bias')})
   for s in PROJECTIONS:
+    if i >= 2 and s in ('self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj'):
+      continue
     n = p + s + '.weight'
     if i < 2:
       require(n not in model.weight_scales and model.weights[n].dtype == dtypes.bfloat16, 'Expected restored BF16 vision weight')

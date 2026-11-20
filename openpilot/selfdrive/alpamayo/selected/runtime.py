@@ -165,7 +165,7 @@ class Runtime:
       self.backend = Backend(self.config.device_timeout_ms)
       finished('gpu_backend')
       loader.start()  # after GPU init, which is CPU-bound; the weight upload below mostly waits on I/O
-      self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales,self.backend.pv_program())
+      self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales)
       finished('weights_and_packing')
       print(f'Alpamayo startup: weight stages {self.model.load_ms}', file=sys.stderr, flush=True)
       loader.join()
@@ -179,7 +179,6 @@ class Runtime:
       finished('input_adapter_join')
       if self.model.weight_digest != artifacts['fp8_weights_sha256']:
         raise ValueError('Selected FP8 weight bytes changed')
-      self.model.allocate_expert_packs()
       from . import graph_cache
       from tinygrad.codegen import to_program_config
       from tinygrad.helpers import PROFILE
