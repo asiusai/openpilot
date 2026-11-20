@@ -423,6 +423,20 @@ class Runtime:
     if not self.closed:
       self.model.synchronize()
 
+  def gpu_metrics(self):
+    """Chestnut temperatures, power, clock and fan from the SMU metrics table (as modeld reads them)."""
+    import ctypes
+    from tinygrad import Device
+    with self.lock:
+      if self.closed:
+        raise RuntimeError('Runtime is closed')
+      smu = Device['AMD'].iface.dev_impl.smu
+      metrics_t = smu.smu_mod.SmuMetricsExternal_t
+      smu._send_msg(smu.smu_mod.PPSMC_MSG_TransferTableSmu2Dram, smu.smu_mod.TABLE_SMU_METRICS, timeout=100)
+      m = metrics_t.from_buffer(bytearray(smu.adev.vram.view(smu.driver_table_paddr, ctypes.sizeof(metrics_t))[:])).SmuMetrics
+      return {'hotspot_c': m.AvgTemperature[smu.smu_mod.TEMP_HOTSPOT], 'memory_c': m.AvgTemperature[smu.smu_mod.TEMP_MEM],
+              'power_w': m.AverageSocketPower, 'gfx_mhz': m.AverageGfxclkFrequencyPostDs, 'fan_rpm': m.AvgFanRpm}
+
   def reset(self):
     with self.lock:
       if self.closed:
@@ -492,6 +506,9 @@ class ShadowAdapter:
 
   def synchronize(self):
     self.runtime.synchronize()
+
+  def gpu_metrics(self):
+    return self.runtime.gpu_metrics()
 
   def close(self):
     self.runtime.close()

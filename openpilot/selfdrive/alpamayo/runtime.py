@@ -130,12 +130,19 @@ def atomic_json(path, value):
   return atomic_write(path, json_bytes(value))
 
 
+SESSION_RECORD_LIMIT = 2*1024**3  # about 2.3 hours of prediction records at 4 Hz
+
+
 class PredictionWriter:
-  """One immutable prediction can be in flight. The worker owns all admission and error checks."""
+  """One immutable prediction can be in flight. The worker owns all admission and error checks.
+
+  Reaching the session limit or the memory/disk reserve stops recording, never inference: plans keep publishing.
+  """
   def __init__(self):
     self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='prediction-log')
     self.pending = None
     self.written = 0
+    self.stopped = None
 
   def check(self, wait=False):
     if self.pending is not None and (wait or self.pending.done()):
@@ -150,10 +157,15 @@ class PredictionWriter:
         if finish is not None:
           finish(result)
         raw = json_bytes(result)
-        if self.written+len(raw) > 256*1024**2:
-          raise RuntimeError('Shadow session reached its 256 MiB prediction limit')
-        if not memory_ok(len(raw)) or not storage_ok(path.parent, len(raw)):
-          raise RuntimeError('Shadow prediction reached its memory or disk reserve')
+        if self.stopped is None and self.written+len(raw) > SESSION_RECORD_LIMIT:
+          self.stopped = f'session record limit ({SESSION_RECORD_LIMIT >> 20} MiB)'
+        elif self.stopped is None and (not memory_ok(len(raw)) or not storage_ok(path.parent, len(raw))):
+          self.stopped = 'memory or disk reserve'
+        if self.stopped is not None:
+          if self.written >= 0:
+            print(f'alpamayo prediction records stopped: {self.stopped}; plans keep publishing', file=sys.stderr, flush=True)
+            self.written = -1
+          return
         atomic_write(path, raw)
         self.written += len(raw)
       finally:
@@ -600,6 +612,12 @@ def worker(config, directory, handoff):
         writer.submit(root/f'{selected.query_ns}.json', result,
                       finish=lambda r, arrays=arrays: r['input'].__setitem__('input_sha256', input_hashes(arrays)), release=mapping.pop_all().close)
         count += 1
+        if count % 40 == 0 and hasattr(adapter, 'gpu_metrics'):
+          # About every 10 s at 4 Hz, between slots: heat and power stay visible during long drives.
+          try:
+            print(f'alpamayo gpu {json.dumps(adapter.gpu_metrics())}', file=sys.stderr, flush=True)
+          except Exception as error:  # noqa: BLE001 - telemetry only
+            print(f'alpamayo gpu metrics unavailable: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
       except (Unavailable, PromptTooLong, NoTrajectoryAnchor) as error:
         # Anchors are queued without waiting for the GPU: the next slot must not inherit this slot's encode time.
         if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns']),

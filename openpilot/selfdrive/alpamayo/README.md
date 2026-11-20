@@ -253,7 +253,8 @@ All interval endpoints are recorded. These output-readiness metrics exclude dura
 Live output no longer calls the narrower worker interval `full_pipeline_ms`. Prepared replay's timing scope remains separate.
 The corresponding normal route video and logs remain necessary for video replay.
 Completed predictions are never automatically deleted. Storage admission preserves the logger's 10% and 5 GiB thresholds.
-Each session limits prediction output to 256 MiB. Output permissions are private, and normal route recording directories are rejected.
+Each session records up to 2 GiB of predictions. Reaching that limit or the memory or disk reserve stops recording, never inference.
+Output permissions are private, and normal route recording directories are rejected.
 Source frame-ID gaps remain in prediction metadata. No uploader or cloud publication is configured.
 
 ## Validation and remaining work
