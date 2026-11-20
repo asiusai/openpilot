@@ -8,6 +8,21 @@ def upload(value, dtype=dtypes.bfloat16):
   return source.to(Device.DEFAULT).cast(dtype).contiguous().realize()
 
 
+def submitted(device=None):
+  """Timeline value of the newest submitted GPU work; wait_for(value) later waits for exactly that work."""
+  dev = Device[device or Device.DEFAULT]
+  return int(dev.timeline.host.view(fmt='Q')[1])
+
+
+def wait_for(value, device=None):
+  dev = Device[device or Device.DEFAULT]
+  try:
+    dev._wait_signal(dev.timeline.host.view(fmt='Q'), value)
+  except RuntimeError:
+    dev.on_device_hang()
+    raise
+
+
 def download(value):
   numpy_type = {dtypes.int32: np.int32, dtypes.float32: np.float32}.get(value.dtype)
   if numpy_type is None:

@@ -443,7 +443,11 @@ def worker(config, directory, handoff):
   publish_plans = planner_mode()
   adapter = load_adapter(config)
   if segmented and hasattr(adapter, 'encode_ahead'):
-    preparer.on_current = adapter.encode_ahead
+    def encode_ahead(views):
+      marks['ahead_start_ns'] = time.monotonic_ns()
+      adapter.encode_ahead(views)
+      marks['ahead_end_ns'] = time.monotonic_ns()
+    preparer.on_current = encode_ahead
   if hasattr(adapter, 'warmup'):
     adapter.warmup()  # Compile every steady-state graph shape before ready; no live slot pays a mid-drive compile.
   # Per-slot CPU work (projection, patch packing, dispatch) takes ~2.5x longer on the A55 cores 0-3.
@@ -484,6 +488,7 @@ def worker(config, directory, handoff):
         project_early(handoff/'early.bin')
       else:
         time.sleep(.002)
+  marks = {}  # monotonic marks of the worker loop, attached to the next prediction record
   writer, count = PredictionWriter(), 0
   stopping = False
   def stop(*_):
@@ -499,7 +504,10 @@ def worker(config, directory, handoff):
     threading.Thread(target=early_loop, name='alpamayo-early', daemon=True).start()
     while not stopping:
       writer.check()
-      encode_early()  # the next slot's -0.1 s pair goes to the GPU before its prediction
+      if early_ready:
+        marks['early_start_ns'] = time.monotonic_ns()
+        encode_early()  # the next slot's -0.1 s pair goes to the GPU before its prediction
+        marks['early_end_ns'] = time.monotonic_ns()
       try:
         (handoff/'pending.bin').replace(handoff/'working.bin')
         pin_big_cores()
@@ -520,6 +528,7 @@ def worker(config, directory, handoff):
           raise Unavailable('Input expired before preparation')
         if context.get('anchor_only'):
           preparer.rolling_images(selected, context['slot_start_ns'], anchor_only=True)  # Raises Priming; no prediction for this slot.
+        marks['prepare_start_ns'] = time.monotonic_ns()
         arrays, meta = preparer.prepare(selected, context['slot_start_ns'] if len(selected.frames) == 4 else None)
         meta.update(context)
         meta['prepared_ns'] = time.monotonic_ns()
@@ -527,6 +536,7 @@ def worker(config, directory, handoff):
           raise Unavailable('Input expired during preparation')
         result = run_prediction(adapter, arrays, meta, hash_inputs=False)
         result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
+        result['worker_marks'], marks = marks, {}
         writer.check(wait=True)  # A failed previous write must stop this plan before publication.
         if stopping:
           return

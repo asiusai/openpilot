@@ -1,4 +1,4 @@
-#define ROWS 2176
+#define ROWS 2112
 
 #define DEV __attribute__((device)) __attribute__((always_inline)) inline
 typedef unsigned short u16;

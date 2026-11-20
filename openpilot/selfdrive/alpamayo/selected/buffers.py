@@ -64,6 +64,8 @@ def bf16_rotary(key, positions):
 
 # Metadata order after pixels: zeros, ids, prefill cos/sin, two decode cos/sin pairs, noise.
 PREFILL_ROTARY = (2, 3)
+STATIC_FIELDS = (4, 5, 6, 7)  # decode and action rotary tables; the noise is compared by value
+NOISE_FIELD = 8
 
 
 class CompactInputs:
@@ -96,12 +98,13 @@ class CompactInputs:
       return False
     self.pixels = arrays[0]
     for i, (a, old) in enumerate(zip(arrays[1:], self.cpu, strict=True)):
-      if a is self.sources[i]:
-        continue  # The same memoized rotary array is already in this CPU buffer.
+      if a is self.sources[i] or i == NOISE_FIELD:
+        continue  # The same memoized rotary array is already in this CPU buffer; upload() owns the noise.
       destination = np.frombuffer(old._buffer().as_memoryview(allow_zero_copy=True), dtype=a.dtype).reshape(a.shape)
       np.copyto(destination, a, casting='no')
       self.sources[i] = a
       self.rotary_dirty |= i in PREFILL_ROTARY
+      self.static_dirty |= i in STATIC_FIELDS
     return True
 
   def __init__(self, args, config, prepared, packed, arrays=None, vision=None):
@@ -115,6 +118,7 @@ class CompactInputs:
     self.cpu = [Tensor(np.array(a, copy=True), device='CPU').realize() for a in metadata]
     self.sources = list(metadata)
     self.rotary_dirty, self.rotary_device = True, None
+    self.static_dirty, self.static_device = True, None
     self.uploaded_pixel_bytes = 0
     self.noise = np.frombuffer(self.cpu[-1]._buffer().as_memoryview(allow_zero_copy=True), dtype=np.float32).reshape(1, 64, 2)
     self.batches = vision.batches(grids,args.vision_batch)
@@ -127,7 +131,12 @@ class CompactInputs:
       angles = [x.to(Device.DEFAULT).bitcast(dtypes.bfloat16).contiguous().realize() for x in fields[:-1]]
       return normalized, fixed_positions, ids.to(Device.DEFAULT).contiguous().realize(), *angles, fields[-1].to(Device.DEFAULT).contiguous().realize()
 
-    self.transfer = transfer
+    def transfer_ids(pixels, _position_placeholder, ids):
+      # Each copy is its own trip through the USB staging window; unchanged rotary tables and noise stay on the GPU.
+      normalized = None if pixels is None else vision.expand(pixels)
+      return normalized, fixed_positions, ids.to(Device.DEFAULT).contiguous().realize()
+
+    self.transfer, self.transfer_ids = transfer, transfer_ids
     # The prefill rotary tables (~1 MB) change only with the prompt layout; upload them only then.
     self.rotary_transfer = TinyJit(lambda cos, sin: tuple(x.to(Device.DEFAULT).bitcast(dtypes.bfloat16).contiguous().realize() for x in (cos, sin)))
 
@@ -137,17 +146,23 @@ class CompactInputs:
     if rows not in self.uploads:
       buf = Tensor.empty(rows, self.pixels.shape[1], dtype=dtypes.uint8, device='CPU').realize() if rows else None
       dest = np.frombuffer(buf._buffer().as_memoryview(allow_zero_copy=True), dtype=np.uint8).reshape(buf.shape) if rows else None
-      self.uploads[rows] = buf, dest, TinyJit(self.transfer)
-    buf, dest, transfer = self.uploads[rows]
+      self.uploads[rows] = buf, dest, TinyJit(self.transfer), TinyJit(self.transfer_ids)
+    buf, dest, transfer, transfer_ids = self.uploads[rows]
     offset = 0
     for begin,end in ranges:
       dest[offset:offset+end-begin] = self.pixels.rows(begin,end) if type(self.pixels) is PatchRows else self.pixels[begin:end]
       offset += end-begin
     self.uploaded_pixel_bytes = dest.nbytes if rows else 0
-    self.noise[:] = noise
+    if not np.array_equal(self.noise, noise):
+      self.noise[:] = noise
+      self.static_dirty = True
     if self.rotary_dirty or self.rotary_device is None:
       self.rotary_device = self.rotary_transfer(*(self.cpu[i] for i in PREFILL_ROTARY))
       self.rotary_dirty = False
     rest = [t for i, t in enumerate(self.cpu) if i not in PREFILL_ROTARY]
-    pixels, positions, ids, dc, ds, ac, ass, actions = transfer(buf, *rest)
-    return (pixels, positions, ids, *self.rotary_device, dc, ds, ac, ass, actions)
+    if self.static_dirty or self.static_device is None:
+      pixels, positions, ids, *static = transfer(buf, *rest)
+      self.static_device, self.static_dirty = tuple(static), False
+    else:
+      pixels, positions, ids = transfer_ids(buf, *rest[:2])
+    return (pixels, positions, ids, *self.rotary_device, *self.static_device)

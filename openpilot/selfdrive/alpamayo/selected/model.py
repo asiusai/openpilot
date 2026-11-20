@@ -12,7 +12,7 @@ from openpilot.selfdrive.alpamayo.model import EdgeModel
 from openpilot.selfdrive.alpamayo.amd_attention import _pack, _matmul, _softmax
 
 PROMPT_TILES = 2304//16  # Expert attention keys: 2304 prompt rows, then 64 action rows.
-PREFILL_ROWS = 2176  # Padded prompt rows: 2025 base tokens plus navigation text and the verified draft (17 x 128).
+PREFILL_ROWS = 2112  # Padded prompt rows: 2025 base tokens, compact navigation text and the 31-token verified draft (33 x 64).
 from . import amd_gemm, amd_decode, weights
 from .serial_attention import direct as serial_cache_attention
 from .serial_coordinates import cache_attention

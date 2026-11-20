@@ -1,4 +1,4 @@
-"""Padded prefill (2176 rows) with draft verification heads."""
+"""Padded prefill (2112 rows) with draft verification heads."""
 from tinygrad import Tensor, TinyJit, dtypes
 from tinygrad.helpers import round_up
 from tinygrad.uop.ops import UOp
@@ -51,7 +51,7 @@ class SpeculativePrefill(PaddedPrefill):
 
   With H heads, H-1 draft tokens are placed and head i holds the target after draft token i-1 (head 0 follows the
   prompt). The decoder accepts the matching draft prefix, whose KV rows this prefill wrote, and continues from the
-  first differing head. Prompts up to 2145 tokens fit 32 heads (31 draft tokens); the frontend caps navigation text.
+  first differing head. Prompts up to 2081 tokens fit 32 heads (31 draft tokens); the frontend caps navigation text.
   """
   HEADS = 32
 

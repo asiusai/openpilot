@@ -2,6 +2,8 @@
 import hashlib
 import json
 import os
+import queue
+import threading
 from functools import lru_cache
 from pathlib import Path
 from tinygrad import Device, Tensor, dtypes
@@ -43,7 +45,7 @@ _ZERO_NONCE = bytes(16)
 def leaf_proofs(directory, index):
   """Per-leaf SHA-256 (leaf || 16 zero bytes) of weights.bin, built once by a pass that also checks the file digest.
 
-  Startup then needs no CPU hashing: the GPU recomputes each proof from the uploaded bytes and the host compares.
+  Startup then needs no CPU hashing: the GPU recomputes each proof from the uploaded bytes and compares them itself.
   """
   directory = Path(directory)
   weights, path, meta = directory/'weights.bin', directory/'leaf-proofs.bin', directory/'leaf-proofs.json'
@@ -73,41 +75,68 @@ def leaf_proofs(directory, index):
   return data
 
 
-def _check_destination(target, raw, proofs):
-  size = len(raw) - len(raw)%(_LEAF*_LANES)
-  if size:
-    if target.device.split(':')[0] != 'AMD' or Device[target.device].arch != 'gfx1200':
-      raise ValueError('Weight digest kernel requires gfx1200')
-    # Random initial proof contents: a kernel that did not run, or a stale read, cannot match the stored proofs.
-    nonce = Tensor(_ZERO_NONCE, device='CPU').bitcast(dtypes.uint32).to(target.device).realize()
-    out = Tensor(os.urandom(size//_LEAF*32), device='CPU').bitcast(dtypes.uint32).to(target.device).contiguous().realize()
-    data = Tensor(UOp.from_buffer(target.view(size, 0).ensure_allocated(), dtypes.uint32))
-    proof = Tensor.custom_kernel(out, data, nonce, fxn=_hash_program)[0].realize()
-    expected = proofs[target.offset//_LEAF*32:(target.offset+size)//_LEAF*32]
-    Device[target.device].synchronize()
-    if proof._buffer().as_memoryview() != expected:
-      raise ValueError(f'GPU weight upload digest differs at chunk offset {target.offset}')
-  if size < len(raw) and target.view(len(raw)-size, size).ensure_allocated().as_memoryview() != raw[size:]:
-    raise ValueError(f'GPU weight upload tail differs at offset {target.offset+size}')
+def _verify_storage(storage, nbytes, proofs, tail):
+  """Recompute every leaf proof on the GPU, compare there with the stored proofs, and read back one mismatch count."""
+  from .transport import download
+  device = storage.device
+  if device.split(':')[0] != 'AMD' or Device[device].arch != 'gfx1200':
+    raise ValueError('Weight digest kernel requires gfx1200')
+  size = nbytes - nbytes%(_LEAF*_LANES)
+  count = size//_LEAF*32
+  if len(proofs) < count:
+    raise ValueError('Stored leaf proofs are incomplete')
+  nonce = Tensor(_ZERO_NONCE, device='CPU').bitcast(dtypes.uint32).to(device).realize()
+  # Random initial proof contents: a kernel that did not run cannot match the stored proofs.
+  out = Tensor(os.urandom(count), device='CPU').bitcast(dtypes.uint32).to(device).contiguous().realize()
+  expected = Tensor(proofs[:count], device='CPU').bitcast(dtypes.uint32).to(device).contiguous().realize()
+  data = Tensor(UOp.from_buffer(storage.view(size, 0).ensure_allocated(), dtypes.uint32))
+  proof = Tensor.custom_kernel(out, data, nonce, fxn=_hash_program)[0]
+  mismatches = int(download((proof != expected).cast(dtypes.int32).sum().reshape(1)).item())
+  if mismatches:
+    raise ValueError(f'GPU weight upload digest differs in {mismatches} proof words')
+  if size < nbytes and storage.view(nbytes-size, size).ensure_allocated().as_memoryview() != tail:
+    raise ValueError(f'GPU weight upload tail differs at offset {size}')
 
 
 def _upload_bulk(source, nbytes, proofs):
   if nbytes <= 0 or os.fstat(source.fileno()).st_size != nbytes:
     raise ValueError('FP8 weight size differs')
   storage = Buffer(Device.DEFAULT, nbytes).ensure_allocated()
-  staging = memoryview(bytearray(min(16*1024*1024, nbytes)))
+  # Large transfers reach ~330 MB/s over USB 3; verification runs once on the GPU after the last chunk.
+  # A reader thread fills one staging buffer from disk while the other is uploaded.
+  chunk = min(64*1024*1024, nbytes)
+  free, filled = queue.Queue(), queue.Queue()
+  for _ in range(2):
+    free.put(memoryview(bytearray(chunk)))
+  def reader():
+    try:
+      while True:
+        staging = free.get()
+        count = source.readinto(staging)
+        filled.put((staging, count))
+        if not count:
+          return
+    except BaseException as error:  # noqa: BLE001 - surfaced on the uploading thread
+      filled.put((error, 0))
+  threading.Thread(target=reader, name='weight-reader', daemon=True).start()
   offset = 0
-  while count := source.readinto(staging):
+  while True:
+    staging, count = filled.get()
+    if isinstance(staging, BaseException):
+      raise staging
+    if not count:
+      break
     if offset + count > nbytes:
       raise ValueError('FP8 weight size differs')
-    raw = staging[:count]
-    target = storage.view(count, offset).ensure_allocated()
-    target.copy_from(Buffer('NPY', count, opaque=raw))
-    Device[target.device].synchronize()
-    _check_destination(target, raw, proofs)
+    storage.view(count, offset).ensure_allocated().copy_from(Buffer('NPY', count, opaque=staging[:count]))
+    Device[storage.device].synchronize()  # the staging memory returns to the reader
+    free.put(staging)
     offset += count
   if offset != nbytes:
     raise ValueError('FP8 weight size differs')
+  Device[storage.device].synchronize()
+  source.seek(nbytes - nbytes%(_LEAF*_LANES))
+  _verify_storage(storage, nbytes, proofs, source.read())
   return storage
 
 

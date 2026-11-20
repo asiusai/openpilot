@@ -51,7 +51,7 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Inputs | Two front cameras, 120/30 degrees, history `(-2,-1,-0.5,-0.1,0)` seconds |
 | Vision | 144-image content cache; missing images encoded in groups of at most two |
 | Vision precision | BF16 patch embedding and first two layers; dynamic per-image FP8 scales thereafter |
-| Language | Fixed 112 activation scales, packed FP8, 2176-row prefill, 2304-row KV allocation |
+| Language | Fixed 112 activation scales, packed FP8, 2112-row prefill, 2304-row KV allocation |
 | Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; the prefill verifies up to 31 draft tokens with 32 independent heads |
 | Continuation | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
@@ -68,8 +68,8 @@ Prefill schedules long causal attention blocks first and adds the residual in th
 The prefill draft is the latest generated text, or the six-token nominal text before the first prediction. Draft tokens fill the padded rows
 after the prompt. Head `i` holds the argmax after draft token `i-1`. The decoder accepts the matching prefix, whose KV rows the prefill wrote,
 and continues from the first differing head. Accepted tokens have the same target-verified status as lookup verification.
-A 2025-token prompt plus compact navigation text leaves room for all 32 heads; a prompt above 2145 tokens is rejected.
-Padding rows follow the prompt, so real prompt rows and their KV are identical to a 2048-row prefill.
+A 2025-token prompt plus compact navigation text leaves room for all 32 heads; a prompt above 2081 tokens is rejected.
+Padding rows follow the prompt, so real prompt rows and their KV are identical for any padded length.
 Expert attention adds the per-key mask inside the score kernel epilogue with the original BF16 and FP32 rounding.
 Expert PV applies only inside trajectory execution.
 During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.

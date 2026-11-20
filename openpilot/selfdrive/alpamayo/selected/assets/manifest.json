@@ -8,12 +8,12 @@
       "args": [
         16,
         8,
-        2176,
-        2176,
+        2112,
+        2112,
         128
       ],
-      "source_sha256": "0632646401857f2f0ad92452a6de0ce12a7b461af5ac8673921548ca3f9eaddd",
-      "binary_sha256": "b342d19dbf7d067e59c895f97dbb8b9589406af26dd20fb21ca5c1a4740138d9",
+      "source_sha256": "46750e0671a674f5f71f4e77266228451b19c9edaa410079da191f5fcc8e0832",
+      "binary_sha256": "5675c06f1675342af6c75a684575d6b1ffd54a9952db8456739206f29136563e",
       "bytes": 16576
     },
     {
@@ -186,12 +186,12 @@
     {
       "kind": "mlp",
       "args": [
-        2176,
+        2112,
         9216,
         2048
       ],
-      "source_sha256": "7e79b92416e2949a63af470547f7220eb65b458b1f5f5bcb082c5313e06c0a2a",
-      "binary_sha256": "7a0d8c4950434f1aa9f429474bcfbef71501da2b89d630b27b1532a036462abb",
+      "source_sha256": "a770dc8acbc250840417a0aab2484eba070039ca8e8f26ed1355ed42642d660c",
+      "binary_sha256": "c32b360649cc6f623f3749d6dff192ec50d2c250aadac275fda53f68f97a8e19",
       "bytes": 19640
     },
     {

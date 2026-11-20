@@ -120,6 +120,7 @@ class Runtime:
     self.closed,self.backend = False,None
     self.lock = threading.Lock()
     self.stage_sync = True
+    self.prime_done = 0
     self.metrics = Metrics()
     self.startup_ms = {}
     previous = time.monotonic_ns()
@@ -193,9 +194,9 @@ class Runtime:
       finished('inference_setup')
       self.device = Device.DEFAULT
       self.manifest = {'variant':'selected','native_fresh_patches':self.config.native_fresh_patches,
-                       'recipe':'fp8-group2-pad2176-draft32-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
+                       'recipe':'fp8-group2-pad2112-draft32-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
                        'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
-                       'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2176,
+                       'diffusion_steps':3,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2112,
                        'cache_rows':2304,'vision_group_limit':2,'vision_cache_capacity':144,'images':10,'patches_per_image':720,
                        'history_offsets_s':[-2,-1,-.5,-.1,0],'front_fov_degrees':[120,30],'bf16_vision_layers':2,
                        'bf16_expert_projections':True,'vision_scales':'dynamic-per-image','language_scales':'fixed-112',
@@ -236,10 +237,11 @@ class Runtime:
 
   def _prime(self, anchors, deadline_ns, wait=True, inputs=None):
     import numpy as np
+    from .transport import submitted, wait_for
     from openpilot.selfdrive.alpamayo.segments import PatchRows
     if time.monotonic_ns() >= deadline_ns:
       return False
-    # CPU patching overlaps queued GPU work; the device is synchronized only before the shared upload buffer is rewritten.
+    # CPU patching overlaps queued GPU work. Before the shared upload buffer is rewritten, wait only for the previous prime.
     pixels,layout,grids,keys = self.anchor_inputs(anchors) if inputs is None else inputs
     missing = self.vision.missing_indices(keys)
     encoded = {}
@@ -250,8 +252,9 @@ class Runtime:
       if time.monotonic_ns() >= deadline_ns:
         return False
       positions = self.vision_buffers.position_buffer(layout,positions)
-      self.model.synchronize()  # A queued earlier prime may still read the persistent pixel upload buffer.
+      wait_for(self.prime_done)  # a queued earlier prime may still read the persistent pixel upload buffer
       expanded = self.vision_buffers.expand_captured(raw)
+      self.prime_done = submitted()
       encoded = self.vision.encode_missing(keys,expanded,positions,batches,missing)
       if wait:
         self.model.synchronize()
