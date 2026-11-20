@@ -17,7 +17,8 @@ from tinygrad.uop.ops import AxisType, KernelInfo, Ops, ParamArg, ProgramInfo, U
 from ..frozen import ASSETS, TINYGRAD_REVISION, checked
 
 ASSET = Path(__file__).with_name('gfx1200.json.gz')
-SHA256 = 'fcbf578de29c69ad9b118d8ef3c2b5aeb1b067d025e4628482090f5eb76326ff'
+PROGRAMS = 38
+SHA256 = '87e9d8ebdaee7397992eab1db7e1d0d8398668611d7f0c53b4f42f97f1c8b540'
 TARGET = Target('AMD', 'LLVM', 'gfx1200', 'USB')
 CLASSES = {c.__name__: c for c in (Opt, Estimates, Target, KernelInfo, ParamArg, ProgramInfo)}
 ENUMS = {c.__name__: c for c in (Ops, AxisType, AddrSpace, OptOps)}
@@ -70,7 +71,7 @@ class PairPrograms:
       require(op is not Ops.BUFFER or arg.addrspace in (AddrSpace.LOCAL, AddrSpace.REG), 'Runtime buffer in vision program')
       nodes.append(UOp(op, src=tuple(nodes[i] for i in sources), arg=arg))
     self.programs = {k: nodes[i] for k, i in plan['programs'].items()}
-    require(len(self.programs) == 48 and set(self.table.values()) == set(self.programs), 'Incomplete vision pair programs')
+    require(len(self.programs) == PROGRAMS and set(self.table.values()) == set(self.programs), 'Incomplete vision pair programs')
     for key, p in self.programs.items():
       require(
         p.op is Ops.PROGRAM and isinstance(p.arg, ProgramInfo) and p.arg.target == TARGET and p.key.hex() == key,

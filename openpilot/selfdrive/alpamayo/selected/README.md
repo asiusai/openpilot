@@ -81,6 +81,9 @@ Output tiles change only which outputs one wave computes. Each output keeps its 
 Smaller expert tiles reduced diffusion from 27.6 to 21.9 ms on Karel. The 32 prefill heads take one batched argmax (2.6 ms less).
 Both online-softmax attention kernels skip the accumulator rescale when no row of a wave raised its maximum; the scale is then exactly 1.
 Vision attention also prefetches the next K/V block, skips padding-only waves and runs at eight waves per SIMD (0.20 to 0.15 ms per layer).
+Vision FP8 quantization reduces the per-image maximum in one fused pass and writes the packed FP8 layout directly.
+GELU outputs are not stored; the maximum and the packing quantizer recompute them. BF16 vision linears use 3x4 tiles except FC1.
+The frozen pair plan holds 38 programs. `bench/lab/refreeze_plan.py` regenerates it: unchanged operations keep their programs.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
 

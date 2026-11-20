@@ -26,10 +26,13 @@ def quantize(x):
 
 
 def grouped_quantize(x, images):
+  # The maximum is order-free, so a fused reduction gives the same scale as the frozen absmax objects.
+  # x stays lazy: producers such as GELU are recomputed in the reduction and in the packing quantizer
+  # instead of being stored, and the quantizer writes the packed layout directly.
   assert images > 0 and x.numel() % (images*x.shape[-1]) == 0
   grouped = x.reshape(images,-1,x.shape[-1])
-  scale = (maximum(grouped,images)/448).clamp(min_=1e-12).realize()
-  quantized = (grouped.float()/scale).clamp(-448,448).cast(dtypes.fp8e4m3).reshape(-1,x.shape[-1]).contiguous()
+  scale = (grouped.float().abs().max(axis=(1,2),keepdim=True)/448).clamp(min_=1e-12).realize()
+  quantized = (grouped.float()/scale).clamp(-448,448).cast(dtypes.fp8e4m3).reshape(-1,x.shape[-1])
   return quantized, scale.reshape(images,1).expand(images,grouped.shape[1]).reshape(-1).contiguous()
 
 
