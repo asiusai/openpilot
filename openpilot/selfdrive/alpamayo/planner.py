@@ -51,33 +51,18 @@ def packet(result):
               x=xyz[:, 0].tolist(), y=xyz[:, 1].tolist(), yaw=np.arctan2(rot[:, 1, 0], rot[:, 0, 0]).tolist())
 
 
-def configured_lateral_gain():
-  """Test gain on Alpamayo's curvature from ALPAMAYO_CONFIG `lateral_gain` (1.0 when unset).
-
-  On-road Alpamayo plans turned about 70% of the measured heading change 1 s ahead, so tight turns drove wide.
-  A least-squares fit on the first drive gave 1.27 (3-6 m/s) and 1.41 (6-10 m/s). Above 10 m/s the predicted heading
-  changes were mostly noise the driver did not follow, so the gain tapers to 1.0 between GAIN_FULL_SPEED and
-  GAIN_END_SPEED.
-  """
+def configured_calibration_path():
+  """Learned lateral calibration file from ALPAMAYO_CONFIG `lateral_calibration` (default next to the config)."""
   import json, os
   from pathlib import Path
   path = os.environ.get('ALPAMAYO_CONFIG')
-  gain = json.loads(Path(path).read_text()).get('lateral_gain', 1.0) if path and os.path.isfile(path) else 1.0
-  if type(gain) not in (int, float) or not 1.0 <= gain <= 2.0:
-    raise ValueError('lateral_gain must be between 1.0 and 2.0')
-  return float(gain)
-
-
-GAIN_FULL_SPEED, GAIN_END_SPEED = 8., 12.  # m/s
-
-
-def speed_gain(gain, v_ego):
-  return 1.+(gain-1.)*float(np.clip((GAIN_END_SPEED-v_ego)/(GAIN_END_SPEED-GAIN_FULL_SPEED), 0., 1.))
+  config = json.loads(Path(path).read_text()) if path and os.path.isfile(path) else {}
+  return config.get('lateral_calibration', '/data/alpamayo-calibration/lateral.json')
 
 
 class PlanSelector:
-  def __init__(self, lateral_gain=1.0):
-    self.lateral_gain = lateral_gain
+  def __init__(self, calibration=None):
+    self.calibration = calibration  # selfdrive.alpamayo.calibration.LateralCalibration; gain 1 without it
     self.query = self.ready = self.streak = 0
     self.curve = None
     self.held = None
@@ -121,9 +106,10 @@ class PlanSelector:
     if (not np.isfinite([curvature,a]).all() or not ACCEL_MIN <= a <= ACCEL_MAX or
         abs(curvature) > MAX_CURVATURE or abs(curvature)*v_ego**2 > MAX_LATERAL_ACCEL_NO_ROLL):
       return None
-    # The gained command stays inside the same curvature and lateral-acceleration limits as the plan itself.
+    # The calibrated command stays inside the same curvature and lateral-acceleration limits as the plan itself.
     limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
-    curvature = float(np.clip(curvature*speed_gain(self.lateral_gain, v_ego), -limit, limit))
+    gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
+    curvature = float(np.clip(curvature*gain, -limit, limit))
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
 
   def apply(self, model, now, speed, lat_delay, long_delay):

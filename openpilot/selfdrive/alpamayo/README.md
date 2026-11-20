@@ -14,6 +14,10 @@ Two consecutive plans with queries at most 1 s apart are required before the fir
 modeld reads plans once per camera frame after its own model run, so it accepts a packet received up to 100 ms after publication.
 modeld ages the plan from camera capture before computing the requested action. Its planned speed must agree with measured vehicle speed within 2 m/s;
 curvature and acceleration must stay within physical limits. Low speeds, stops and starts use the plan.
+`calibration.py` learns a lateral gain per speed bucket, like torqued. Alpamayo plans turned 0.6-0.9 of the measured heading change.
+It compares each plan's predicted 1 s heading change with the change `deviceMotion` then measured, from driver-steered samples only.
+Plans must turn the same way as the car, so a turn chosen without route guidance does not teach it. The prior is 1; gains stay within 0.8-2.0.
+The scaled curvature keeps the same curvature and lateral-acceleration limits. The state is stored in `lateral_calibration` (default `/data/alpamayo-calibration/lateral.json`).
 Without a usable plan, modeld holds the last Alpamayo curvature with non-positive acceleration and leaves
 `modelV2.alpamayoQueryMonoTime` at zero. selfdrived then raises `alpamayoUnavailable`: no entry, or soft disable when engaged.
 Normal openpilot engagement, vehicle-specific controls, radar and Panda safety remain authoritative downstream.

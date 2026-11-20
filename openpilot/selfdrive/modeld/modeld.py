@@ -322,12 +322,15 @@ def main(demo=False):
   pm = PubMaster(pub_socks)
   planner = plan_sock = None
   if use_alpamayo:
-    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_lateral_gain
-    planner = PlanSelector(configured_lateral_gain())
+    from openpilot.selfdrive.alpamayo.calibration import LateralCalibration
+    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_calibration_path
+    calibration = LateralCalibration(configured_calibration_path())
+    planner = PlanSelector(calibration)
     # Every queued plan packet: an invalid packet for a skipped slot can follow a valid plan within one camera frame.
     plan_sock = messaging.sub_sock('alpamayoPlan')
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
-                  "carControl", "controlsState", "lateralDelay"], frequency=ModelConstants.MODEL_RUN_FREQ)
+                  "carControl", "controlsState", "lateralDelay"] + (["deviceMotion"] if planner is not None else []),
+                 frequency=ModelConstants.MODEL_RUN_FREQ)
 
   publish_state = PublishState()
   params = Params()
@@ -397,6 +400,13 @@ def main(demo=False):
       for event in messaging.drain_sock(plan_sock):
         if event.valid:
           planner.receive(event.alpamayoPlan, time.monotonic_ns(), event.logMonoTime)
+          if len(event.alpamayoPlan.yaw) == 64:
+            calibration.plan(event.alpamayoPlan.queryMonoTime, sm['carState'].vEgo, event.alpamayoPlan.yaw[9])  # 1.0 s
+      if sm.updated['deviceMotion'] and sm.valid['deviceMotion']:
+        motion = sm['deviceMotion']
+        stamp = motion.timestamp if motion.timestamp > 0 else sm.logMonoTime['deviceMotion']
+        steered = sm['carControl'].latActive and not sm['carState'].steeringPressed
+        calibration.motion(stamp, motion.orientationNED.z, steered, time.monotonic_ns())
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
