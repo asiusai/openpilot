@@ -151,7 +151,8 @@ class Decoder:
           self.remember(generated)
           self.statistics = stats
           return generated
-    raise RuntimeError(f'No trajectory anchor after {max_tokens} tokens')
+    from .policy import NoTrajectoryAnchor
+    raise NoTrajectoryAnchor(f'No trajectory anchor after {max_tokens} tokens')
 
   def remember(self, generated):
     self.history = [old for old in self.history if old != generated][-63:]+[list(generated)]

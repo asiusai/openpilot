@@ -219,6 +219,7 @@ two, four and eight slots ago (-0.5, -1 and -2 s). Each slot is predicted or, wh
 - While a prediction runs, the same thread projects and patches the current pair of the queued slot. On pickup the
   worker queues that GPU encode at once. A backlogged slot thus skips about 35 ms of CPU work before its GPU work.
 - Audit hashes and the prediction record are written on a log thread, which then releases the input mapping.
+- A text that reaches 64 tokens without the trajectory marker yields no plan for that slot; the worker keeps its camera history.
 - Anchors queue their GPU encode without waiting, and status files are written on the log thread.
 - Handing over the predicted current pair before the opening cut median latency by about 25 ms. It lowered throughput
   (replay 3.46 vs 3.58-3.64 Hz): in a backlog both early encodes then serialize their USB uploads after pickup.

@@ -423,7 +423,7 @@ def load_adapter(config):
 
 def worker(config, directory, handoff):
   from openpilot.selfdrive.alpamayo.frontend import Preparer, Priming, Unavailable
-  from openpilot.selfdrive.alpamayo.selected.policy import PromptTooLong
+  from openpilot.selfdrive.alpamayo.selected.policy import NoTrajectoryAnchor, PromptTooLong
   from openpilot.selfdrive.alpamayo.shadowd import START_LATENESS_NS, planner_mode
   from openpilot.selfdrive.alpamayo.planner import packet
   root = Path(directory)
@@ -600,12 +600,15 @@ def worker(config, directory, handoff):
         writer.submit(root/f'{selected.query_ns}.json', result,
                       finish=lambda r, arrays=arrays: r['input'].__setitem__('input_sha256', input_hashes(arrays)), release=mapping.pop_all().close)
         count += 1
-      except (Unavailable, PromptTooLong) as error:
+      except (Unavailable, PromptTooLong, NoTrajectoryAnchor) as error:
         # Anchors are queued without waiting for the GPU: the next slot must not inherit this slot's encode time.
         if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns']),
                                                                                  wait=False, inputs=queued_inputs(error.anchors)):
           error = Unavailable('Front-camera feature priming missed its slot deadline')
-        if not isinstance(error, Priming):
+        if isinstance(error, NoTrajectoryAnchor):
+          # The inputs were valid: keep the camera history so the next slot predicts normally.
+          print(f'alpamayo slot {context.get("slot_start_ns")} produced no plan: {error}', file=sys.stderr, flush=True)
+        elif not isinstance(error, Priming):
           preparer.anchors.clear()
           print(f'alpamayo slot {context.get("slot_start_ns")} unavailable, history cleared: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         elif 'Repriming' in str(error):

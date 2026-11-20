@@ -354,15 +354,15 @@ class Runtime:
                 'absolute_timestamps':np.tile(np.array([-2_000_000,-1_000_000,-500_000,-100_000,0],dtype=np.int64)+10_000_000,2),
                 'ego_history_xyz':np.zeros((1,20,3),dtype=np.float32),
                 'ego_history_rot':np.tile(np.eye(3,dtype=np.float32),(1,20,1,1)),'nav_text':['']}
+      from .policy import NoTrajectoryAnchor
       def run(fresh):
         # Replace `fresh` current images per call: the live cadence uploads 4; repriming and gaps use other counts.
         for i in (4,9,3,8,2,7,1,6,0,5)[:fresh]:
           images[i] = rng.integers(0, 256, images.shape[1:], dtype=np.uint8)
         try:
           self._predict(sample, self.noise, ())
-        except RuntimeError as exc:
-          if 'No trajectory anchor' not in str(exc):  # Random pixels need not produce a complete text.
-            raise
+        except NoTrajectoryAnchor:  # Random pixels need not produce a complete text.
+          pass
       phases = {}
       def phase(name):
         nonlocal started_phase

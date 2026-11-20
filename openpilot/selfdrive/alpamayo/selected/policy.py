@@ -9,6 +9,10 @@ class PromptTooLong(ValueError):
   """An individual input exceeds the selected model's fixed prompt capacity."""
 
 
+class NoTrajectoryAnchor(RuntimeError):
+  """Reasoning reached its token limit without the trajectory marker; this input yields no plan."""
+
+
 def validate_draft(draft, anchor):
   draft = tuple(int(token) for token in draft)
   if len(draft) != 6 or draft[-1] != int(anchor) or int(anchor) in draft[:-1]:
