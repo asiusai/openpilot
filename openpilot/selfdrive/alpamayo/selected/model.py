@@ -121,6 +121,14 @@ class SelectedModel(EdgeModel):
     scale = (x.float().abs().max()/448).clamp(min_=1e-12)
     return (x.float()/scale).clamp(-448,448).cast(dtypes.fp8e4m3).reshape(-1,x.shape[-1]).contiguous(),scale
 
+  def norm_quantize(self, x, name):
+    # Prefill: RMS norm straight to packed FP8 with the layer's next fixed scale. The BF16 norm output is never stored.
+    assert self.prefill_prefix is not None and x.shape == (1,PREFILL_ROWS,2048)
+    scale = self.fixed[f'{self.prefill_prefix}/{self.quantizer_slot}']
+    self.quantizer_slot += 1
+    packed = frozen_ops.norm_quantize(x,self.weights[name+'.weight'],scale).realize()
+    return PackedActivation(packed,PREFILL_ROWS,2048),scale
+
   def packed_linear(self, packed, scale, name, shape):
     weight = self.weights[name+'.weight']
     bias = self.weights.get(name+'.bias')
@@ -282,8 +290,11 @@ class SelectedModel(EdgeModel):
     prefill = x.shape[1] >= 128
     self.prefill_prefix,self.quantizer_slot = (prefix if prefill else None),0
     try:
-      h = self.norm(x,f'{prefix}.input_layernorm',rms=True)
-      quantized = self.quantize(h) if f'{prefix}.self_attn.q_proj.weight' in self.weight_scales else None
+      if prefill:
+        h,quantized = x,self.norm_quantize(x,f'{prefix}.input_layernorm')  # h only provides the row shape
+      else:
+        h = self.norm(x,f'{prefix}.input_layernorm',rms=True)
+        quantized = self.quantize(h) if f'{prefix}.self_attn.q_proj.weight' in self.weight_scales else None
       q,k,v = (self.linear(h,f'{prefix}.self_attn.{n}_proj',quantized,heads=heads).reshape(1,h.shape[1],heads,128).transpose(1,2)
                for n,heads in (('q',16),('k',8),('v',8)))
       q,k = self.rope(q,k,cos,sin)
@@ -305,25 +316,33 @@ class SelectedModel(EdgeModel):
         else:
           h = self.attention(q,k,v,mask,causal)
       h = h.transpose(1,2).reshape(1,x.shape[1],2048)
-      x = x+self.linear(h,f'{prefix}.self_attn.o_proj')
-      h = self.norm(x,f'{prefix}.post_attention_layernorm',rms=True)
+      if prefill:
+        o_proj = f'{prefix}.self_attn.o_proj'
+        assert o_proj+'.bias' not in self.weights and self.quantizer_slot == 1
+        packed,scale = self.quantize(h)
+        residual = x.reshape(PREFILL_ROWS,2048).contiguous()
+        x = Tensor.custom_kernel(Tensor.empty(residual.shape,dtype=x.dtype,device=x.device),packed.value,self.packed_weights[o_proj],
+                                 scale,self.weight_scales[o_proj+'.weight'],residual,fxn=amd_gemm.prefill_residual)[0].reshape(x.shape)
+      else:
+        x = x+self.linear(h,f'{prefix}.self_attn.o_proj')
       if prefill:
         rows = x.shape[1]
         assert x.shape == (1,PREFILL_ROWS,2048) and type(cache_pos) is int and cache_pos == 0
         fc1,fc2 = prefix+'.mlp.fc1',prefix+'.mlp.fc2'
         assert self.quantizer_slot == 2 and fc1+'.bias' not in self.weights and fc2+'.bias' not in self.weights
-        packed,scale = self.quantize(h)
-        assert self.quantizer_slot == 3 and isinstance(packed,PackedActivation)
+        packed,scale = self.norm_quantize(x,f'{prefix}.post_attention_layernorm')
+        assert self.quantizer_slot == 3
         output_scale = self.fixed[prefix+'/3']
         output = frozen_ops.fused_mlp(packed.value,self.packed_weights[fc1],scale,self.weight_scales[fc1+'.weight'],output_scale,rows)
         # The fused kernel already performed original BF16/ReLU/square/slot-3 conversion.
         self.quantizer_slot += 1
         residual = x.reshape(rows,2048).contiguous()
         result = Tensor.custom_kernel(Tensor.empty(residual.shape,dtype=x.dtype,device=x.device),output,self.packed_weights[fc2],
-                                      output_scale,self.weight_scales[fc2+'.weight'],residual,fxn=amd_gemm.prefill_fc2)[0]
+                                      output_scale,self.weight_scales[fc2+'.weight'],residual,fxn=amd_gemm.prefill_residual)[0]
         self.trace_counts['fused_mlp'] += 1
         return result.reshape(x.shape).realize()
       else:
+        h = self.norm(x,f'{prefix}.post_attention_layernorm',rms=True)
         raw = self.linear(h,f'{prefix}.mlp.fc1')
         quantized = amd_decode.quantize_relu_squared(raw) if not self.verifying and raw.shape == (1,1,9216) else None
         h = self.linear(raw.relu().square(),f'{prefix}.mlp.fc2',quantized_input=quantized)

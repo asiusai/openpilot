@@ -40,10 +40,11 @@ def _gemm(out, x, weight, x_scale, w_scale, *bias, packed_input=True, residual=N
   ranges = schedule.apply_opt(Opt(OptOps.TC, 0, (-1, 0, 1)))
   for i in (1, 0):
     schedule.apply_opt(Opt(OptOps.SPLIT, schedule.rngs.index(ranges[i]), (4, AxisType.UPCAST)))
-  return schedule.get_optimized_ast(name_override='alpamayo_fp8_gemm' if residual is None else 'alpamayo_prefill_fc2_residual')
+  return schedule.get_optimized_ast(name_override='alpamayo_fp8_gemm' if residual is None else 'alpamayo_prefill_residual')
 
 
-def prefill_fc2(out, x, weight, xs, ws, residual):
+def prefill_residual(out, x, weight, xs, ws, residual):
+  # Prefill o_proj and fc2: projection plus residual in one kernel, with the separate add's BF16 rounding.
   assert residual.shape == out.shape and out.shape[1] == 2048 and residual.dtype == out.dtype == dtypes.bfloat16
   return _gemm(out,x,weight,xs,ws,residual=residual)
 

@@ -64,7 +64,8 @@ At a warmed 500 ms cadence, four missing images require two groups; six older im
 At a warmed 100 ms cadence, two missing images require one group; eight older images remain cached.
 Actual reuse follows image content and the capture schedule, including missing or repeated source frames.
 
-Prefill schedules long causal attention blocks first and adds the residual in the second MLP projection, preserving both BF16 rounding steps.
+Prefill schedules long causal attention blocks first and adds both residuals in the o_proj and second MLP projections, preserving both BF16 rounding steps.
+Prefill RMS norms write packed FP8 with the layer's fixed scale directly; their BF16 output, rounded exactly as before, is never stored.
 The prefill draft is the latest generated text, or the six-token nominal text before the first prediction. Draft tokens fill the padded rows
 after the prompt. Head `i` holds the argmax after draft token `i-1`. The decoder accepts the matching prefix, whose KV rows the prefill wrote,
 and continues from the first differing head. Accepted tokens have the same target-verified status as lookup verification.

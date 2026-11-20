@@ -51,6 +51,25 @@ def norm(x, weight, bias=None, rms=False, eps=1e-5):
                              fxn=partial(norm_program,rms=rms,eps=eps))[0].realize()
 
 
+def norm_fp8_program(out, x, weight, scale):
+  dependency = x.flatten()[0].load().float()+weight.flatten()[0].load().float()+scale.flatten()[0].load()
+  sink = UOp.sink(out.flatten()[0].store(dependency.cast(dtypes.fp8e4m3)),
+                 UOp.special(x.numel()//x.shape[-1], 'gidx0'), UOp.special(256, 'lidx0'), arg=KernelInfo(name='alpamayo_norm_fp8'))
+  return frozen_program(sink, 'norm_fp8', (x.shape[-1], 1e-5))
+
+
+def norm_quantize(x, weight, scale):
+  """Prefill RMS norm (same arithmetic as norm) quantized with a fixed scale and written in amd_gemm.pack layout.
+
+  The BF16 normalized value is rounded exactly as norm stores it; it is never stored itself.
+  """
+  assert x.dtype == weight.dtype == dtypes.bfloat16 and x.shape[-1] == 2048 and scale.dtype == dtypes.float32 and scale.numel() == 1
+  rows = x.numel()//x.shape[-1]
+  assert rows % 16 == 0
+  out = Tensor.empty(rows, x.shape[-1], device=x.device, dtype=dtypes.fp8e4m3)
+  return Tensor.custom_kernel(out, x.contiguous().realize(), weight.contiguous().realize(), scale, fxn=norm_fp8_program)[0]
+
+
 def pack_values(v):
   batch,heads,keys,width = v.shape
   return (v.bitcast(dtypes.uint16).pad(((0,0),(0,0),(0,(-keys)%16),(0,(-width)%16)))
