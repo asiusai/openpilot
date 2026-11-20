@@ -21,7 +21,7 @@ import numpy as np
 
 from openpilot.selfdrive.alpamayo.segments import FrontImages
 
-from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_TOLERANCE_NS, OFFSETS_NS, ROLLING_PERIODS_NS, Frame, Selection, State, Unavailable
+from openpilot.selfdrive.alpamayo.frontend import CAMERAS, FRAME_SLACK_NS, FRAME_TOLERANCE_NS, OFFSETS_NS, ROLLING_PERIODS_NS, Frame, Selection, State, Unavailable
 
 INPUT_LIMIT = 32*1024**2
 HEADER_LIMIT = 4*1024**2
@@ -303,7 +303,7 @@ def validate_input(arrays, meta):
   for i, (ref, offset) in enumerate(zip(meta['frames'], OFFSETS_NS*2, strict=True)):
     desired = meta['query_ns']+offset
     capture = ref['capture_ns']
-    causal = 0 <= desired-capture <= FRAME_TOLERANCE_NS
+    causal = -FRAME_SLACK_NS <= desired-capture <= FRAME_TOLERANCE_NS and capture <= meta['query_ns']
     if rolling and i % 5 < 3:
       # Camera jitter can put a real earlier slot's anchor on either side of the nominal offset.
       # A superseded slot's anchor can be selected up to four periods after its opening (still after its capture).
@@ -445,7 +445,7 @@ def worker(config, directory, handoff):
   if segmented and hasattr(adapter, 'encode_ahead'):
     def encode_ahead(views):
       marks['ahead_start_ns'] = time.monotonic_ns()
-      adapter.encode_ahead(views)
+      adapter.encode_ahead(views, queued_inputs(views))
       marks['ahead_end_ns'] = time.monotonic_ns()
     preparer.on_current = encode_ahead
   if hasattr(adapter, 'warmup'):
@@ -459,6 +459,16 @@ def worker(config, directory, handoff):
       if hasattr(adapter, 'pin_threads'):
         adapter.pin_threads(big)
   early_ready = []  # (views, deadline_ns): projected by the early thread, encoded on the main thread between predictions
+  lookahead = {}  # 'pair': (projected images, anchor_inputs) of the queued slot; 'identity': the last examined input file
+  lookahead_lock = threading.Lock()  # held while the early thread projects a queued slot
+  predicting = threading.Event()  # set while the main thread runs the GPU prediction
+  def queued_inputs(views):
+    # Patches the early thread made from these exact projected bytes while the previous prediction ran, else None.
+    images, inputs = lookahead.pop('pair', ((), None))
+    if len(images) == len(views) and all(a is b for a, (b, _) in zip(images, views)):
+      marks['lookahead_ns'] = lookahead.pop('at')
+      return inputs
+    return None
   def project_early(path):
     # CPU-only projection of the predicted -0.1 s pair; tinygrad stays on the main thread. Failures only lose the shortcut.
     try:
@@ -481,12 +491,34 @@ def worker(config, directory, handoff):
       except Exception as error:  # noqa: BLE001
         print(f'Early encoding skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
 
+  def project_queued():
+    # A slot queued behind a running prediction: project and patch its current pair now, on the CPU, so its pickup starts
+    # the GPU encode at once. The worker still validates the slot on pickup; unused projections expire from the cache.
+    path = handoff/'pending.bin'
+    try:
+      stat = path.stat()
+      identity = (stat.st_ino, stat.st_mtime_ns)
+      if identity == lookahead.get('identity'):
+        return False
+      lookahead['identity'] = identity
+      with lookahead_lock, load_selection(path) as (selected, context):
+        if len(selected.frames) != 4 or not predicting.is_set():  # anchor-only slots also use the projected pair
+          return False
+        views = preparer.early(selected)[1::2]  # wide and road current exposures, as rolling_images passes them
+        lookahead['pair'] = tuple(image for image, _ in views), adapter.anchor_inputs(views)
+        lookahead['at'] = time.monotonic_ns()
+      return True
+    except FileNotFoundError:
+      return False  # picked up meanwhile
+    except Exception as error:  # noqa: BLE001 - only the shortcut is lost
+      print(f'Queued-slot projection skipped: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+      return False
   def early_loop():
     # Projection runs here, in parallel with a prediction.
     while not stopping:
       if (handoff/'early.bin').exists():
         project_early(handoff/'early.bin')
-      else:
+      elif not (segmented and hasattr(adapter, 'encode_ahead') and predicting.is_set() and project_queued()):
         time.sleep(.002)
   marks = {}  # monotonic marks of the worker loop, attached to the next prediction record
   writer, count = PredictionWriter(), 0
@@ -510,6 +542,9 @@ def worker(config, directory, handoff):
         marks['early_end_ns'] = time.monotonic_ns()
       try:
         (handoff/'pending.bin').replace(handoff/'working.bin')
+        marks['picked_ns'] = time.monotonic_ns()
+        # When the supervisor finished writing this input (modification time, converted to the monotonic clock).
+        marks['written_ns'] = (handoff/'working.bin').stat().st_mtime_ns-(time.time_ns()-time.monotonic_ns())
         pin_big_cores()
       except FileNotFoundError:
         time.sleep(.001)
@@ -518,7 +553,8 @@ def worker(config, directory, handoff):
       try:
         begin = time.monotonic_ns()
         selected, context = mapping.enter_context(load_selection(handoff/'working.bin'))  # stays open until the log thread has hashed it
-        admitted = time.monotonic_ns()
+        with lookahead_lock:  # a queued-slot projection in progress finishes sooner than a second projection
+          admitted = time.monotonic_ns()
         if (period_ms in (250, 500) and not context.get('anchor_only') and 'slot_start_ns' in context and
             admitted-context['slot_start_ns'] > START_LATENESS_NS):
           # Queued behind a slow prediction: keep only this slot's camera pair, which bounds query-to-plan latency.
@@ -534,7 +570,11 @@ def worker(config, directory, handoff):
         meta['prepared_ns'] = time.monotonic_ns()
         if meta['prepared_ns'] >= expires:
           raise Unavailable('Input expired during preparation')
-        result = run_prediction(adapter, arrays, meta, hash_inputs=False)
+        predicting.set()
+        try:
+          result = run_prediction(adapter, arrays, meta, hash_inputs=False)
+        finally:
+          predicting.clear()
         result.update(startup=count < 5, **live_timing(selected, begin, time.monotonic_ns(), context if 'slot_start_ns' in context else None))
         result['worker_marks'], marks = marks, {}
         writer.check(wait=True)  # A failed previous write must stop this plan before publication.
@@ -550,7 +590,8 @@ def worker(config, directory, handoff):
                       finish=lambda r, arrays=arrays: r['input'].__setitem__('input_sha256', input_hashes(arrays)), release=mapping.pop_all().close)
         count += 1
       except (Unavailable, PromptTooLong) as error:
-        if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns'])):
+        if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns']),
+                                                                                 inputs=queued_inputs(error.anchors)):
           error = Unavailable('Front-camera feature priming missed its slot deadline')
         if not isinstance(error, Priming):
           preparer.anchors.clear()

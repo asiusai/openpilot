@@ -11,6 +11,7 @@ The manager starts the GPU worker onroad when Chestnut enumerates at 5 Gbps and 
 Input admission still requires a healthy local model. The first five completed predictions are startup samples.
 A plan is usable when it was ready within 500 ms of its camera query, and it drives while that query is under 1 s old.
 Two consecutive plans with queries at most 600 ms apart are required before the first use. Late, stale, repeated or invalid packets are ignored.
+modeld reads plans once per camera frame after its own model run, so it accepts a packet received up to 100 ms after publication.
 modeld ages the plan from camera capture before computing the requested action. Its planned speed must agree with measured vehicle speed within 2 m/s;
 curvature and acceleration must stay within physical limits. Low speeds, stops and starts use the plan.
 Without a usable plan, modeld holds the last Alpamayo curvature with non-positive acceleration and leaves
@@ -215,11 +216,15 @@ two, four and eight slots ago (-0.5, -1 and -2 s). Each slot is predicted or, wh
 - A slot superseded before it was queued becomes a backlog anchor, served before the newest slot.
 - The supervisor hands the next slot's predicted -0.1 s pair to the worker 160 to 20 ms before the opening. A worker thread
   projects and patches it on the CPU; the main thread queues its GPU encode between predictions.
+- While a prediction runs, the same thread projects and patches the current pair of the queued slot. On pickup the
+  worker queues that GPU encode at once. A backlogged slot thus skips about 35 ms of CPU work before its GPU work.
 - Audit hashes and the prediction record are written on a log thread, which then releases the input mapping.
 Never replay a missed slot. Plans are judged by query-to-ready latency (at most 500 ms), not by the slot deadline.
 The first five completed outputs are marked startup. A history gap restarts the two-second history (eight slots at 250 ms).
 With distinct images, each prediction encodes four new images: the current pair and the -0.1 s pair.
 Other cadences select all five exposures from capture timestamps. Feature reuse always depends on actual image content.
+Each history exposure is the latest one that starts at most 10 ms after its nominal offset and not after the query.
+Real camera periods jitter by about 0.2 ms, so a strict cutoff alternated the -0.1 s image between 100 and 150 ms old.
 
 The supervisor monitors small-model health, temperatures, memory, and storage while inference runs in its isolated child.
 It maintains one input slot in a private `/dev/shm` directory and selects fresh inputs when the worker becomes idle.

@@ -6,6 +6,7 @@ import queue
 import threading
 from functools import lru_cache
 from pathlib import Path
+import numpy as np
 from tinygrad import Device, Tensor, dtypes
 from tinygrad.device import Buffer
 from tinygrad.nn.state import safe_load
@@ -173,6 +174,26 @@ def load_bulk(model, checkpoint, directory):
   return index['sha256']
 
 
+HASH_MULTIPLIER = 2654435761
+
+
+def _word_hash(halves):
+  """sum(word[i] * (i*HASH_MULTIPLIER+1)) mod 2^32 over little-endian 32-bit words of 16-bit values (zero-padded)."""
+  words = np.concatenate([halves, np.zeros(len(halves)%2, np.uint16)]).view(np.uint32).astype(np.uint64)
+  weights = (np.arange(len(words), dtype=np.uint64)*HASH_MULTIPLIER+1) & 0xffffffff
+  return int((words*weights).sum(dtype=np.uint64) & 0xffffffff)
+
+
+def _word_hash_gpu(value):
+  halves = value.reshape(-1).bitcast(dtypes.uint16)
+  if halves.numel() % 2:
+    halves = halves.pad(((0,1),))
+  words = halves.bitcast(dtypes.uint32)
+  assert value.device == Device.DEFAULT  # arange builds on the default device
+  weights = Tensor.arange(words.numel(), dtype=dtypes.uint32)*HASH_MULTIPLIER+1
+  return (words*weights).sum(dtype=dtypes.uint32)
+
+
 def restore_bf16(model, checkpoint):
   prefixes = ['vlm.model.visual.embeddings.patch_embedding.',
               'vlm.model.visual.encoder.layers.0.', 'vlm.model.visual.encoder.layers.1.',
@@ -181,19 +202,24 @@ def restore_bf16(model, checkpoint):
   if not names:
     raise ValueError('Missing mixed-precision restoration tensors')
   index = json.loads((Path(checkpoint)/'model.safetensors.index.json').read_text())['weight_map']
-  shards = {}
+  shards, expected, restored = {}, [], []
   for name in names:
     shard = index[name]
     if shard not in shards:
       shards[shard] = safe_load(Path(checkpoint)/shard)
     source = shards[shard][name]
     assert source.dtype == dtypes.bfloat16 and source.shape == model.weights[name].shape
-    expected = source.bitcast(dtypes.uint8).numpy().tobytes()
     value = upload(source,dtypes.bfloat16)
-    if value.bitcast(dtypes.uint8).numpy().tobytes() != expected:
-      raise ValueError(f'BF16 restoration differs: {name}')
+    expected.append(_word_hash(np.frombuffer(source.bitcast(dtypes.uint8).numpy().tobytes(),dtype=np.uint16)))
+    restored.append(value)
     model.weights[name] = value
     del model.weight_scales[name]
+  # One readback for all tensors: the position-weighted word hash is recomputed on the GPU from the uploaded bytes.
+  from .transport import download
+  got = download(Tensor.stack(*[_word_hash_gpu(v) for v in restored]).bitcast(dtypes.int32)).view(np.uint32).tolist()
+  if got != expected:
+    bad = [n for n,a,b in zip(names,got,expected) if a != b]
+    raise ValueError(f'BF16 restoration differs: {bad[:4]}')
   return names
 
 

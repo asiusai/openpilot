@@ -161,10 +161,10 @@ class Runtime:
       except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread
         adapter['error'] = exc
     loader = threading.Thread(target=load_adapter, name='alpamayo-adapter', daemon=True)
-    loader.start()
     try:
       self.backend = Backend(self.config.device_timeout_ms)
       finished('gpu_backend')
+      loader.start()  # after GPU init, which is CPU-bound; the weight upload below mostly waits on I/O
       self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales,self.backend.pv_program())
       finished('weights_and_packing')
       print(f'Alpamayo startup: weight stages {self.model.load_ms}', file=sys.stderr, flush=True)
@@ -474,9 +474,12 @@ class ShadowAdapter:
   def anchor_inputs(self, anchors):
     return self.runtime.anchor_inputs(anchors)
 
-  def encode_ahead(self, anchors):
-    """Queue the current pair's vision encoding while the CPU prepares the rest of the input."""
-    self.runtime.prime(anchors,time.monotonic_ns()+10**12,wait=False)
+  def encode_ahead(self, anchors, inputs=None):
+    """Queue the current pair's vision encoding while the CPU prepares the rest of the input.
+
+    `inputs` from anchor_inputs() of these exact images skips the CPU patching.
+    """
+    self.runtime.prime(anchors,time.monotonic_ns()+10**12,wait=False,inputs=inputs)
 
   def warmup(self):
     self.runtime.warmup()

@@ -20,6 +20,9 @@ OFFSETS_NS = (-2_000_000_000, -1_000_000_000, -500_000_000, -100_000_000, 0)
 HALF_SECOND_NS = 500_000_000
 ROLLING_PERIODS_NS = (250_000_000, 500_000_000)  # Both divide the -2, -1 and -0.5 s history offsets.
 FRAME_TOLERANCE_NS = 150_000_000
+# A history exposure may start up to this long after its nominal offset, but never after the query. Real cameras jitter by
+# about 0.2 ms per frame; without slack the -0.1 s image alternates between the 100 ms and 150 ms old exposures.
+FRAME_SLACK_NS = 10_000_000
 STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
                 'vehicleParameters': 1_000_000_000, 'carParams': 120_000_000_000,
                 'deviceMotion': 100_000_000, 'navInstruction': 2_000_000_000}
@@ -172,7 +175,7 @@ class Store:
       times = [f.sof_ns for f in ring]
       for k, offset in enumerate(offsets):
         desired = query+offset
-        index = bisect_right(times, desired)-1
+        index = bisect_right(times, min(desired+FRAME_SLACK_NS, query))-1
         if index < 0 or desired-times[index] > FRAME_TOLERANCE_NS:
           raise Unavailable('Missing causal camera history')
         if cached and half_second_slot is None and k in cached_offsets:
@@ -344,7 +347,7 @@ class Preparer:
     for i, camera in enumerate(CAMERAS):
       prior, current = frames[2*i:2*i+2]
       if not (prior.camera == current.camera == camera and prior.frame_id < current.frame_id and prior.sof_ns < current.sof_ns and
-              0 <= query-100_000_000-prior.sof_ns <= FRAME_TOLERANCE_NS and 0 <= query-current.sof_ns <= FRAME_TOLERANCE_NS and
+              -FRAME_SLACK_NS <= query-100_000_000-prior.sof_ns <= FRAME_TOLERANCE_NS and 0 <= query-current.sof_ns <= FRAME_TOLERANCE_NS and
               max(prior.ready_ns, current.ready_ns) <= selected.selected_ns):
         raise Unavailable('Missing, repeated or stale front exposure')
       if self.anchors:

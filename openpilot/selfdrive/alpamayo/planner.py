@@ -12,7 +12,7 @@ FREE_WINDOW = 400_000_000  # Free-running supervisor: slot bookkeeping deadline 
 MAX_LATENCY = 500_000_000  # Camera query to plan ready.
 MAX_PLAN_AGE = 1_000_000_000  # A plan drives while its camera query is at most this old; its horizon is 6.4 s.
 CONSECUTIVE_GAP = 600_000_000  # Consecutive plans have queries at most this far apart.
-HANDOFF_GRACE = 50_000_000  # One frame of the local 20 Hz driving model.
+HANDOFF_GRACE = 100_000_000  # modeld reads plans once per 20 Hz camera frame, after its own model run; allow two frames.
 T = np.arange(65) * .1
 ACTION_TIMES = np.arange(22)*.1
 

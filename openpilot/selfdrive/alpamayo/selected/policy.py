@@ -26,12 +26,12 @@ def padded_inputs(prepared, packed, length, draft):
     raise ValueError('Invalid actual prompt or fixed padded length')
   count = length-actual
   new_ids = np.pad(ids,((0,0),(0,count)))
-  new_positions = np.pad(positions,((0,0),(0,0),(0,count)))
+  # Every padding row gets the position a placed draft token would have. Draft rows keep their exact positions, unused
+  # rows stay masked, and the prefill rotary tables change only with the actual prompt length, not with the draft length.
+  new_positions = np.concatenate([positions,np.broadcast_to(actual+int(delta)+np.arange(count),(3,1,count))],axis=2).astype(positions.dtype)
   placed = tuple(int(t) for t in draft[:count])
   if placed:
     new_ids[0,actual:actual+len(placed)] = placed
-    next_positions = actual+int(delta)+np.arange(len(placed))
-    new_positions[:,:,actual:actual+len(placed)] = next_positions[None,None,:]
   metadata = dict(prepared,actual_prompt_length=actual,prefill_draft=placed)
   return metadata,(new_ids,new_positions,int(delta)-count,vision_positions)
 

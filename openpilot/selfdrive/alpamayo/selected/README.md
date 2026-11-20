@@ -70,6 +70,8 @@ after the prompt. Head `i` holds the argmax after draft token `i-1`. The decoder
 and continues from the first differing head. Accepted tokens have the same target-verified status as lookup verification.
 A 2025-token prompt plus compact navigation text leaves room for all 32 heads; a prompt above 2081 tokens is rejected.
 Padding rows follow the prompt, so real prompt rows and their KV are identical for any padded length.
+Every padding row has the position of a placed draft token, placed or not. The ~1 MB prefill rotary tables thus change only with the
+actual prompt length. A changed draft length previously re-uploaded them, which cost about 29 ms on 23% of slots.
 Expert attention adds the per-key mask inside the score kernel epilogue with the original BF16 and FP32 rounding.
 Expert PV applies only inside trajectory execution.
 During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.
