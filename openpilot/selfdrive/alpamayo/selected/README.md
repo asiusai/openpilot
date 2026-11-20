@@ -83,7 +83,7 @@ Both online-softmax attention kernels skip the accumulator rescale when no row o
 Vision attention also prefetches the next K/V block, skips padding-only waves and runs at eight waves per SIMD (0.20 to 0.15 ms per layer).
 Vision FP8 quantization reduces the per-image maximum in one fused pass and writes the packed FP8 layout directly.
 GELU outputs are not stored; the maximum and the packing quantizer recompute them. BF16 vision linears use 3x4 tiles except FC1.
-The frozen pair plan holds 38 programs. `bench/lab/refreeze_plan.py` regenerates it: unchanged operations keep their programs.
+The frozen pair plan holds 37 programs. FP8 vision projections add the residual in their epilogue. A regenerated plan keeps the programs of unchanged operations and compiles only changed ones.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 No runtime recipe switches or experimental installers are exposed.
 

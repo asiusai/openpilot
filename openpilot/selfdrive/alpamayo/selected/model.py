@@ -151,7 +151,7 @@ class SelectedModel(EdgeModel):
       return y.cast(x.dtype).reshape(*shape,weight.shape[0])
     return super().linear(x,name).reshape(*shape,weight.shape[0])
 
-  def linear(self, x, name, quantized_input=None, heads=None):
+  def linear(self, x, name, quantized_input=None, heads=None, residual=None):
     shape = x.shape[:-1]
     weight,bias = self.weights[name+'.weight'],self.weights.get(name+'.bias')
     scale = self.weight_scales.get(name+'.weight')
@@ -165,7 +165,13 @@ class SelectedModel(EdgeModel):
       assert (x.shape[1],weight.shape[0],x.shape[-1]) == vision_tiles.SHAPES[fc]
       assert bias is not None and bias.dtype == dtypes.bfloat16
       quantized,x_scale = self.quantize(x) if quantized_input is None else quantized_input
-      return vision_tiles.gemm(quantized.reshape(images,720,x.shape[-1]),weight,(x_scale,scale),bias,vision_tiles.TILES[fc]).reshape(*shape,weight.shape[0])
+      return vision_tiles.gemm(quantized.reshape(images,720,x.shape[-1]),weight,(x_scale,scale),bias,vision_tiles.TILES[fc],
+                               residual=residual).reshape(*shape,weight.shape[0])
+    if residual is not None:
+      # Only FP8 vision projections add the residual in their epilogue.
+      assert self.images and scale is not None and name.endswith('.self_attn.out_proj') and x.dtype == residual.dtype == dtypes.bfloat16
+      quantized,x_scale = self.quantize(x) if quantized_input is None else quantized_input
+      return tiled_gemm.gemm(quantized,weight,(x_scale,scale),row_scale=True,bias=bias,residual=residual).reshape(*shape,weight.shape[0])
     if self.images and scale is not None:
       if name.startswith(('vlm.model.visual.embeddings.','vlm.model.projector.')):
         count = self.images
@@ -262,9 +268,14 @@ class SelectedModel(EdgeModel):
     quantized = self.quantize(h) if f'{prefix}.self_attn.q_proj.weight' in self.weight_scales else None
     q,k,v = (self.linear(h,f'{prefix}.self_attn.{n}_proj',quantized,heads=16).reshape(*h.shape[:2],16,72).transpose(1,2) for n in ('q','k','v'))
     h = self.attention(q,k,v).transpose(1,2).reshape(x.shape)
-    x = x+self.linear(h,f'{prefix}.self_attn.out_proj')
+    if quantized is None:
+      x = x+self.linear(h,f'{prefix}.self_attn.out_proj')
+      h = self.linear(self.norm(x,f'{prefix}.layer_norm2'),f'{prefix}.mlp.fc1').float().gelu().cast(self.dtype)
+      return (x+self.linear(h,f'{prefix}.mlp.fc2')).realize()
+    # FP8 layers add each residual in the projection epilogue, with the same BF16 rounding.
+    x = self.linear(h,f'{prefix}.self_attn.out_proj',residual=x)
     h = self.linear(self.norm(x,f'{prefix}.layer_norm2'),f'{prefix}.mlp.fc1').float().gelu().cast(self.dtype)
-    return (x+self.linear(h,f'{prefix}.mlp.fc2')).realize()
+    return self.linear(h,f'{prefix}.mlp.fc2',residual=x).realize()
 
   def text_layer(self, x, cos, sin, prefix, cache=None, mask=None, cache_pos=None, serial_position=None):
     previous = self.prefill_prefix,self.quantizer_slot

@@ -14,7 +14,8 @@ SHAPES = {'fc1': (720, 4304, 1152), 'fc2': (720, 1152, 4304)}
 NAME = re.compile(r'^vlm\.model\.visual\.encoder\.layers\.(\d+)\.mlp\.(fc[12])$')
 
 
-def kernel(out, x, weight, x_scale, w_scale, *bias, images, rows, tile_m, tile_n):
+def kernel(out, x, weight, x_scale, w_scale, *extra, images, rows, tile_m, tile_n, residual=False):
+  bias, residual_input = (extra[:-1], extra[-1]) if residual else (extra, None)
   columns, width = weight.shape
   assert images in (1, 2) and out.shape == (images, rows, columns)
   assert x.shape == (images*round_up(rows, 16), width) and x_scale.numel() == images*rows
@@ -28,14 +29,19 @@ def kernel(out, x, weight, x_scale, w_scale, *bias, images, rows, tile_m, tile_n
   value = value*(x_scale.flatten().index(m.valid(m < rows))*w_scale.flatten().index(0))
   if bias:
     value = value+bias[0].flatten().index(n.valid(n < columns)).cast(dtypes.float32)
-  store = out.flatten().index((m*columns+n).valid((m < rows)&(n < columns))).store(value.cast(out.dtype))
+  offset = (m*columns+n).valid((m < rows)&(n < columns))
+  value = value.cast(out.dtype)
+  if residual_input is not None:
+    # Same rounding as `residual + linear(x)`: round the projection to BF16, add in FP32, round the sum to BF16.
+    value = (residual_input.flatten().index(offset).cast(dtypes.float32) + value.cast(dtypes.float32)).cast(out.dtype)
+  store = out.flatten().index(offset).store(value)
   schedule = Scheduler(store.end(m, n).sink(arg=KernelInfo()), Device[Device.DEFAULT].renderer)
   schedule.convert_loop_to_global()
   ranges = schedule.apply_opt(Opt(OptOps.TC, 0, (-1, 0, 1)))
   row_axis = ranges[1].axis_id
   for axis, count in ((1, tile_m), (0, tile_n)):
     schedule.apply_opt(Opt(OptOps.SPLIT, schedule.rngs.index(ranges[axis]), (count, AxisType.UPCAST)))
-  ast = schedule.get_optimized_ast(name_override=f'agent_vision_tiles_{tile_m}x{tile_n}_b{images}')
+  ast = schedule.get_optimized_ast(name_override=f'agent_vision_tiles_{tile_m}x{tile_n}_b{images}'+('_residual' if residual else ''))
   # Extend only the row workgroup dispatch. Each image retains the complete
   # single-image reduction and padding predicates, as in image-gemm.py.
   original = next(r for r in schedule.rngs if r.axis_type is AxisType.GLOBAL and r.axis_id == row_axis)
@@ -43,6 +49,8 @@ def kernel(out, x, weight, x_scale, w_scale, *bias, images, rows, tile_m, tile_n
   expanded = original.replace(src=(original.src[0].const_like(images*blocks),))
   image, mapping = expanded//blocks, {original: expanded % blocks}
   offsets = {out.base: rows*columns, x.base: round_up(rows, 16)*width, x_scale.base: rows}
+  if residual_input is not None:
+    offsets[residual_input.base] = rows*columns
   indexes, seen = {}, set()
   for node in ast.toposort():
     if node.op is not Ops.INDEX:
@@ -75,16 +83,17 @@ def row_scales(scale, images, rows):
   return scale.reshape(images, 1).expand(images, rows).reshape(-1).contiguous()
 
 
-def packed(packed_x, packed_weight, scales, bias, images, rows, tile, out=None):
+def packed(packed_x, packed_weight, scales, bias, images, rows, tile, out=None, residual=None):
   if out is None:
     out = Tensor.empty(images, rows, packed_weight.shape[0], device=packed_x.device, dtype=dtypes.bfloat16)
-  return Tensor.custom_kernel(out, packed_x, packed_weight, *scales, bias,
-    fxn=partial(kernel, images=images, rows=rows, tile_m=tile[0], tile_n=tile[1]))[0]
+  extra = () if residual is None else (residual.reshape(out.shape),)
+  return Tensor.custom_kernel(out, packed_x, packed_weight, *scales, bias, *extra,
+    fxn=partial(kernel, images=images, rows=rows, tile_m=tile[0], tile_n=tile[1], **({} if residual is None else {'residual': True})))[0]
 
 
-def gemm(x, weight, scales, bias, tile):
+def gemm(x, weight, scales, bias, tile, residual=None):
   images, rows, width = x.shape
   assert x.dtype == weight.dtype == dtypes.fp8e4m3 and bias.dtype == dtypes.bfloat16
   assert weight.shape[1] == width
   scales = (row_scales(scales[0], images, rows), scales[1])
-  return packed(pack_images(x), pack(weight), scales, bias, images, rows, tile)
+  return packed(pack_images(x), pack(weight), scales, bias, images, rows, tile, residual=residual)
