@@ -78,6 +78,7 @@ def stop_worker(child):
 def main():
   if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
     return
+  os.sched_setaffinity(0, {0, 1, 2, 3, 6})  # Frame copies stay off the worker's cores 5 and 7.
   from openpilot.selfdrive.alpamayo.runtime import private_output, ram_handoff, storage_ok
   config_path = Path(os.environ['ALPAMAYO_CONFIG']).resolve()
   config = json.loads(config_path.read_text())
@@ -342,9 +343,10 @@ if __name__ == '__main__':
   if len(sys.argv) == 4:
     if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
       raise RuntimeError('Explicit shadow opt-in is required')
-    os.nice(10)
-    # Leave cores 6-7 to camerad and modeld. The mask keeps 4-5 while they are offline; runtime.worker moves
-    # per-slot threads onto them once the onroad policy brings them online.
+    if not planner_mode():
+      os.nice(10)  # Shadow-only plans must not slow openpilot. In planner mode Alpamayo is the driving model.
+    # Startup mask; runtime.worker moves per-slot threads to cores 5 and 7 once the onroad policy brings them online
+    # (core 4 runs the real-time control loop; modeld moves to core 6).
     os.sched_setaffinity(0, set(range(6)))
     from openpilot.selfdrive.alpamayo.runtime import worker
     worker(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], sys.argv[3])

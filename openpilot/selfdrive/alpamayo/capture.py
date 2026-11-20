@@ -90,24 +90,27 @@ class NativeProducer:
     from openpilot.common.params import Params
     from openpilot.system.asius.navigation_route import RouteStore
     kinds = (*STATE_LIMITS, 'modelV2')
-    sm = messaging.SubMaster([*kinds, 'deviceState'])
+    # Every queued message, not only the latest: a delayed loop must not leave gaps in the measured motion history.
+    socks = {kind: messaging.sub_sock(kind) for kind in kinds}
+    sm = messaging.SubMaster(['modelV2', 'deviceState'])
     params = Params()
     routes = RouteStore(params)
     while not self.stop.is_set():
       sm.update(0)
       received = time.monotonic_ns()
-      for kind in kinds:
-        if not sm.updated[kind]:
-          continue
-        msg = sm[kind]
-        value, valid = state_value(kind, msg)
-        stamp = int(msg.timestamp) if kind == 'deviceMotion' and msg.timestamp > 0 else int(sm.logMonoTime[kind])
-        if kind == 'navInstruction':
-          ready, revision = navigation_ready(params, routes, stamp)
-          valid = valid and ready
-          value['routeRevision'] = revision
-        # state_value constructs detached Python values. The store can keep them without copying the full modelV2 again.
-        self.store.add_state(kind, stamp, received, value, bool(sm.valid[kind] and valid), owned=True)
+      for kind, sock in socks.items():
+        events = messaging.drain_sock(sock)
+        received = time.monotonic_ns()  # after the drain: no message is stamped later than its receipt
+        for event in events:
+          msg = getattr(event, kind)
+          value, valid = state_value(kind, msg)
+          stamp = int(msg.timestamp) if kind == 'deviceMotion' and msg.timestamp > 0 else int(event.logMonoTime)
+          if kind == 'navInstruction':
+            ready, revision = navigation_ready(params, routes, stamp)
+            valid = valid and ready
+            value['routeRevision'] = revision
+          # state_value constructs detached Python values. The store can keep them without copying the full modelV2 again.
+          self.store.add_state(kind, stamp, received, value, bool(event.valid and valid), owned=True)
       if params.get_bool('ChestnutActive') or params.get_bool('ChestnutLoading'):
         raise RuntimeError('Driving model attempted Chestnut ownership')
       self.health = {'time_ns': received, 'model_alive': bool(sm.alive['modelV2'] and sm.valid['modelV2']),

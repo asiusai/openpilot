@@ -1002,6 +1002,17 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
   return services
 
 
+def alpamayo_reasoning() -> str | None:
+  """The Alpamayo worker's latest reasoning text, while it is fresh."""
+  try:
+    value = json.loads(Path("/dev/shm/alpamayo-reasoning.json").read_text())
+  except (OSError, ValueError):
+    return None
+  if isinstance(value, dict) and isinstance(value.get("text"), str) and time.monotonic()-float(value.get("monotonic", 0)) < 3:
+    return value["text"]
+  return None
+
+
 def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
   build_metadata = get_build_metadata()
   services = _live_services(sm)
@@ -1018,6 +1029,10 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     if isinstance(alert, dict) and alert.get("text"):
       offroad_alerts.append({"key": key, "text": alert["text"].replace("%1", str(alert.get("extra", ""))),
                              "severity": alert.get("severity", 0)})
+
+  if reasoning := alpamayo_reasoning():
+    # Offroad_Chestnut* alerts stay visible in the app while driving.
+    offroad_alerts.append({"key": "Offroad_ChestnutReasoning", "text": reasoning, "severity": 0})
 
   snapshot = {
     "navigation": getNavigationState(),

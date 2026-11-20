@@ -1,5 +1,6 @@
 """Inference contract, process-boundary snapshots, and durable shadow output."""
 import contextlib
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
@@ -185,6 +186,22 @@ class PredictionWriter:
   def close(self):
     self.pool.shutdown(wait=True)
     self.check(wait=True)
+
+
+REASONING_PATH = Path('/dev/shm/alpamayo-reasoning.json')
+
+
+def publish_reasoning(result):
+  """Latest reasoning text for the app's live state (RAM only; the prediction record keeps the full output)."""
+  text = str(result.get('prediction', {}).get('reasoning', '')).replace('<|traj_future_start|>', '').strip()
+  if text == '<NOMINAL>':
+    text = 'Nominal driving'
+  try:
+    temporary = REASONING_PATH.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'text': text[:240], 'monotonic': time.monotonic()}))
+    temporary.replace(REASONING_PATH)
+  except OSError:
+    pass  # display only
 
 
 def frame_layout(ref):
@@ -471,14 +488,24 @@ def worker(config, directory, handoff):
     preparer.on_current = encode_ahead
   if hasattr(adapter, 'warmup'):
     adapter.warmup()  # Compile every steady-state graph shape before ready; no live slot pays a mid-drive compile.
+  # A full collection over the model's object graph stalls a prediction for up to ~0.9 s. Freeze the startup objects and
+  # collect only young generations, after each plan is published.
+  gc.collect()
+  gc.freeze()
+  gc.disable()
   # Per-slot CPU work (projection, patch packing, dispatch) takes ~2.5x longer on the A55 cores 0-3.
-  # Run this thread and the threads it creates on big cores 4-5 whenever they are online (onroad policy).
+  # Run this thread and the threads it creates on the fast cores whenever they are online (onroad policy).
   def pin_big_cores():
-    big = {4, 5} if all(Path(f'/sys/devices/system/cpu/cpu{c}/online').read_text().strip() == '1' for c in (4, 5)) else set()
+    # Prime core 7 and big core 5: core 4 runs card, selfdrived and controlsd at real-time priority and would preempt
+    # every slot; in planner mode modeld and dmonitoringmodeld move to core 6 with camerad.
+    big = {5, 7} if all(Path(f'/sys/devices/system/cpu/cpu{c}/online').read_text().strip() == '1' for c in (5, 7)) else set()
     if big and os.sched_getaffinity(0) != big:
-      os.sched_setaffinity(0, big)
-      if hasattr(adapter, 'pin_threads'):
-        adapter.pin_threads(big)
+      # Every existing thread (patch pool, early projection, tinygrad helpers); threads created later inherit the mask.
+      for task in os.listdir('/proc/self/task'):
+        try:
+          os.sched_setaffinity(int(task), big)
+        except ProcessLookupError:
+          pass  # the thread exited
   early_ready = []  # (views, deadline_ns): projected by the early thread, encoded on the main thread between predictions
   lookahead = {}  # 'pair': (projected images, anchor_inputs) of the queued slot; 'identity': the last examined input file
   lookahead_lock = threading.Lock()  # held while the early thread projects a queued slot
@@ -583,7 +610,9 @@ def worker(config, directory, handoff):
           print(f'alpamayo slot {context["slot_start_ns"]} anchored: picked up {(admitted-context["slot_start_ns"])/1e6:.0f} ms late',
                 file=sys.stderr, flush=True)
         expires = context.get('expires_ns', context.get('slot_deadline_ns', admitted+1))
-        if not 0 <= admitted-selected.query_ns <= (1_000_000_000 if context.get('anchor_only') else 500_000_000) or admitted >= expires:
+        if (not 0 <= admitted-selected.query_ns <= (1_000_000_000 if context.get('anchor_only') else 500_000_000) or
+            (admitted >= expires and not context.get('anchor_only'))):
+          # An anchor stays useful until its query is 1 s old: losing one slot would reprime the whole 2 s history.
           raise Unavailable('Input expired before preparation')
         if context.get('anchor_only'):
           preparer.rolling_images(selected, context['slot_start_ns'], anchor_only=True)  # Raises Priming; no prediction for this slot.
@@ -607,6 +636,8 @@ def worker(config, directory, handoff):
           temporary = handoff/'plan.tmp'
           temporary.write_text(json.dumps(packet(result), allow_nan=False))
           temporary.replace(handoff/'plan.json')
+          publish_reasoning(result)
+        gc.collect(1)
         # Audit hashes cover the exact inputs but are not needed to publish the plan. The log thread computes them from the
         # still-open mapping and then releases it, so the next slot starts without waiting.
         writer.submit(root/f'{selected.query_ns}.json', result,

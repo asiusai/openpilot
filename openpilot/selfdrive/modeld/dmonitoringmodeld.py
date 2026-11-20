@@ -110,7 +110,8 @@ def get_driverstate_packet(model_output, frame_id: int, location_ts: int, exec_t
 
 
 def main():
-  config_realtime_process(7, 5)
+  from openpilot.selfdrive.alpamayo.shadowd import planner_mode
+  config_realtime_process(6 if planner_mode() else 7, 5)  # core 7 runs the Alpamayo worker in planner mode
 
   cloudlog.warning("connecting to cabin stream")
   vipc_client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_CABIN, True)

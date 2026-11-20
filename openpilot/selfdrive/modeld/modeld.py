@@ -314,7 +314,8 @@ def main(demo=False):
   params.put_bool("ChestnutLoading", False)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
-  config_realtime_process(7, 54)
+  # Alpamayo planner mode: the prime core 7 runs the Alpamayo worker; modeld shares core 6 with camerad.
+  config_realtime_process(6 if use_alpamayo else 7, 54)
 
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutGpuState"] if CHESTNUT else [])
