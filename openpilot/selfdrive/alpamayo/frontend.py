@@ -40,6 +40,7 @@ QUERY_WAIT_NS = 60_000_000
 # A history exposure may start up to this long after its nominal offset, but never after the query. Real cameras jitter by
 # about 0.2 ms per frame; without slack the -0.1 s image alternates between the 100 ms and 150 ms old exposures.
 FRAME_SLACK_NS = 10_000_000
+STATE_HISTORY_NS = 2_100_000_000  # the oldest state time any consumer reads: the -1.9 s history sample minus its tolerance
 STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
                 'vehicleParameters': 1_000_000_000, 'carParams': 120_000_000_000,
                 'deviceMotion': 100_000_000, 'navInstruction': 2_000_000_000}
@@ -202,8 +203,11 @@ class Store:
         frames.append(ring[index])
       if len({f.sof_ns for f in frames[-len(offsets):]}) != len(offsets) or frames[-1].sof_ns <= (last_current or {}).get(camera, 0):
         raise Unavailable('Repeated or stalled camera history')
-    # Only the matched small-model output is consumed. Retain the complete vehicle state history.
+    # Only the matched small-model output is consumed. Vehicle states are read at most STATE_HISTORY_NS before the query
+    # (the -1.9 s history sample and its tolerance) through latest-row lookups: keep those rows and the newest older one.
     del states['modelV2']
+    for kind, rows in states.items():
+      states[kind] = rows[max(bisect_right(rows, query-STATE_HISTORY_NS, key=_stamp)-1, 0):]
     return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp if model else None, 'model': model.value if model else None}, gaps)
 
 

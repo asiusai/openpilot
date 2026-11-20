@@ -1,5 +1,6 @@
 """Inference contract, process-boundary snapshots, and durable shadow output."""
 import contextlib
+import functools
 import gc
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -63,12 +64,16 @@ def memory_ok(upcoming=0):
 
 def input_storage_ok(path, upcoming=0):
   """Input snapshots require tmpfs, its own small reserve, and available system RAM."""
-  if not Path(path).resolve().is_relative_to('/dev/shm'):
-    return False
-  mounts = Path('/proc/self/mountinfo').read_text().splitlines()
-  if not any(row.split()[4] == '/dev/shm' and row.split(' - ', 1)[1].split()[0] == 'tmpfs' for row in mounts):
+  if not Path(path).resolve().is_relative_to('/dev/shm') or not shm_is_tmpfs():
     return False
   return shutil.disk_usage(path).free-upcoming >= 8*1024**2 and memory_ok(upcoming)
+
+
+@functools.cache
+def shm_is_tmpfs():
+  # The mount does not change while the supervisor runs; parsing mountinfo took about 2 ms per input on the little cores.
+  mounts = Path('/proc/self/mountinfo').read_text().splitlines()
+  return any(row.split()[4] == '/dev/shm' and row.split(' - ', 1)[1].split()[0] == 'tmpfs' for row in mounts)
 
 
 def ram_handoff():
