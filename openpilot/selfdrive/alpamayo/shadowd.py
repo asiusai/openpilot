@@ -293,9 +293,8 @@ def supervise(config, config_path, python, root, handoff, cache, boot):
                   flips[camera], flips_until = predicted[camera]-frame_id, selected_ns+20_000_000_000
               predicted = {}
           except Unavailable as error:
-            if not isinstance(error, AwaitingFrame) or slot.get('anchor_only'):
-              print(f'alpamayo slot {slot["slot_start_ns"]} skipped{" (anchor)" if slot.get("anchor_only") else ""}: {error}',
-                    file=sys.stderr, flush=True)
+            print(f'alpamayo slot {slot["slot_start_ns"]} skipped{" (anchor)" if slot.get("anchor_only") else ""} after '
+                  f'{(time.monotonic_ns()-slot["slot_start_ns"])/1e6:.0f} ms: {error}', file=sys.stderr, flush=True)
             slots.skip()
             publish()
         upcoming = slots.next_ns

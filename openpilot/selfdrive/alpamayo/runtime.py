@@ -161,6 +161,15 @@ class PredictionWriter:
           release()
     self.pending = self.pool.submit(task)
 
+  def status(self, path, value):
+    """Write a status file on the log thread after the in-flight prediction; its failure surfaces on the next check."""
+    previous = self.pending
+    def task():
+      if previous is not None:
+        previous.result()
+      atomic_json(path, value)
+    self.pending = self.pool.submit(task)
+
   def close(self):
     self.pool.shutdown(wait=True)
     self.check(wait=True)
@@ -559,6 +568,8 @@ def worker(config, directory, handoff):
             admitted-context['slot_start_ns'] > START_LATENESS_NS):
           # Queued behind a slow prediction: keep only this slot's camera pair, which bounds query-to-plan latency.
           context['anchor_only'] = True
+          print(f'alpamayo slot {context["slot_start_ns"]} anchored: picked up {(admitted-context["slot_start_ns"])/1e6:.0f} ms late',
+                file=sys.stderr, flush=True)
         expires = context.get('expires_ns', context.get('slot_deadline_ns', admitted+1))
         if not 0 <= admitted-selected.query_ns <= (1_000_000_000 if context.get('anchor_only') else 500_000_000) or admitted >= expires:
           raise Unavailable('Input expired before preparation')
@@ -590,8 +601,9 @@ def worker(config, directory, handoff):
                       finish=lambda r, arrays=arrays: r['input'].__setitem__('input_sha256', input_hashes(arrays)), release=mapping.pop_all().close)
         count += 1
       except (Unavailable, PromptTooLong) as error:
+        # Anchors are queued without waiting for the GPU: the next slot must not inherit this slot's encode time.
         if isinstance(error, Priming) and sampler is not None and not adapter.prime(error.anchors, context.get('expires_ns', context['slot_deadline_ns']),
-                                                                                 inputs=queued_inputs(error.anchors)):
+                                                                                 wait=False, inputs=queued_inputs(error.anchors)):
           error = Unavailable('Front-camera feature priming missed its slot deadline')
         if not isinstance(error, Priming):
           preparer.anchors.clear()
@@ -599,10 +611,11 @@ def worker(config, directory, handoff):
         elif 'Repriming' in str(error):
           print(f'alpamayo slot {context.get("slot_start_ns")}: {error}', file=sys.stderr, flush=True)
         rejected = time.monotonic_ns()
-        writer.check(wait=True)  # Serialize disk reserve checks for predictions and status.
-        atomic_json(root/'unavailable.json', {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
-                                            'slot_start_ns': context.get('slot_start_ns'), 'slot_deadline_ns': context.get('slot_deadline_ns'),
-                                            'rejected_ns': rejected, 'type': type(error).__name__, 'reason': str(error)[:1024]})
+        writer.check()
+        # The log thread serializes disk reserve checks for predictions and status; two fsyncs stay off the slot path.
+        writer.status(root/'unavailable.json', {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
+                                                'slot_start_ns': context.get('slot_start_ns'), 'slot_deadline_ns': context.get('slot_deadline_ns'),
+                                                'rejected_ns': rejected, 'type': type(error).__name__, 'reason': str(error)[:1024]})
         (handoff/'skipped').touch()
         continue
       finally:
