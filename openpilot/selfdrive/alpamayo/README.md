@@ -9,8 +9,8 @@ Planner mode reserves Chestnut for Alpamayo. The small model keeps running for c
 In planner mode the driving action comes only from Alpamayo plans; the small model's action is never used.
 The manager starts the GPU worker onroad when Chestnut enumerates at 5 Gbps and the device is healthy. Weights can load alongside modeld startup.
 Input admission still requires a healthy local model. The first five completed predictions are startup samples.
-A plan is usable when it was ready within 500 ms of its camera query, and it drives while that query is under 1 s old.
-Two consecutive plans with queries at most 600 ms apart are required before the first use. Late, stale, repeated or invalid packets are ignored.
+A plan is usable when it was ready within 500 ms of its camera query, and it drives while that query is under 1.5 s old.
+Two consecutive plans with queries at most 1 s apart are required before the first use. Late, stale, repeated or invalid packets are ignored.
 modeld reads plans once per camera frame after its own model run, so it accepts a packet received up to 100 ms after publication.
 modeld ages the plan from camera capture before computing the requested action. Its planned speed must agree with measured vehicle speed within 2 m/s;
 curvature and acceleration must stay within physical limits. Low speeds, stops and starts use the plan.

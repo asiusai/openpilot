@@ -320,13 +320,14 @@ def main(demo=False):
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutGpuState"] if CHESTNUT else [])
   pm = PubMaster(pub_socks)
-  planner = None
+  planner = plan_sock = None
   if use_alpamayo:
     from openpilot.selfdrive.alpamayo.planner import PlanSelector
     planner = PlanSelector()
+    # Every queued plan packet: an invalid packet for a skipped slot can follow a valid plan within one camera frame.
+    plan_sock = messaging.sub_sock('alpamayoPlan')
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
-                  "carControl", "controlsState", "lateralDelay"] + (['alpamayoPlan'] if planner is not None else []),
-                 frequency=ModelConstants.MODEL_RUN_FREQ)
+                  "carControl", "controlsState", "lateralDelay"], frequency=ModelConstants.MODEL_RUN_FREQ)
 
   publish_state = PublishState()
   params = Params()
@@ -392,8 +393,10 @@ def main(demo=False):
       meta_extra = meta_main
 
     sm.update(0)
-    if planner is not None and sm.updated['alpamayoPlan'] and sm.valid['alpamayoPlan']:
-      planner.receive(sm['alpamayoPlan'], time.monotonic_ns(), sm.logMonoTime['alpamayoPlan'])
+    if planner is not None:
+      for event in messaging.drain_sock(plan_sock):
+        if event.valid:
+          planner.receive(event.alpamayoPlan, time.monotonic_ns(), event.logMonoTime)
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId

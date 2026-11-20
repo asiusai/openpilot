@@ -10,8 +10,9 @@ FREE = 0  # Free-running: each prediction starts when the previous one finishes.
 PERIODS = (FREE, 250_000_000, 500_000_000)
 FREE_WINDOW = 400_000_000  # Free-running supervisor: slot bookkeeping deadline after selection.
 MAX_LATENCY = 500_000_000  # Camera query to plan ready.
-MAX_PLAN_AGE = 1_000_000_000  # A plan drives while its camera query is at most this old; its horizon is 6.4 s.
-CONSECUTIVE_GAP = 600_000_000  # Consecutive plans have queries at most this far apart.
+MAX_PLAN_AGE = 1_500_000_000  # A plan drives while its camera query is at most this old; its horizon is 6.4 s.
+# In the car a plan is ready 350-550 ms after its query, and one superseded 250 ms slot leaves a 500 ms query gap.
+CONSECUTIVE_GAP = 1_000_000_000  # Consecutive plans have queries at most this far apart (two superseded slots).
 HANDOFF_GRACE = 100_000_000  # modeld reads plans once per 20 Hz camera frame, after its own model run; allow two frames.
 T = np.arange(65) * .1
 ACTION_TIMES = np.arange(22)*.1
