@@ -1,6 +1,7 @@
 """Causal, bounded two-camera inputs shared by live capture and replay."""
 from bisect import bisect_right
 from collections import OrderedDict, deque
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import copy
@@ -295,6 +296,7 @@ class Preparer:
   def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False, period_ns=HALF_SECOND_NS, free=False,
                default_navigation=DEFAULT_NAVIGATION):
     self.default_navigation = default_navigation  # ALPAMAYO_CONFIG `default_navigation`
+    self.state_pool = None  # created on first use, on the worker thread's cores
     if cache_limit < 0:
       raise ValueError('Negative image cache capacity')
     if any(tuple(geometry['cameras'][str(c)]['prepared_size']) != (768, 432) for c in CAMERAS):
@@ -365,10 +367,39 @@ class Preparer:
     return frame.camera, frame.frame_id, frame.sof_ns, json.dumps(calibration, sort_keys=True)
 
   def prepare(self, selected, half_second_slot=None):
-    from openpilot.selfdrive.alpamayo.history import ego_history
     query, states = selected.query_ns, selected.states
     if half_second_slot is not None:
-      views, hits = self.rolling_images(selected, half_second_slot)
+      # The state inputs (history, parameters, navigation) do not depend on the images: compute them on a second thread
+      # while this one projects and uploads the camera pair. Image errors keep their priority over state errors.
+      if self.state_pool is None:
+        self.state_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='alpamayo-states')  # inherits the worker's cores
+      pending = self.state_pool.submit(self.state_inputs, selected)
+      try:
+        views, hits = self.rolling_images(selected, half_second_slot)
+      except BaseException:
+        concurrent.futures.wait([pending])
+        raise
+      cal, cal_ns, xyz, rot, history, nav, nav_meta = pending.result()
+    else:
+      cal, cal_ns, xyz, rot, history, nav, nav_meta = self.state_inputs(selected)
+      views, hits = self.free_images(selected) if self.free else self.project(selected.frames, states)
+    images, refs = zip(*views, strict=True)
+    refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
+    arrays = {'image_frames': FrontImages(images) if self.segmented and (half_second_slot is not None or self.free) else np.stack(images),
+              'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
+              'absolute_timestamps': np.array([ref['capture_ns']//1000 for ref in refs], dtype=np.int64),
+              'ego_history_xyz': xyz, 'ego_history_rot': rot, 'nav_text': [nav]}
+    metadata = {'query_ns': query, 'selected_ns': selected.selected_ns, 'frames': refs, 'small_model': selected.small_model,
+                'calibration_rpy': cal['rpyCalib'], 'calibration': copy.deepcopy(cal), 'calibration_log_mono_time': cal_ns,
+                'ego_history_xyz': xyz.tolist(),
+                'ego_history_rot': rot.tolist(), 'vehicle_history': history, 'navigation_text': nav, 'navigation': nav_meta,
+                'camera_profile': 'calibrated_vehicle_history', 'image_cache_hits': hits, 'camera_gaps': selected.camera_gaps}
+    return arrays, metadata
+
+  def state_inputs(self, selected):
+    """Calibration, ego history, vehicle parameters and navigation text of a selection; independent of its images."""
+    from openpilot.selfdrive.alpamayo.history import ego_history
+    query, states = selected.query_ns, selected.states
     cal, cal_ns = required(states['extrinsicsCalibration'], query, STATE_LIMITS['extrinsicsCalibration'])
     xyz, rot, history = ego_history(states, query, cal['rpyCalib'])
     cp, cp_ns = required(states['carParams'], query, STATE_LIMITS['carParams'])
@@ -380,24 +411,11 @@ class Preparer:
                                             'values': copy.deepcopy(parameters),
                                             'applied_stiffness_factor': max(parameters['stiffnessFactor'], .1),
                                             'applied_steer_ratio': max(parameters['steerRatio'], .1)})
-    if half_second_slot is None:
-      views, hits = self.free_images(selected) if self.free else self.project(selected.frames, states)
-    images, refs = zip(*views, strict=True)
-    refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
     nav, nav_meta = navigation(states['navInstruction'], query, self.default_navigation)
     intent = driver_intent(states['carState'], selected.small_model, query)
     if intent is not None:  # the driver's signal overrides route guidance, which stays in the audit
       nav, nav_meta = intent[0], dict(intent[1], model_instruction=intent[0], route=nav_meta)
-    arrays = {'image_frames': FrontImages(images) if self.segmented and (half_second_slot is not None or self.free) else np.stack(images),
-              'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
-              'absolute_timestamps': np.array([ref['capture_ns']//1000 for ref in refs], dtype=np.int64),
-              'ego_history_xyz': xyz, 'ego_history_rot': rot, 'nav_text': [nav]}
-    metadata = {'query_ns': query, 'selected_ns': selected.selected_ns, 'frames': refs, 'small_model': selected.small_model,
-                'calibration_rpy': cal['rpyCalib'], 'calibration': copy.deepcopy(cal), 'calibration_log_mono_time': cal_ns,
-                'ego_history_xyz': xyz.tolist(),
-                'ego_history_rot': rot.tolist(), 'vehicle_history': history, 'navigation_text': nav, 'navigation': nav_meta,
-                'camera_profile': 'calibrated_vehicle_history', 'image_cache_hits': hits, 'camera_gaps': selected.camera_gaps}
-    return arrays, metadata
+    return cal, cal_ns, xyz, rot, history, nav, nav_meta
 
   def older(self, opening, query):
     """Earlier slots' current exposures for each ring offset, per camera; None while the ring lacks one.
