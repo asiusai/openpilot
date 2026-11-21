@@ -60,7 +60,9 @@ def crop_maps(shape, camera, geometry_json, rotation, wide_rotation):
   x1,y1 = (min((int(offsets[...,i].max())+2+CROP_MARGIN+1)//2*2,limit) for i,limit in ((0,w),(1,h)))
   if (x1-x0) % 16 == 0:  # libswscale converts widths that are multiples of 16 on another path with other rounding
     x0,x1 = (x0,x1+2) if x1+2 <= w else (x0-2,x1)
-  rect = (y0,y1,x0,x1) if (x1-x0) % 16 and crop_exact((h,w),(y0,y1,x0,x1)) else (0,h,0,w)
+  # A column crop changes libswscale's row path for some widths; full-width row crops convert each row unchanged.
+  rect = ((y0,y1,x0,x1) if (x1-x0) % 16 and crop_exact((h,w),(y0,y1,x0,x1)) else
+          (y0,y1,0,w) if crop_exact((h,w),(y0,y1,0,w)) else (0,h,0,w))
   return rect,np.ascontiguousarray(offsets-np.array([rect[2],rect[0]],dtype=np.int32)),fractions
 
 
