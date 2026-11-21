@@ -232,12 +232,12 @@ def driver_intent(car_states, small_model, query):
   return None
 
 
-def navigation(rows, query):
+def navigation(rows, query, default=DEFAULT_NAVIGATION):
   # Without usable route guidance the model gets the default instruction, so it follows the road where straight ends.
   text, meta = route_navigation(rows, query)
   if text:
     return text, meta
-  return DEFAULT_NAVIGATION, dict(meta, source='default', model_instruction=DEFAULT_NAVIGATION)
+  return default, dict(meta, source='default', model_instruction=default)
 
 
 def route_navigation(rows, query):
@@ -281,7 +281,9 @@ def route_navigation(rows, query):
 
 
 class Preparer:
-  def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False, period_ns=HALF_SECOND_NS, free=False):
+  def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False, period_ns=HALF_SECOND_NS, free=False,
+               default_navigation=DEFAULT_NAVIGATION):
+    self.default_navigation = default_navigation  # ALPAMAYO_CONFIG `default_navigation`
     if cache_limit < 0:
       raise ValueError('Negative image cache capacity')
     if any(tuple(geometry['cameras'][str(c)]['prepared_size']) != (768, 432) for c in CAMERAS):
@@ -371,7 +373,7 @@ class Preparer:
       views, hits = self.free_images(selected) if self.free else self.project(selected.frames, states)
     images, refs = zip(*views, strict=True)
     refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
-    nav, nav_meta = navigation(states['navInstruction'], query)
+    nav, nav_meta = navigation(states['navInstruction'], query, self.default_navigation)
     intent = driver_intent(states['carState'], selected.small_model, query)
     if intent is not None:  # the driver's signal overrides route guidance, which stays in the audit
       nav, nav_meta = intent[0], dict(intent[1], model_instruction=intent[0], route=nav_meta)

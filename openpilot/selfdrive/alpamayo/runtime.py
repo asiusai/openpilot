@@ -488,7 +488,8 @@ def worker(config, directory, handoff):
   if type(segmented) is not bool or (segmented and (sampler is None or period_ms not in (0, 100, 250, 500))):
     raise ValueError('retained_cpu_inputs requires the selected free-running, 100, 250 or 500 ms worker')
   preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented, free=period_ms == 0,
-                      period_ns=period_ms*1_000_000 if period_ms in (100, 250, 500) else 500_000_000)
+                      period_ns=period_ms*1_000_000 if period_ms in (100, 250, 500) else 500_000_000,
+                      default_navigation=default_navigation_text(config))
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
@@ -738,3 +739,12 @@ def worker(config, directory, handoff):
     finally:
       signal.signal(signal.SIGTERM, previous)
       adapter.close()
+
+
+def default_navigation_text(config):
+  """Navigation text without usable route guidance or a turn-signal intent: ALPAMAYO_CONFIG `default_navigation`."""
+  from openpilot.selfdrive.alpamayo.frontend import DEFAULT_NAVIGATION
+  text = config.get('default_navigation', DEFAULT_NAVIGATION)
+  if not isinstance(text, str) or len(text) > 200:
+    raise ValueError('default_navigation must be text of at most 200 characters')
+  return text
