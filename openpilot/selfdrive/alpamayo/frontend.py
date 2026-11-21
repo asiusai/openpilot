@@ -41,6 +41,7 @@ QUERY_WAIT_NS = 60_000_000
 # A history exposure may start up to this long after its nominal offset, but never after the query. Real cameras jitter by
 # about 0.2 ms per frame; without slack the -0.1 s image alternates between the 100 ms and 150 ms old exposures.
 FRAME_SLACK_NS = 10_000_000
+STATE_SAMPLE_OFFSETS_NS = np.arange(-38, 1, dtype=np.int64)*50_000_000  # car states and learned parameters are read only here
 STATE_HISTORY_NS = 2_100_000_000  # the oldest state time any consumer reads: the -1.9 s history sample minus its tolerance
 STATE_LIMITS = {'extrinsicsCalibration': 1_000_000_000, 'carState': 150_000_000,
                 'vehicleParameters': 1_000_000_000, 'carParams': 120_000_000_000,
@@ -219,6 +220,12 @@ class Store:
     del states['modelV2']
     for kind, rows in states.items():
       states[kind] = rows[max(bisect_right(rows, query-STATE_HISTORY_NS, key=_stamp)-1, 0):]
+    for kind in ('carState', 'vehicleParameters'):
+      # Consumers read these only at the STATE_SAMPLE_OFFSETS_NS grid through required(): keeping each sample's latest
+      # row returns identical lookups and a ~5x smaller snapshot header (carState arrives at 100 Hz).
+      rows = states[kind]
+      keep = sorted({i for i in (bisect_right(rows, int(query+offset), key=_stamp)-1 for offset in STATE_SAMPLE_OFFSETS_NS) if i >= 0})
+      states[kind] = tuple(rows[i] for i in keep)
     output = model.value.decode() if model else None  # None for a non-finite output, like an invalid row
     return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp if output is not None else None, 'model': output}, gaps)
 
@@ -405,7 +412,7 @@ class Preparer:
     cp, cp_ns = required(states['carParams'], query, STATE_LIMITS['carParams'])
     history['car_params'] = {'source_ns': cp_ns, 'age_ms': (query-cp_ns)/1e6, 'values': copy.deepcopy(cp)}
     history['learned_parameters'] = []
-    for sample_ns in query+np.arange(-38, 1, dtype=np.int64)*50_000_000:
+    for sample_ns in query+STATE_SAMPLE_OFFSETS_NS:
       parameters, stamp = required(states['vehicleParameters'], int(sample_ns), STATE_LIMITS['vehicleParameters'])
       history['learned_parameters'].append({'sample_ns': int(sample_ns), 'source_ns': stamp, 'age_ms': (int(sample_ns)-stamp)/1e6,
                                             'values': copy.deepcopy(parameters),

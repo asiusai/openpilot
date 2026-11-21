@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
-from openpilot.selfdrive.alpamayo.frontend import STATE_LIMITS, Unavailable, required
+from openpilot.selfdrive.alpamayo.frontend import STATE_LIMITS, STATE_SAMPLE_OFFSETS_NS, Unavailable, required
 
 AXES = np.diag([1., -1., -1.])
 
@@ -43,7 +43,7 @@ def ego_history(states, query, rpy):
   cp, _ = required(states['carParams'], query, STATE_LIMITS['carParams'])
   vm = VehicleModel(SimpleNamespace(**cp))
   speed, yaw_rate, ages = [], [], []
-  for stamp in query+np.arange(-38, 1, dtype=np.int64)*50_000_000:
+  for stamp in query+STATE_SAMPLE_OFFSETS_NS:
     cs, ct = required(states['carState'], stamp, STATE_LIMITS['carState'])
     lp, lt = required(states['vehicleParameters'], stamp, STATE_LIMITS['vehicleParameters'])
     vm.update_params(max(lp['stiffnessFactor'], .1), max(lp['steerRatio'], .1))
