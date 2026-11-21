@@ -212,6 +212,24 @@ class Store:
 
 
 DEFAULT_NAVIGATION = 'Follow the road.'
+TURN_SIGNAL_SPEED = 20*0.44704  # openpilot LANE_CHANGE_SPEED_MIN: below it a turn signal means a turn
+
+
+def driver_intent(car_states, small_model, query):
+  """Turn-signal intent like openpilot's desire: a lane change once DesireHelper starts one (signal and steering
+  nudge above 20 mph), and a turn while one signal is on below that speed. None without a signal intent."""
+  meta = ((small_model or {}).get('model') or {}).get('meta', {})
+  direction = {'left': 'left', 'right': 'right'}.get(meta.get('laneChangeDirection'))
+  if meta.get('laneChangeState') == 'laneChangeStarting' and direction:
+    return f'Change lanes to the {direction}.', {'source': 'laneChange', 'log_mono_time': (small_model or {}).get('log_mono_time')}
+  try:
+    car, stamp = required(car_states, query, STATE_LIMITS['carState'])
+  except Unavailable:
+    return None
+  left, right = bool(car.get('leftBlinker')), bool(car.get('rightBlinker'))
+  if left != right and car['vEgo'] < TURN_SIGNAL_SPEED:
+    return f"Turn {'left' if left else 'right'}.", {'source': 'turnSignal', 'log_mono_time': stamp}
+  return None
 
 
 def navigation(rows, query):
@@ -354,6 +372,9 @@ class Preparer:
     images, refs = zip(*views, strict=True)
     refs = [dict(ref, requested_ns=query+offset) for ref, offset in zip(refs, OFFSETS_NS*2, strict=True)]
     nav, nav_meta = navigation(states['navInstruction'], query)
+    intent = driver_intent(states['carState'], selected.small_model, query)
+    if intent is not None:  # the driver's signal overrides route guidance, which stays in the audit
+      nav, nav_meta = intent[0], dict(intent[1], model_instruction=intent[0], route=nav_meta)
     arrays = {'image_frames': FrontImages(images) if self.segmented and (half_second_slot is not None or self.free) else np.stack(images),
               'camera_indices': np.array([1]*5+[6]*5, dtype=np.int64),
               'absolute_timestamps': np.array([ref['capture_ns']//1000 for ref in refs], dtype=np.int64),
