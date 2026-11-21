@@ -19,7 +19,7 @@ def lens_rays(camera, geometry_json):
   if src['projection'] not in ('equidistant', 'pinhole') or min(fx, fy, right-left, bottom-top) <= 0:
     raise ValueError('Invalid source lens geometry')
   yy, xx = np.mgrid[:h, :w]
-  fov = 120 if camera == 1 else 30
+  fov = src.get('output_fov', 120 if camera == 1 else 30)  # degrees across the model image; NVIDIA's rig is 120/30
   fraction = fx*math.radians(fov)/w if src['projection'] == 'equidistant' else 2*fx*math.tan(math.radians(fov/2))/w
   tx, ty = (xx-(w-1)/2)*fraction/fx, (yy-(h-1)/2)*fraction/fy
   radius = np.hypot(tx, ty)

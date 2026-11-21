@@ -27,7 +27,7 @@ def copy_vision_buffer(camera, client, buf, clock=time.monotonic_ns):
 
 def state_value(kind, msg):
   if kind == 'carState':
-    return {k: float(getattr(msg, k)) for k in ('vEgo', 'steeringAngleDeg', 'aEgo', 'leftBlinker', 'rightBlinker')}, True
+    return {k: float(getattr(msg, k)) for k in ('vEgo', 'steeringAngleDeg', 'aEgo')}, True
   if kind == 'carParams':
     return {k: float(getattr(msg, k)) for k in CP_FIELDS}, True
   if kind == 'vehicleParameters':
