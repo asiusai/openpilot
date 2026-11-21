@@ -237,6 +237,37 @@ def valid_snapshot_views(refs, context):
                                   and type(context.get('slot_start_ns')) is int)
 
 
+class StateText:
+  """JSON text of immutable state rows, reused by consecutive snapshots of the supervisor thread.
+
+  Consecutive slots share most rows. Encoding all ~330 rows took about 10 ms per slot on the little cores.
+  The cache holds each row, so its id cannot be reused while cached.
+  """
+  def __init__(self, limit=4096):
+    self.rows, self.limit = {}, limit
+
+  def row(self, state):
+    entry = self.rows.get(id(state))
+    if entry is None or entry[0] is not state:
+      entry = self.rows[id(state)] = state, json.dumps(vars(state), allow_nan=False, separators=(',', ':'))
+    return entry[1]  # rows arrive in time order: the first inserted are the oldest
+
+  def __call__(self, states):
+    text = '{'+','.join(f'{json.dumps(kind)}:[{",".join(self.row(row) for row in rows)}]' for kind, rows in states.items())+'}'
+    while len(self.rows) > self.limit:
+      del self.rows[next(iter(self.rows))]
+    return text
+
+
+state_text = StateText()
+
+
+def snapshot_header(head, states, tail):
+  """The exact bytes of json.dumps({**head, 'states': states, **tail}), with cached state row text. head and tail are not empty."""
+  head, tail = (json.dumps(part, allow_nan=False, separators=(',', ':')) for part in (head, tail))
+  return f'{head[:-1]},"states":{state_text(states)},{tail[1:]}'.encode()
+
+
 def save_selection(path, selected, context, held=None):
   """held: {camera: frame IDs the worker retains}; those frames are sent as references without pixels."""
   refs, payload = [], []
@@ -252,11 +283,8 @@ def save_selection(path, selected, context, held=None):
       payload.append(pixels)
   if not valid_snapshot_views(refs, context):
     raise ValueError('Invalid front-camera snapshot layout')
-  meta = {'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns,
-          'frames': refs, 'small_model': selected.small_model,
-          'states': {kind: [vars(row) for row in rows] for kind, rows in selected.states.items()},
-          'camera_gaps': selected.camera_gaps, 'context': context}
-  header = json.dumps(meta, allow_nan=False, separators=(',', ':')).encode()
+  header = snapshot_header({'query_ns': selected.query_ns, 'selected_ns': selected.selected_ns, 'frames': refs, 'small_model': selected.small_model},
+                           selected.states, {'camera_gaps': selected.camera_gaps, 'context': context})
   size = INPUT_PREFIX.size+len(header)+sum(p.nbytes for p in payload)
   if len(header) > HEADER_LIMIT or size > INPUT_LIMIT or not input_storage_ok(path.parent, size):
     raise RuntimeError('Shadow input reached its RAM limit or reserve')
