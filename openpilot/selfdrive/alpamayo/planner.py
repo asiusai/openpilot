@@ -21,8 +21,12 @@ ACTION_TIMES = np.arange(22)*.1
 # Path tracking: Alpamayo corrects only about half of a heading or lateral error in its own plan, and plans drive
 # 0.2-0.5 s after their camera frame. The planner therefore keeps each plan's path fixed to the road (odometry since
 # its camera query) and steers to a point LOOKAHEAD_S ahead on it from the pose expected after the steering delay.
-LOOKAHEAD_S = 1.0
-MIN_LOOKAHEAD = 5.  # m
+LOOKAHEAD_S = 1.5
+MIN_LOOKAHEAD = 8.  # m; a longer lookahead halves the response to plan-to-plan jitter (curvature = 2 y / L^2)
+# The pose after the steering delay is predicted with the measured curvature (odometry heading change over
+# CURVATURE_WINDOW). Predicting it with the tracker's own last command made consecutive commands alternate.
+CURVATURE_WINDOW = .3  # s
+COMMAND_TAU = .25  # s, first-order smoothing of the tracked curvature (modelV2 runs at 20 Hz)
 ODOMETRY_S = 3.  # odometry history kept, longer than the latest plan's age
 # Lane assist (config `lane_assist`, off by default): while both lane lines of the local model are confident and the
 # Alpamayo target stays within LANE_KEEP of the lane centre, the tracker steers to the lane centre instead. Alpamayo
@@ -126,6 +130,13 @@ class PlanSelector:
     f = min((ns-a[0])/max(b[0]-a[0], 1), 1.)
     return tuple(a[k]+f*(b[k]-a[k]) for k in (1, 2, 3))
 
+  def measured_curvature(self, now, v_ego):
+    """Vehicle curvature from the odometry heading change over the last CURVATURE_WINDOW."""
+    a, b = self.pose_at(now-int(CURVATURE_WINDOW*1e9)), self.pose_at(now)
+    if a is None or b is None or v_ego < 1.:
+      return 0.
+    return (b[2]-a[2])/(v_ego*CURVATURE_WINDOW)
+
   def tracked_curvature(self, now, v_ego, lat_delay, gain):
     """Pure pursuit on the newest plan's path (heading profile scaled by `gain`), or None without odometry for it."""
     query, current = self.pose_at(self.query), self.pose_at(now)
@@ -138,9 +149,9 @@ class PlanSelector:
       x = np.concatenate(([0.], np.cumsum(step*np.cos(heading)))); y = np.concatenate(([0.], np.cumsum(step*np.sin(heading))))
     qx, qy, qh = query
     wx, wy = qx+math.cos(qh)*x-math.sin(qh)*y, qy+math.sin(qh)*x+math.cos(qh)*y
-    # Pose after the steering delay, with the last commanded curvature.
+    # Pose after the steering delay, with the measured curvature.
     px, py, ph = current
-    d, k = v_ego*lat_delay, self.last_curvature
+    d, k = v_ego*lat_delay, self.measured_curvature(now, v_ego)
     px, py, ph = px+d*math.cos(ph+k*d/2), py+d*math.sin(ph+k*d/2), ph+k*d
     fx = math.cos(ph)*(wx-px)+math.sin(ph)*(wy-py)
     fy = -math.sin(ph)*(wx-px)+math.cos(ph)*(wy-py)
@@ -225,6 +236,9 @@ class PlanSelector:
     limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
     gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
     tracked = self.tracked_curvature(now, v_ego, lat_delay, gain)
+    if tracked is not None and np.isfinite(tracked):
+      alpha = .05/(COMMAND_TAU+.05)
+      tracked = self.last_curvature+alpha*(tracked-self.last_curvature)
     curvature = float(np.clip(tracked if tracked is not None and np.isfinite(tracked) else curvature*gain, -limit, limit))
     self.last_curvature = curvature
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
