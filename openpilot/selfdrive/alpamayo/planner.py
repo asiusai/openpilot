@@ -63,18 +63,33 @@ def packet(result):
               x=xyz[:, 0].tolist(), y=xyz[:, 1].tolist(), yaw=np.arctan2(rot[:, 1, 0], rot[:, 0, 0]).tolist())
 
 
-def configured_calibration_path():
-  """Learned lateral calibration file from ALPAMAYO_CONFIG `lateral_calibration` (default next to the config)."""
+def _config():
   import json, os
   from pathlib import Path
   path = os.environ.get('ALPAMAYO_CONFIG')
-  config = json.loads(Path(path).read_text()) if path and os.path.isfile(path) else {}
-  return config.get('lateral_calibration', '/data/alpamayo-calibration/lateral.json')
+  return json.loads(Path(path).read_text()) if path and os.path.isfile(path) else {}
+
+
+def configured_calibration_path():
+  """Learned lateral calibration file from ALPAMAYO_CONFIG `lateral_calibration` (default next to the config)."""
+  return _config().get('lateral_calibration', '/data/alpamayo-calibration/lateral.json')
+
+
+def configured_lateral_gain():
+  """Fixed lateral gain from ALPAMAYO_CONFIG `lateral_gain`; None uses the learned calibration."""
+  gain = _config().get('lateral_gain')
+  if gain is None:
+    return None
+  gain = float(gain)
+  if not (np.isfinite(gain) and 0.5 <= gain <= 4.):
+    raise ValueError(f'lateral_gain {gain} outside 0.5..4')
+  return gain
 
 
 class PlanSelector:
-  def __init__(self, calibration=None):
+  def __init__(self, calibration=None, fixed_gain=None):
     self.calibration = calibration  # selfdrive.alpamayo.calibration.LateralCalibration; gain 1 without it
+    self.fixed_gain = fixed_gain  # replaces the learned gain when set; the calibration still learns
     self.query = self.ready = self.streak = 0
     self.curve = self.path = None
     self.held = None
@@ -183,7 +198,10 @@ class PlanSelector:
       return None
     # The calibrated command stays inside the same curvature and lateral-acceleration limits as the plan itself.
     limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
-    gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
+    if self.fixed_gain is not None:
+      gain = self.fixed_gain
+    else:
+      gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
     tracked = self.tracked_curvature(now, v_ego, lat_delay, gain)
     if tracked is not None and np.isfinite(tracked):
       alpha = .05/(COMMAND_TAU+.05)

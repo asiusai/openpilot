@@ -211,7 +211,18 @@ class Store:
     return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp if model else None, 'model': model.value if model else None}, gaps)
 
 
+DEFAULT_NAVIGATION = 'Follow the road.'
+
+
 def navigation(rows, query):
+  # Without usable route guidance the model gets the default instruction, so it follows the road where straight ends.
+  text, meta = route_navigation(rows, query)
+  if text:
+    return text, meta
+  return DEFAULT_NAVIGATION, dict(meta, source='default', model_instruction=DEFAULT_NAVIGATION)
+
+
+def route_navigation(rows, query):
   # A received cancellation or route replacement invalidates older guidance,
   # even when its publication follows the selected camera's exposure.
   if rows and not rows[-1].valid:
@@ -236,7 +247,7 @@ def navigation(rows, query):
   if modifier == 'uturn':
     action, direction = 'Make a U-turn', ''
   # The model gets only maneuver, direction, roundabout exit and distance ("Turn right in 100m").
-  # Road names and sign text stay in the audit; an unrecognized maneuver sends no navigation text.
+  # Road names and sign text stay in the audit; an unrecognized maneuver sends the default text.
   text = ''
   if action:
     text = action+(f' {direction}' if direction and kind != 'arrive' else '')
