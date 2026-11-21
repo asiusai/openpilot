@@ -27,6 +27,7 @@ MIN_LOOKAHEAD = 8.  # m; a longer lookahead halves the response to plan-to-plan 
 # CURVATURE_WINDOW). Predicting it with the tracker's own last command made consecutive commands alternate.
 CURVATURE_WINDOW = .3  # s
 COMMAND_TAU = .25  # s, first-order smoothing of the tracked curvature (modelV2 runs at 20 Hz)
+POSE_EXTRAPOLATION_NS = 300_000_000  # odometry extrapolation after its newest sample
 ODOMETRY_S = 3.  # odometry history kept, longer than the latest plan's age
 
 
@@ -117,12 +118,14 @@ class PlanSelector:
     self.odometry.append((ns, 0., 0., heading))
 
   def pose_at(self, ns):
-    if len(self.odometry) < 2 or not self.odometry[0][0] <= ns <= self.odometry[-1][0]+100_000_000:
+    """Odometry pose at `ns`. After the newest sample, which modeld often reads 60-110 ms late, the last segment's
+    motion is extrapolated for up to POSE_EXTRAPOLATION_NS."""
+    if len(self.odometry) < 2 or not self.odometry[0][0] <= ns <= self.odometry[-1][0]+POSE_EXTRAPOLATION_NS:
       return None
     ts = [p[0] for p in self.odometry]
     i = min(max(int(np.searchsorted(ts, ns)), 1), len(ts)-1)
     a, b = self.odometry[i-1], self.odometry[i]
-    f = min((ns-a[0])/max(b[0]-a[0], 1), 1.)
+    f = (ns-a[0])/max(b[0]-a[0], 1)
     return tuple(a[k]+f*(b[k]-a[k]) for k in (1, 2, 3))
 
   def measured_curvature(self, now, v_ego):
