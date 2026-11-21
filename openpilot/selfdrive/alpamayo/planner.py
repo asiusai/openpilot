@@ -95,6 +95,7 @@ class PlanSelector:
     self.held = None
     self.odometry = deque()  # (ns, x, y, heading) of the vehicle; heading is the device yaw, left positive
     self.last_curvature = 0.
+    self.tracker_status = {}  # outcome -> count, for the periodic modeld log
 
   def motion(self, ns, v_ego, heading):
     """Integrate vehicle odometry from speed and yaw (left positive). A constant yaw mounting offset rotates the whole
@@ -132,9 +133,11 @@ class PlanSelector:
     return (b[2]-a[2])/(v_ego*CURVATURE_WINDOW)
 
   def tracked_curvature(self, now, v_ego, lat_delay, gain):
-    """Pure pursuit on the newest plan's path (heading profile scaled by `gain`), or None without odometry for it."""
+    """Pure pursuit on the newest plan's path (heading profile scaled by `gain`), or None without odometry for it.
+    The result is left positive, like the plan and the odometry."""
     query, current = self.pose_at(self.query), self.pose_at(now)
     if query is None or current is None or self.path is None:
+      self.count('no query pose' if query is None else 'no current pose' if current is None else 'no path')
       return None
     x, y, yaw = self.path
     if gain != 1.:
@@ -152,9 +155,14 @@ class PlanSelector:
     arc = np.concatenate(([0.], np.cumsum(np.hypot(np.diff(fx), np.diff(fy)))))
     target = arc[int(np.argmin(np.hypot(fx, fy)))]+max(MIN_LOOKAHEAD, v_ego*LOOKAHEAD_S)
     if target > arc[-1]:
+      self.count('short path')
       return None
     tx, ty = np.interp(target, arc, fx), np.interp(target, arc, fy)
+    self.count('tracked')
     return 2*ty/max(tx*tx+ty*ty, 1.)
+
+  def count(self, outcome):
+    self.tracker_status[outcome] = self.tracker_status.get(outcome, 0)+1
 
   def receive(self, plan, now, published=None):
     q, r = int(plan.queryMonoTime), int(plan.readyMonoTime)
@@ -203,6 +211,8 @@ class PlanSelector:
     else:
       gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
     tracked = self.tracked_curvature(now, v_ego, lat_delay, gain)
+    if tracked is not None:
+      tracked = -tracked  # openpilot desiredCurvature is right positive, like the feedforward below
     if tracked is not None and np.isfinite(tracked):
       alpha = .05/(COMMAND_TAU+.05)
       tracked = self.last_curvature+alpha*(tracked-self.last_curvature)

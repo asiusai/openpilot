@@ -490,6 +490,12 @@ def main(demo=False):
         m = modelv2_send.modelV2
         m.localAction = action
         planner.apply(m, time.monotonic_ns(), v_ego, lat_delay+action_delay, long_delay+action_delay)
+        if frame_id % 100 == 0 and planner.tracker_status:
+          odo = planner.odometry
+          cloudlog.warning(f"alpamayo tracker {planner.tracker_status} odometry {len(odo)} "
+                           f"newest age ms {(time.monotonic_ns()-odo[-1][0])/1e6 if odo else -1:.0f} "
+                           f"query-oldest ms {(planner.query-odo[0][0])/1e6 if odo else -1:.0f}")
+          planner.tracker_status = {}
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
