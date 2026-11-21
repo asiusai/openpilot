@@ -46,8 +46,12 @@ def coordinates(source_shape, camera, geometry_json, rpy, wide_rpy):
   radius = theta if src['projection'] == 'equidistant' else np.tan(theta)
   factor = np.divide(radius, radial, out=np.ones_like(radius), where=radial > 1e-12)
   sx, sy = cx+fx*rays[..., 0]*factor, cy+fy*rays[..., 1]*factor
-  if (not np.isfinite(rays).all() or (rays[..., 2] <= 0).any() or
-      sx.min() < left or sx.max() > right-1 or sy.min() < top or sy.max() > bottom-1):
+  if not np.isfinite(rays).all() or (src['projection'] == 'pinhole' and (rays[..., 2] <= 0).any()):
+    raise ValueError('Calibrated rays are invalid for the source lens')
+  # The nominal 120/30 views must lie inside the source image. A configured output_fov (the lenses' native 180/60
+  # coverage) may extend past it after the mount rotation; those pixels repeat the image edge, as in the training views.
+  if 'output_fov' not in src and ((rays[..., 2] <= 0).any() or
+                                  sx.min() < left or sx.max() > right-1 or sy.min() < top or sy.max() > bottom-1):
     raise ValueError('Calibrated rays exceed source image coverage')
   source_h, source_w = source_shape
   return (sy-top+.5)*source_h/(bottom-top)-.5, (sx-left+.5)*source_w/(right-left)-.5
