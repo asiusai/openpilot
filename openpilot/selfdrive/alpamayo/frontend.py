@@ -95,6 +95,17 @@ class Selection:
   camera_gaps: dict = field(default_factory=dict)
 
 
+def finite_state(value):
+  """value when it is finite JSON within 64 KiB; None when it contains a non-finite number."""
+  try:
+    size = len(json.dumps(value, allow_nan=False))  # ensure_ascii=True; one byte per character.
+  except ValueError:
+    return None
+  if size > 64*1024:
+    raise ValueError('State exceeds 64 KiB')
+  return value
+
+
 def required(rows, stamp, max_age):
   index = bisect_right(rows, stamp, key=_stamp)-1
   if index < 0 or stamp-rows[index].stamp > max_age or not rows[index].valid:
@@ -139,18 +150,17 @@ class Store:
     return True
 
   def add_state(self, kind, stamp, received, value, valid=True, *, owned=False):
+    """modelV2 values are capture.SmallModelOutput: select() converts and checks only the matched one."""
     if kind not in self.states or not 0 < stamp <= received:
       raise ValueError('Invalid state timestamps')
-    if valid:
-      try:
-        size = len(json.dumps(value, allow_nan=False))  # ensure_ascii=True; one byte per character.
-      except ValueError:
-        if not owned:
-          raise
-        valid = False  # An invalid live update must still supersede the earlier state.
-      else:
-        if size > 64*1024:
-          raise ValueError('State exceeds 64 KiB')
+    if kind == 'modelV2':
+      if not (hasattr(value, 'decode') and type(value.frame_id) is int and type(value.eof_ns) is int):
+        raise ValueError('Expected an undecoded modelV2 output')
+      owned = True  # immutable until decoded
+    elif valid and finite_state(value) is None:
+      if not owned:
+        raise ValueError('Nonfinite state value')
+      valid = False  # An invalid live update must still supersede the earlier state.
     row = State(stamp, received, (value if owned else copy.deepcopy(value)) if valid else None, valid)
     with self.lock:
       rows = self.states[kind]
@@ -182,7 +192,7 @@ class Store:
     if half_second_slot is not None and half_second_slot-current.sof_ns > CAMERA_PERIOD_NS and now < half_second_slot+QUERY_WAIT_NS:
       raise AwaitingFrame('Slot frame not ready')
     query = current.sof_ns
-    model = next((row for row in states['modelV2'] if row.valid and (row.value['frameId'], row.value['timestampEof']) == (current.frame_id, current.eof_ns)), None)
+    model = next((row for row in states['modelV2'] if row.valid and (row.value.frame_id, row.value.eof_ns) == (current.frame_id, current.eof_ns)), None)
     if query <= last_query or not 0 <= now-query <= max_age_ns:
       raise AwaitingFrame('No fresh query')
     if half_second_slot is not None and not (query <= half_second_slot <= now and half_second_slot-query <= FRAME_TOLERANCE_NS):
@@ -208,7 +218,8 @@ class Store:
     del states['modelV2']
     for kind, rows in states.items():
       states[kind] = rows[max(bisect_right(rows, query-STATE_HISTORY_NS, key=_stamp)-1, 0):]
-    return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp if model else None, 'model': model.value if model else None}, gaps)
+    output = model.value.decode() if model else None  # None for a non-finite output, like an invalid row
+    return Selection(query, now, tuple(frames), states, {'log_mono_time': model.stamp if output is not None else None, 'model': output}, gaps)
 
 
 DEFAULT_NAVIGATION = 'Follow the road.'

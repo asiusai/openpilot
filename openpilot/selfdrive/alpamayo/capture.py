@@ -4,7 +4,7 @@ import time
 
 import numpy as np
 
-from openpilot.selfdrive.alpamayo.frontend import Frame, STATE_LIMITS
+from openpilot.selfdrive.alpamayo.frontend import Frame, STATE_LIMITS, finite_state
 
 CP_FIELDS = ('rotationalInertiaPerMass', 'wheelbase', 'centerToFront',
              'tireStiffnessFrontPerMass', 'tireStiffnessRearPerMass', 'steerRatio')
@@ -46,6 +46,23 @@ def state_value(kind, msg):
       value['action'] = value['localAction']  # Preserve the independent small-model comparison.
     return value, True
   raise ValueError(kind)
+
+
+class SmallModelOutput:
+  """A received modelV2 event, converted to a dict only when it matches a query frame.
+
+  Converting and checking every 20 Hz modelV2 took about 6.6 ms on a little core and held the GIL,
+  delaying frame copies and slot selection. Only about 3% of slots find their matched output.
+  """
+  __slots__ = ('frame_id', 'eof_ns', 'raw')
+
+  def __init__(self, raw, msg):
+    self.frame_id, self.eof_ns, self.raw = int(msg.frameId), int(msg.timestampEof), raw
+
+  def decode(self):
+    """The recorded dict, or None when it is not finite JSON (the row is then invalid)."""
+    from openpilot.cereal import messaging
+    return finite_state(state_value('modelV2', messaging.log_from_bytes(self.raw).modelV2)[0])
 
 
 def navigation_ready(params, routes, stamp):
@@ -99,11 +116,12 @@ class NativeProducer:
       sm.update(0)
       received = time.monotonic_ns()
       for kind, sock in socks.items():
-        events = messaging.drain_sock(sock)
+        raws = messaging.drain_sock_raw(sock)
         received = time.monotonic_ns()  # after the drain: no message is stamped later than its receipt
-        for event in events:
+        for raw in raws:
+          event = messaging.log_from_bytes(raw)
           msg = getattr(event, kind)
-          value, valid = state_value(kind, msg)
+          value, valid = (SmallModelOutput(raw, msg), True) if kind == 'modelV2' else state_value(kind, msg)
           stamp = int(msg.timestamp) if kind == 'deviceMotion' and msg.timestamp > 0 else int(event.logMonoTime)
           if kind == 'navInstruction':
             ready, revision = navigation_ready(params, routes, stamp)
