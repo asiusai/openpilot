@@ -22,6 +22,7 @@ ACTION_TIMES = np.arange(22)*.1
 # 0.2-0.5 s after their camera frame. The planner therefore keeps each plan's path fixed to the road (odometry since
 # its camera query) and steers to a point LOOKAHEAD_S ahead on it from the pose expected after the steering delay.
 LOOKAHEAD_S = 1.5
+T_PATH = np.arange(65)*.1  # plan path times including the query pose
 MIN_LOOKAHEAD = 8.  # m; a longer lookahead halves the response to plan-to-plan jitter (curvature = 2 y / L^2)
 # The pose after the steering delay is predicted with the measured curvature (odometry heading change over
 # CURVATURE_WINDOW). Predicting it with the tracker's own last command made consecutive commands alternate.
@@ -76,6 +77,16 @@ def configured_calibration_path():
   return _config().get('lateral_calibration', '/data/alpamayo-calibration/lateral.json')
 
 
+def configured_tuning():
+  """Optional ALPAMAYO_CONFIG test settings: `straight_lookahead_s` (path tracker lookahead on straight plans, default
+  LOOKAHEAD_S) and `accel_gain` (multiplies positive planned acceleration, default 1)."""
+  config = _config()
+  straight, gain = float(config.get('straight_lookahead_s', LOOKAHEAD_S)), float(config.get('accel_gain', 1.))
+  if not (LOOKAHEAD_S <= straight <= 4. and 1. <= gain <= 2.):
+    raise ValueError('straight_lookahead_s must be 1.5..4 s and accel_gain 1..2')
+  return dict(straight_lookahead_s=straight, accel_gain=gain)
+
+
 def configured_lateral_gain():
   """Fixed lateral gain from ALPAMAYO_CONFIG `lateral_gain`; None uses the learned calibration."""
   gain = _config().get('lateral_gain')
@@ -88,7 +99,10 @@ def configured_lateral_gain():
 
 
 class PlanSelector:
-  def __init__(self, calibration=None, fixed_gain=None):
+  def __init__(self, calibration=None, fixed_gain=None, straight_lookahead_s=LOOKAHEAD_S, accel_gain=1.):
+    # On a straight plan the near path mostly continues the current heading; the plan's correction toward the lane shows
+    # farther ahead, so the lookahead grows to straight_lookahead_s as the plan's 3 s heading change falls below 0.05 rad.
+    self.straight_lookahead_s, self.accel_gain = straight_lookahead_s, accel_gain
     self.calibration = calibration  # selfdrive.alpamayo.calibration.LateralCalibration; gain 1 without it
     self.fixed_gain = fixed_gain  # replaces the learned gain when set; the calibration still learns
     self.query = self.ready = self.streak = 0
@@ -156,7 +170,10 @@ class PlanSelector:
     fx = math.cos(ph)*(wx-px)+math.sin(ph)*(wy-py)
     fy = -math.sin(ph)*(wx-px)+math.cos(ph)*(wy-py)
     arc = np.concatenate(([0.], np.cumsum(np.hypot(np.diff(fx), np.diff(fy)))))
-    target = arc[int(np.argmin(np.hypot(fx, fy)))]+max(MIN_LOOKAHEAD, v_ego*LOOKAHEAD_S)
+    age = (now-self.query)/1e9
+    turn = abs(np.interp(age+3., T_PATH, self.path[2])-np.interp(age, T_PATH, self.path[2]))
+    lookahead = float(np.interp(turn, (.05, .15), (self.straight_lookahead_s, LOOKAHEAD_S)))
+    target = arc[int(np.argmin(np.hypot(fx, fy)))]+max(MIN_LOOKAHEAD, v_ego*lookahead)
     if target > arc[-1]:
       self.count('short path')
       return None
@@ -204,6 +221,8 @@ class PlanSelector:
     theta = np.interp(age, T, yaw)
     curvature = get_curvature_from_plan(theta-sample(yaw), -sample(yaw_rate), ACTION_TIMES, v_ego, lat_delay)
     a = get_accel_from_plan(v, sample(accel), ACTION_TIMES, long_delay)
+    if a > 0:
+      a *= self.accel_gain
     if (not np.isfinite([curvature,a]).all() or not ACCEL_MIN <= a <= ACCEL_MAX or
         abs(curvature) > MAX_CURVATURE or abs(curvature)*v_ego**2 > MAX_LATERAL_ACCEL_NO_ROLL):
       return None
