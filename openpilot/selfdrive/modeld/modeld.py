@@ -407,6 +407,7 @@ def main(demo=False):
         stamp = motion.timestamp if motion.timestamp > 0 else sm.logMonoTime['deviceMotion']
         steered = sm['carControl'].latActive and not sm['carState'].steeringPressed
         calibration.motion(stamp, motion.orientationNED.z, steered, time.monotonic_ns())
+        planner.motion(stamp, sm['carState'].vEgo, -motion.orientationNED.z)  # NED yaw is clockwise
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId

@@ -3,6 +3,8 @@
 A plan is usable when it was ready within MAX_LATENCY of its camera query and while that query is younger than
 MAX_PLAN_AGE, whatever the scheduling mode. Bad or late packets are ignored; the current plan simply ages out.
 """
+import math
+from collections import deque
 import numpy as np
 
 PERIOD = 500_000_000
@@ -16,6 +18,12 @@ CONSECUTIVE_GAP = 1_000_000_000  # Consecutive plans have queries at most this f
 HANDOFF_GRACE = 100_000_000  # modeld reads plans once per 20 Hz camera frame, after its own model run; allow two frames.
 T = np.arange(65) * .1
 ACTION_TIMES = np.arange(22)*.1
+# Path tracking: Alpamayo corrects only about half of a heading or lateral error in its own plan, and plans drive
+# 0.2-0.5 s after their camera frame. The planner therefore keeps each plan's path fixed to the road (odometry since
+# its camera query) and steers to a point LOOKAHEAD_S ahead on it from the pose expected after the steering delay.
+LOOKAHEAD_S = 1.0
+MIN_LOOKAHEAD = 5.  # m
+ODOMETRY_S = 3.  # odometry history kept, longer than the latest plan's age
 
 
 def should_stop_now(v_ego, accel):
@@ -64,8 +72,63 @@ class PlanSelector:
   def __init__(self, calibration=None):
     self.calibration = calibration  # selfdrive.alpamayo.calibration.LateralCalibration; gain 1 without it
     self.query = self.ready = self.streak = 0
-    self.curve = None
+    self.curve = self.path = None
     self.held = None
+    self.odometry = deque()  # (ns, x, y, heading) of the vehicle; heading is the device yaw, left positive
+    self.last_curvature = 0.
+
+  def motion(self, ns, v_ego, heading):
+    """Integrate vehicle odometry from speed and yaw (left positive). A constant yaw mounting offset rotates the whole
+    odometry frame and cancels in the relative poses the tracker uses."""
+    if not (np.isfinite(v_ego) and np.isfinite(heading)):
+      return
+    if self.odometry:
+      t, x, y, h = self.odometry[-1]
+      dt = (ns-t)/1e9
+      if not 0 < dt <= .5:
+        self.odometry.clear()
+      else:
+        heading = h+(heading-h+math.pi) % (2*math.pi)-math.pi  # unwrap
+        mid = (h+heading)/2
+        self.odometry.append((ns, x+v_ego*math.cos(mid)*dt, y+v_ego*math.sin(mid)*dt, heading))
+        while self.odometry and self.odometry[0][0] < ns-int(ODOMETRY_S*1e9):
+          self.odometry.popleft()
+        return
+    self.odometry.append((ns, 0., 0., heading))
+
+  def pose_at(self, ns):
+    if len(self.odometry) < 2 or not self.odometry[0][0] <= ns <= self.odometry[-1][0]+100_000_000:
+      return None
+    ts = [p[0] for p in self.odometry]
+    i = min(max(int(np.searchsorted(ts, ns)), 1), len(ts)-1)
+    a, b = self.odometry[i-1], self.odometry[i]
+    f = min((ns-a[0])/max(b[0]-a[0], 1), 1.)
+    return tuple(a[k]+f*(b[k]-a[k]) for k in (1, 2, 3))
+
+  def tracked_curvature(self, now, v_ego, lat_delay, gain):
+    """Pure pursuit on the newest plan's path (heading profile scaled by `gain`), or None without odometry for it."""
+    query, current = self.pose_at(self.query), self.pose_at(now)
+    if query is None or current is None or self.path is None:
+      return None
+    x, y, yaw = self.path
+    if gain != 1.:
+      step = np.hypot(np.diff(x), np.diff(y))
+      heading = gain*(yaw[:-1]+yaw[1:])/2
+      x = np.concatenate(([0.], np.cumsum(step*np.cos(heading)))); y = np.concatenate(([0.], np.cumsum(step*np.sin(heading))))
+    qx, qy, qh = query
+    wx, wy = qx+math.cos(qh)*x-math.sin(qh)*y, qy+math.sin(qh)*x+math.cos(qh)*y
+    # Pose after the steering delay, with the last commanded curvature.
+    px, py, ph = current
+    d, k = v_ego*lat_delay, self.last_curvature
+    px, py, ph = px+d*math.cos(ph+k*d/2), py+d*math.sin(ph+k*d/2), ph+k*d
+    fx = math.cos(ph)*(wx-px)+math.sin(ph)*(wy-py)
+    fy = -math.sin(ph)*(wx-px)+math.cos(ph)*(wy-py)
+    arc = np.concatenate(([0.], np.cumsum(np.hypot(np.diff(fx), np.diff(fy)))))
+    target = arc[int(np.argmin(np.hypot(fx, fy)))]+max(MIN_LOOKAHEAD, v_ego*LOOKAHEAD_S)
+    if target > arc[-1]:
+      return None
+    tx, ty = np.interp(target, arc, fx), np.interp(target, arc, fy)
+    return 2*ty/max(tx*tx+ty*ty, 1.)
 
   def receive(self, plan, now, published=None):
     q, r = int(plan.queryMonoTime), int(plan.readyMonoTime)
@@ -81,6 +144,7 @@ class PlanSelector:
     speed = np.hypot(np.diff(x), np.diff(y)) / .1
     speed = np.interp(T, T[1:]-.05, speed)
     self.curve = yaw, speed, np.gradient(speed, .1), np.gradient(yaw, .1)
+    self.path = x, y, yaw
     self.streak = self.streak+1 if 0 < q-self.query <= CONSECUTIVE_GAP else 1
     self.query, self.ready = q, r
 
@@ -109,7 +173,9 @@ class PlanSelector:
     # The calibrated command stays inside the same curvature and lateral-acceleration limits as the plan itself.
     limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
     gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
-    curvature = float(np.clip(curvature*gain, -limit, limit))
+    tracked = self.tracked_curvature(now, v_ego, lat_delay, gain)
+    curvature = float(np.clip(tracked if tracked is not None and np.isfinite(tracked) else curvature*gain, -limit, limit))
+    self.last_curvature = curvature
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
 
   def apply(self, model, now, speed, lat_delay, long_delay):
