@@ -102,6 +102,13 @@ def artifact_identities(config):
            'checkpoint_weight_index_sha256':config.checkpoint/'model.safetensors.index.json',
            'fp8_index_sha256':config.fp8_cache/'index.json','prefill_calibration_sha256':config.prefill_calibration}
   identities = {key:sha(path) for key,path in paths.items()}
+  # A reviewed fine-tune (artifacts.json `fp8_finetunes`) replaces only expert layer weights in the FP8 cache; it is
+  # accepted by its exact index and weight digests, and every other pinned identity stays the base recipe's.
+  finetune = next((name for name,pin in expected.get('fp8_finetunes',{}).items()
+                   if pin['fp8_index_sha256'] == identities['fp8_index_sha256']),None)
+  if finetune is not None:
+    expected = {**expected,**{k:expected['fp8_finetunes'][finetune][k] for k in ('fp8_index_sha256','fp8_weights_sha256')}}
+    identities['fp8_finetune'] = finetune
   index_key = 'checkpoint_weight_index_sha256'
   compact = identities[index_key] == expected['compact_checkpoint']['index_sha256']
   if any(identities[key] != expected[key] for key in paths if key != index_key or not compact):

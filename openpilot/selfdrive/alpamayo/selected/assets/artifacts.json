@@ -13,5 +13,18 @@
   "checkpoint_shards": {
     "00000.safetensors": "d13c1a427218baf7b7d365098c0f5496c0e5e6a6bf662836b8eebbe7eb7cfe7f",
     "00001.safetensors": "cfe424a7320ce729cd927b5ceaab4323a62443b50f461a2f5c0dd0b10634e0b5"
-  }
+  },
+  "fp8_finetunes": {
+    "t120-r16": {
+      "fp8_index_sha256": "ab52f58aecd9a7577d3416ea686c4518b90d862c6cd18567db40785298a446af",
+      "fp8_weights_sha256": "b1db581f16bb3573f6989b892edaad3f800a0db9d25157e23396889c6baa2a20",
+      "views": "120/30"
+    },
+    "t180-r16": {
+      "fp8_index_sha256": "81dfdd0fc974d7e3ea9e83cce782354148a91d9810644278b8952de96329527f",
+      "fp8_weights_sha256": "c940b23edae5d6e8c2e4337856e89847c259eba5a9bdadf08bbdd9434880c481",
+      "views": "180/60"
+    }
+  },
+  "fp8_finetunes_changed": "Only expert.expert.layers.N.{self_attn.q_proj,k_proj,v_proj,o_proj,mlp.fc1,fc2}.weight and their scales differ from the base FP8 cache."
 }

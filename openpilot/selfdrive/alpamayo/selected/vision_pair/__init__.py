@@ -43,8 +43,10 @@ class VisionWeights:
     self.check()
     artifacts = json.loads((ASSETS / 'artifacts.json').read_bytes())
     logical = {k: artifacts[k] for k in ('checkpoint_config_sha256', 'checkpoint_shards', 'fp8_index_sha256', 'fp8_weights_sha256')}
+    # Reviewed fine-tunes change only expert layers, so the vision plan of the base checkpoint stays valid for them.
+    weights = {logical['fp8_weights_sha256']} | {pin['fp8_weights_sha256'] for pin in artifacts.get('fp8_finetunes', {}).values()}
     require(hashlib.sha256(json.dumps(logical, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == CHECKPOINT
-            and self.model.weight_digest == logical['fp8_weights_sha256'], 'Vision checkpoint differs')
+            and self.model.weight_digest in weights, 'Vision checkpoint differs')
     require(self.model.config['vlm_config']['vision_config']['num_hidden_layers'] == 27, 'Unexpected vision depth')
     require(
       tuple(self.model.projector_weights) == ('vlm.model.projector.linear_fc1', 'vlm.model.projector.linear_fc2'),
