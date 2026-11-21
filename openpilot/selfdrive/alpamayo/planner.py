@@ -28,12 +28,6 @@ MIN_LOOKAHEAD = 8.  # m; a longer lookahead halves the response to plan-to-plan 
 CURVATURE_WINDOW = .3  # s
 COMMAND_TAU = .25  # s, first-order smoothing of the tracked curvature (modelV2 runs at 20 Hz)
 ODOMETRY_S = 3.  # odometry history kept, longer than the latest plan's age
-# Lane assist (config `lane_assist`, off by default): while both lane lines of the local model are confident and the
-# Alpamayo target stays within LANE_KEEP of the lane centre, the tracker steers to the lane centre instead. Alpamayo
-# corrects only about half of its own drift; larger departures from the lane centre are Alpamayo maneuvers.
-LANE_KEEP = 1.0  # m, at the lookahead distance
-LANE_PROB = 0.5
-LANE_WIDTH = (2.5, 4.5)  # m
 
 
 def should_stop_now(v_ego, accel):
@@ -78,24 +72,9 @@ def configured_calibration_path():
   return config.get('lateral_calibration', '/data/alpamayo-calibration/lateral.json')
 
 
-def configured_lane_assist():
-  """Lane assist from ALPAMAYO_CONFIG `lane_assist` (default off)."""
-  import json, os
-  from pathlib import Path
-  path = os.environ.get('ALPAMAYO_CONFIG')
-  config = json.loads(Path(path).read_text()) if path and os.path.isfile(path) else {}
-  value = config.get('lane_assist', False)
-  if type(value) is not bool:
-    raise ValueError('lane_assist must be true or false')
-  return value
-
-
 class PlanSelector:
-  def __init__(self, calibration=None, lane_assist=False):
+  def __init__(self, calibration=None):
     self.calibration = calibration  # selfdrive.alpamayo.calibration.LateralCalibration; gain 1 without it
-    self.lane_assist = lane_assist
-    self.lane = None  # lane centre (x forward, y left) in the current vehicle frame, or None
-    self.lane_used = False
     self.query = self.ready = self.streak = 0
     self.curve = self.path = None
     self.held = None
@@ -160,37 +139,7 @@ class PlanSelector:
     if target > arc[-1]:
       return None
     tx, ty = np.interp(target, arc, fx), np.interp(target, arc, fy)
-    self.lane_used = False
-    if self.lane_assist and self.lane is not None:
-      # Lane centre in the delayed-pose frame, at the same distance as the Alpamayo target.
-      lx, ly = self.lane
-      cx, cy, ch = current
-      wx, wy = cx+math.cos(ch)*lx-math.sin(ch)*ly, cy+math.sin(ch)*lx+math.cos(ch)*ly
-      ax = math.cos(ph)*(wx-px)+math.sin(ph)*(wy-py)
-      ay = -math.sin(ph)*(wx-px)+math.cos(ph)*(wy-py)
-      dist = math.hypot(tx, ty)
-      ahead = np.hypot(ax, ay) >= dist
-      if ahead.any():
-        i = int(np.argmax(ahead))
-        if abs(ay[i]-ty) <= LANE_KEEP:
-          tx, ty, self.lane_used = ax[i], ay[i], True
     return 2*ty/max(tx*tx+ty*ty, 1.)
-
-  def update_lane(self, model):
-    """Lane centre from the local model's two ego lane lines (modelV2: y right), when both are confident."""
-    self.lane = None
-    try:
-      probs = list(model.laneLineProbs)
-      left, right = model.laneLines[1], model.laneLines[2]
-      x, yl, yr = np.array(left.x), np.array(left.y), np.array(right.y)
-    except (AttributeError, IndexError, ValueError):
-      return
-    if len(probs) < 3 or min(probs[1], probs[2]) < LANE_PROB or len(x) < 2 or not len(x) == len(yl) == len(yr):
-      return
-    width = np.interp(15., x, yr-yl)
-    if not LANE_WIDTH[0] <= width <= LANE_WIDTH[1] or not np.isfinite([x, yl, yr]).all():
-      return
-    self.lane = x, -(yl+yr)/2
 
   def receive(self, plan, now, published=None):
     q, r = int(plan.queryMonoTime), int(plan.readyMonoTime)
@@ -249,8 +198,6 @@ class PlanSelector:
     Without a current plan, the last Alpamayo curvature is held with non-positive acceleration and
     alpamayoQueryMonoTime stays zero, so selfdrived blocks engagement or soft-disables.
     """
-    if self.lane_assist:
-      self.update_lane(model)
     candidate = self.candidate_action(now, speed, lat_delay, long_delay)
     if candidate is not None:
       model.action = candidate
