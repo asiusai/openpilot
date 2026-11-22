@@ -75,6 +75,9 @@ Every padding row has the position of a placed draft token, placed or not. The ~
 actual prompt length. A changed draft length previously re-uploaded them, which cost about 29 ms on 23% of slots.
 Expert attention is one frozen launch per layer and Euler step: BF16 scores, FP32 key mask, softmax and PV with the original rounding,
 summation trees and WMMA slot order. It reads the 2304 prompt KV rows straight from the layer's cache; no per-diffusion packing remains.
+Each expert layer (`expert_block`) runs 24 instead of 35 launches with the same rounding: one Q/K/V GEMM with per-column weight scales,
+FP8 casts fused into GEMM input packing, O and FC2 residuals in the GEMM epilogue, and order-free maxima without stored copies.
+The expert step stays 4.5 ms on the Chestnut at 100 W: attention takes about 2.2 ms per step; 8 of its 64 workgroups wait for a second round.
 During serial reasoning, 256 threads reduce the 9,216 expansion values to the same FP32 activation scale.
 Startup creates the 56 four-bit matrices from the verified FP8 weights. They use 567 MiB of additional GPU memory; prompt processing still uses FP8 weights.
 Draft attention retains its original QK, softmax, and PV arithmetic. Its 16- and 32-row products use 1x2 and 2x2 output tiles.

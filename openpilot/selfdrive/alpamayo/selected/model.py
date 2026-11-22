@@ -18,6 +18,8 @@ PREFILL_ROWS = 2112  # Padded prompt rows: 2025 base tokens, compact navigation 
 PREFILL_SPLITS = (0,576,768)
 PREFILL_PARTS = {(end-start,start) for start,end in zip(PREFILL_SPLITS,(*PREFILL_SPLITS[1:],PREFILL_ROWS))}  # (rows, first row)
 from . import amd_gemm, amd_decode, weights
+EXPERT_LAYERS = 28
+DIFFUSION_STEPS = (1,2,3)  # Euler steps qualified on the Chestnut
 from .serial_attention import direct as serial_cache_attention
 from .kernels import bf16_linear, frozen_ops, serial_mlp, tiled_gemm, vision_tiles
 
@@ -241,17 +243,10 @@ class SelectedModel(EdgeModel):
     return frozen_ops.norm(x,self.weights[name+'.weight'],None if rms else self.weights[name+'.bias'],
                            rms,eps if eps is not None else 1e-5 if rms else 1e-6)
 
-  def masked_attention(self, q, k, v, mask, *, expert=False):
+  def masked_attention(self, q, k, v, mask):
     batch,heads,queries,width = q.shape
     kv_heads,keys = k.shape[1:3]
-    assert queries in (16,32,48,64) and (expert or mask.shape in ((keys,),(queries,keys)))
-    if expert:
-      # Prompt keys come straight from this layer's cache; the expert runs its 28 layers in order on every Euler step.
-      assert self.trajectory_active and not self.verifying and keys == 64 and mask.shape == (2368,) and q.shape == (1,16,64,128)
-      layer = self.expert_layer % len(self.cache)
-      self.expert_layer += 1
-      self.trace_counts['expert_attention'] += 1
-      return frozen_ops.expert_attention(q,k,v,self.cache[layer],mask.float().contiguous())
+    assert queries in (16,32,48,64) and mask.shape in ((keys,),(queries,keys))
     packed_k = _pack(k)
     scores = Tensor.empty(batch,heads,queries,keys,device=q.device,dtype=q.dtype)
     scores = Tensor.custom_kernel(scores,_pack(q),packed_k,fxn=partial(_matmul,shape=(batch,heads,kv_heads,queries,keys,width),scaled=True,
@@ -268,9 +263,8 @@ class SelectedModel(EdgeModel):
       return self.masked_attention(q,k,v,mask)
     if mask is None and q.shape[2] >= 128 and q.shape[-1] == 72 and not causal:
       return frozen_ops.attention(q,k,v)
-    expert = self.trajectory_active and not self.verifying
-    if q.dtype == dtypes.bfloat16 and q.shape[2] == 64 and mask is not None and mask.numel() == k.shape[2]+(2304 if expert else 0) and not causal:
-      return self.masked_attention(q,k,v,mask,expert=expert)
+    if q.dtype == dtypes.bfloat16 and q.shape[2] == 64 and mask is not None and mask.numel() == k.shape[2] and not causal:
+      return self.masked_attention(q,k,v,mask)
     return super().attention(q,k,v,mask,causal)
 
   def vision_pair_layer(self, x, prefix):
@@ -337,10 +331,9 @@ class SelectedModel(EdgeModel):
         assigned = Tensor(cache.uop.after(store))
         end = cache.shape[3] if not isinstance(cache_pos,int) else cache_pos+x.shape[1]
         k,v = (assigned[i,:,:,:end] for i in range(2))
-      elif cache is not None and not (self.trajectory_active and not self.verifying):
+      elif cache is not None:
+        assert not self.trajectory_active, 'The diffusion expert runs expert_block'
         k,v = (old.cat(new,dim=2) for old,new in zip(cache,(k,v),strict=True))
-      # The diffusion expert reads the 2304 prompt rows straight from the layer cache; k and v hold only its 64 new rows.
-      # Concatenating them here copied the whole cache on every layer and Euler step.
       causal = isinstance(cache_pos,int) and cache_pos == 0
       if (not self.verifying and not self.trajectory_active and cache_pos is not None and not isinstance(cache_pos,int)
           and q.shape == (1,16,1,128) and cache.shape == (2,1,8,2304,128) and mask is not None and mask.numel() == 2304):
@@ -391,11 +384,65 @@ class SelectedModel(EdgeModel):
     logits = self._language(x,cos[:,:,step:step+1],sin[:,:,step:step+1],position)
     return logits,token.float().realize()
 
+  def trajectory(self, actions, cos, sin, length, steps, offset=0):
+    self.pack_expert()  # outside the captured graph: the merged weights are persistent buffers
+    return super().trajectory(actions, cos, sin, length, steps, offset)
+
+  def pack_expert(self):
+    """Merged Q/K/V weights (packed layout, rows q|k|v) and per-column weight scales of each expert layer."""
+    if getattr(self, 'expert_qkv', None) is not None:
+      return
+    names = [[f'expert.expert.layers.{i}.self_attn.{n}_proj' for n in 'qkv'] for i in range(EXPERT_LAYERS)]
+    if any(n+'.bias' in self.weights for layer in names for n in layer):
+      raise ValueError('Unsupported expert projection bias')
+    qkv = [Tensor.cat(*[amd_gemm.pack(self.weights[n+'.weight']) for n in layer]).contiguous() for layer in names]
+    scales = [Tensor.cat(*[self.weight_scales[n+'.weight'].reshape(1).expand(self.weights[n+'.weight'].shape[0]) for n in layer]).contiguous()
+              for layer in names]
+    Tensor.realize(*qkv,*scales)
+    self.expert_qkv = [amd_gemm.unpack(w) for w in qkv]
+    self.expert_qkv_scales = scales
+
+  def expert_step(self, actions, timestep, cos, sin, flat_cache, mask):
+    x = self.action_projection(actions, timestep)
+    mask = mask.float().contiguous()
+    for i in range(EXPERT_LAYERS):
+      x = self.expert_block(x, cos, sin, i, mask)
+    return self.linear(self.norm(x, 'expert.expert.norm', rms=True), 'expert.action_out_proj').float().realize()
+
+  def expert_block(self, x, cos, sin, i, mask):
+    """One expert layer with the arithmetic of text_layer and fewer launches.
+
+    Q/K/V share one GEMM (per-column weight scales), FP8 casts are fused into the GEMM input packing, the O and FC2
+    projections add the residual in their epilogue, and scales stay unmaterialized. Every value keeps its original rounding.
+    """
+    assert self.trajectory_active and not self.verifying and x.shape == (1,64,512) and x.dtype == dtypes.bfloat16
+    prefix = f'expert.expert.layers.{i}'
+    def scale_of(maximum):
+      return (maximum/448).clamp(min_=1e-12)
+    def fp8(value, scale):
+      return (value.float()/scale).clamp(-448,448).cast(dtypes.fp8e4m3)
+    def projection(value, scale, name, tile, residual=None):
+      return tiled_gemm.gemm(value, self.weights[name+'.weight'], (scale, self.weight_scales[name+'.weight']), tile=tile, residual=residual)
+    h = self.norm(x, f'{prefix}.input_layernorm', rms=True).reshape(64,512)
+    scale = scale_of(h.float().abs().max())
+    qkv = tiled_gemm.gemm(fp8(h, scale), self.expert_qkv[i], (scale, self.expert_qkv_scales[i]), tile=(2,2), column_scale=True)
+    q,k,v = (qkv[:,a:b].reshape(1,64,heads,128).transpose(1,2) for a,b,heads in ((0,2048,16),(2048,3072,8),(3072,4096,8)))
+    q,k = self.rope(q,k,cos,sin)
+    self.trace_counts['expert_attention'] += 1
+    attention = frozen_ops.expert_attention(q,k,v,self.cache[i],mask)
+    # The FP8 scale is order-free: the attention output's maximum equals that of its transposed copy.
+    scale = scale_of(frozen_ops.maximum(attention))
+    x = projection(fp8(attention.transpose(1,2).reshape(64,2048), scale), scale, f'{prefix}.self_attn.o_proj', (1,2), x.reshape(64,512))
+    h = self.norm(x.reshape(1,64,512), f'{prefix}.post_attention_layernorm', rms=True).reshape(64,512)
+    scale = scale_of(h.float().abs().max())
+    hidden = projection(fp8(h, scale), scale, f'{prefix}.mlp.fc1', (2,2)).relu().square()
+    scale = scale_of(hidden.float().abs().max())
+    return projection(fp8(hidden, scale), scale, f'{prefix}.mlp.fc2', (1,2), x).reshape(1,64,512).realize()
+
   def _trajectory(self, actions, cos, sin, length, steps, offset):
-    if steps not in (1,2,3) or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
+    if steps not in DIFFUSION_STEPS or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
       raise ValueError('Selected expert requires one to three Euler steps and 2304 KV rows')
     before = self.trace_counts['expert_attention']
-    self.expert_layer = 0
     self.trajectory_active = True
     try:
       result = super()._trajectory(actions,cos,sin,length,steps,offset)
