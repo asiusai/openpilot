@@ -2609,6 +2609,17 @@ struct Event {
     deviceState @6 :DeviceState;
     chestnutState @152 :ChestnutState;
     chestnutGpuState @153 :ChestnutState;
+
+    # Side cameras on separate devices, saved by loggerd like the main cameras: l/r side, f/r facing
+    lfEncodeIdx @154 :EncodeIndex;
+    lrEncodeIdx @155 :EncodeIndex;
+    rfEncodeIdx @156 :EncodeIndex;
+    rrEncodeIdx @157 :EncodeIndex;
+    lfEncodeData @158 :EncodeData;
+    lrEncodeData @159 :EncodeData;
+    rfEncodeData @160 :EncodeData;
+    rrEncodeData @161 :EncodeData;
+
     logMessage @18 :Text;
     errorLogMessage @85 :Text;
 

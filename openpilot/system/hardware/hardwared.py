@@ -30,6 +30,7 @@ from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.monitoring import chestnut_state_thread
 from openpilot.system.hardware.chestnut.status import ChestnutStatus
+from openpilot.system.sidecam.config import streaming as sidecam_streaming
 from openpilot.common.version import terms_version, training_version
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
 
@@ -419,7 +420,8 @@ def hardware_thread(end_event, hw_queue) -> None:
         pass
 
     should_pwrsave = should_power_save(onroad_conditions["ignition"], msg.deviceState.screenBrightnessPercent,
-                                      not startup_conditions["not_driver_view"], params.get_bool("IsLiveStreaming"))
+                                      not startup_conditions["not_driver_view"],
+                                      params.get_bool("IsLiveStreaming") or sidecam_streaming())
     if should_pwrsave != pwrsave or (count == 0):
       HARDWARE.set_power_save(should_pwrsave)
     pwrsave = should_pwrsave

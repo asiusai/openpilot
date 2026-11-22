@@ -79,7 +79,8 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
 
   const bool live = std::all_of(cam_info.encoder_infos.begin(), cam_info.encoder_infos.end(), [](auto &e) { return e.is_live; });
 
-  int cur_seg = 0;
+  // Side cameras are split into files by the receiving loggerd; reopening Venus would cost frames.
+  int cur_seg = cam_info.encoder_infos[0].follow_segments ? -1 : 0;
   while (!do_exit) {
     if (!vipc_client.connect(false)) {
       util::sleep_for(5);
@@ -179,7 +180,7 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
 }
 
 template <size_t N>
-void encoderd_thread(const LogCameraInfo (&cameras)[N]) {
+void encoderd_thread(const LogCameraInfo (&cameras)[N], bool all_streams = true) {
   EncoderdState s;
 
   std::set<VisionStreamType> streams;
@@ -196,6 +197,7 @@ void encoderd_thread(const LogCameraInfo (&cameras)[N]) {
     for (auto stream : streams) {
       auto it = std::find_if(std::begin(cameras), std::end(cameras),
                              [stream](auto &cam) { return cam.stream_type == stream; });
+      if (!all_streams && it == std::end(cameras)) continue;
       assert(it != std::end(cameras));
       ++s.max_waiting;
       encoder_threads.push_back(std::thread(encoder_thread, &s, *it));
@@ -254,6 +256,23 @@ int main(int argc, char* argv[]) {
     std::string arg1(argv[1]);
     if (arg1 == "--stream") {
       encoderd_thread(stream_cameras_logged);
+    } else if (arg1 == "--side" && argc == 4) {
+      // A side camera device: encoderd --side WIDE_VIEW ROAD_VIEW, views lf, lr, rf or rr.
+      auto info = [](const std::string &view) {
+        auto it = std::find_if(std::begin(side_encoder_infos), std::end(side_encoder_infos), [&](auto &e) {
+          return std::string(e.publish_name) == view + "EncodeData";
+        });
+        if (it == std::end(side_encoder_infos)) {
+          LOGE("Unknown side view '%s'", view.c_str());
+          exit(1);
+        }
+        return *it;
+      };
+      const LogCameraInfo side_cameras[] = {
+        {.thread_name = "side_wide_encoder", .stream_type = VISION_STREAM_WIDE_ROAD, .encoder_infos = {info(argv[2])}},
+        {.thread_name = "side_road_encoder", .stream_type = VISION_STREAM_NARROW_ROAD, .encoder_infos = {info(argv[3])}},
+      };
+      encoderd_thread(side_cameras, false);
     } else {
       LOGE("Argument '%s' is not supported", arg1.c_str());
     }

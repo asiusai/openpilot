@@ -115,6 +115,11 @@ def manager_thread() -> None:
   if os.getenv("NOBOARD") is not None:
     ignore.append("pandad")
   ignore += [x for x in os.getenv("BLOCK", "").split(",") if len(x) > 0]
+  from openpilot.system.sidecam.config import role as sidecam_role
+  if sidecam_role() == 'camera':
+    # Side camera devices only capture, encode and forward; no vehicle, model, upload or route recording.
+    camera_processes = {'camerad', 'side_encoderd', 'sidecamd', 'hardwared', 'logmessaged', 'timed', 'ledd', 'buttond'}
+    ignore += [name for name in managed_processes if name not in camera_processes]
 
   sm = messaging.SubMaster(['deviceState', 'carParams', 'pandaStates'], poll='deviceState')
   pm = messaging.PubMaster(['managerState'])

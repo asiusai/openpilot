@@ -63,6 +63,7 @@ struct RemoteEncoder {
   bool marked_ready_to_rotate = false;
   bool seen_first_packet = false;
   bool audio_initialized = false;
+  uint32_t segment_frames = 0;
 };
 
 size_t write_encode_data(LoggerdState *s, cereal::Event::Reader event, RemoteEncoder &re, const EncoderInfo &encoder_info) {
@@ -114,7 +115,59 @@ size_t write_encode_data(LoggerdState *s, cereal::Event::Reader event, RemoteEnc
   return new_msg.size();
 }
 
+// Side cameras arrive from other devices with their own encoder segments. They never hold back rotation.
+// A new file starts at the first keyframe after loggerd rotates; earlier frames finish the previous file.
+int handle_follower_msg(LoggerdState *s, Message *msg, RemoteEncoder &re, const EncoderInfo &encoder_info) {
+  capnp::FlatArrayMessageReader cmsg(kj::ArrayPtr<capnp::word>((capnp::word *)msg->getData(), msg->getSize() / sizeof(capnp::word)));
+  auto event = cmsg.getRoot<cereal::Event>();
+  auto edata = (event.*(encoder_info.get_encode_data_func))();
+  auto idx = edata.getIdx();
+  const bool keyframe = idx.getFlags() & V4L2_BUF_FLAG_KEYFRAME;
+  int size = 0;
+
+  if (re.current_segment != s->logger.segment() && keyframe) {
+    re.writer.reset(new VideoWriter(s->logger.segmentPath().c_str(), encoder_info.filename, true,
+                                    edata.getWidth(), edata.getHeight(), encoder_info.fps, idx.getType()));
+    auto header = edata.getHeader();
+    re.writer->write((uint8_t *)header.begin(), header.size(), idx.getTimestampEof() / 1000, true, false);
+    re.current_segment = s->logger.segment();
+    re.segment_frames = 0;
+    if (re.dropped_frames) {
+      LOGW("%s: dropped %d packets before the first keyframe", encoder_info.publish_name, re.dropped_frames);
+      re.dropped_frames = 0;
+    }
+  }
+
+  if (re.writer) {
+    auto data = edata.getData();
+    re.writer->write((uint8_t *)data.begin(), data.size(), idx.getTimestampEof() / 1000, false, keyframe);
+
+    // Index the frame by the file that holds it.
+    capnp::MallocMessageBuilder idx_msg;
+    idx_msg.setRoot(idx);
+    auto file_idx = idx_msg.getRoot<cereal::EncodeIndex>();
+    file_idx.setSegmentNum(re.current_segment);
+    file_idx.setSegmentId(re.segment_frames);
+    file_idx.setSegmentIdEncode(re.segment_frames++);
+    MessageBuilder bmsg;
+    auto evt = bmsg.initEvent(event.getValid());
+    evt.setLogMonoTime(event.getLogMonoTime());
+    (evt.*(encoder_info.set_encode_idx_func))(file_idx.asReader());
+    auto bytes = bmsg.toBytes();
+    s->logger.write((uint8_t *)bytes.begin(), bytes.size(), true);
+    size = bytes.size();
+  } else {
+    ++re.dropped_frames;
+  }
+  delete msg;
+  return size;
+}
+
 int handle_encoder_msg(LoggerdState *s, Message *msg, std::string &name, struct RemoteEncoder &re, const EncoderInfo &encoder_info) {
+  if (encoder_info.follow_segments) {
+    return handle_follower_msg(s, msg, re, encoder_info);
+  }
+
   int bytes_count = 0;
 
   // extract the message
@@ -266,6 +319,9 @@ void loggerd_thread() {
       encoder_infos_dict[encoder_info.publish_name] = encoder_info;
     }
   }
+  for (const auto &encoder_info : side_encoder_infos) {
+    encoder_infos_dict[encoder_info.publish_name] = encoder_info;
+  }
 
   for (auto &[sock, service] : service_state) {
     auto it = encoder_infos_dict.find(service.name);
@@ -306,7 +362,7 @@ void loggerd_thread() {
         }
 
         if (service.encoder) {
-          s.last_camera_seen_tms = millis_since_boot();
+          if (!encoder_infos_dict[service.name].follow_segments) s.last_camera_seen_tms = millis_since_boot();
           bytes_count += handle_encoder_msg(&s, msg, service.name, remote_encoders[sock], encoder_infos_dict[service.name]);
         } else {
           s.logger.write((uint8_t *)msg->getData(), msg->getSize(), in_qlog);
