@@ -23,6 +23,7 @@ from openpilot.system.sidecam.transport import FRAME, HELLO, PING, PONG, Connect
 
 CONNECTED_GRACE = 30.  # keep cameras running through short reconnects
 CLOCK_SAMPLES = 16
+FRAME_NS = 50_000_000  # 20 Hz cameras
 
 
 def now():
@@ -79,10 +80,11 @@ class ViewStats:
     self.latency = collections.deque(maxlen=200)  # sensor EOF to host publish, ms
     self.last_ns = 0
 
-  def add(self, frame_id, latency_ms):
-    if self.last_frame is not None and frame_id > self.last_frame + 1:
-      self.missing += frame_id - self.last_frame - 1
-    self.last_frame = frame_id
+  def add(self, frame_id, eof_ns, latency_ms):
+    # Count gaps by sensor time: frame ids restart with camerad.
+    if self.last_frame is not None:
+      self.missing += max(0, round((eof_ns - self.last_frame) / FRAME_NS) - 1)
+    self.last_frame = eof_ns
     self.frames += 1
     self.latency.append(latency_ms)
     self.last_ns = now()
@@ -171,7 +173,7 @@ class Host:
     data.unixTimestampNanos = time.time_ns() - (now() - idx.timestampEof)
     with self.lock:
       self.pm.send(which, event)
-      self.stats[which[:2]].add(idx.frameId, (now() - idx.timestampEof) / 1e6)
+      self.stats[which[:2]].add(idx.frameId, idx.timestampEof, (now() - idx.timestampEof) / 1e6)
 
   def report(self):
     last_log = 0.

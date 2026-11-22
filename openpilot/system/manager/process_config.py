@@ -85,6 +85,10 @@ def sidecam_streaming(started: bool, params: Params, CP: car.CarParams) -> bool:
   from openpilot.system.sidecam.config import streaming
   return streaming() and offroad_camera_ready()
 
+def side_camerad_args() -> list[str]:
+  from openpilot.system.sidecam.config import role
+  return ['--no-cabin'] if role() == 'camera' else []
+
 def side_views() -> list[str]:
   from openpilot.system.sidecam.config import current
   config = current()
@@ -113,7 +117,8 @@ procs = [
   PythonProcess("sidecamd", "openpilot.system.sidecam.sidecamd", sidecam, enabled=ASIUS_HARDWARE),
   NativeProcess("side_encoderd", "openpilot/system/loggerd", ["./encoderd", "--side", *side_views()], sidecam_streaming,
                 enabled=ASIUS_HARDWARE, restart_delay=1.0),
-  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(or_(driverview, livestream), sidecam_streaming), enabled=not WEBCAM,
+  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad", *side_camerad_args()],
+                or_(or_(driverview, livestream), sidecam_streaming), enabled=not WEBCAM,
                 restart_delay=1.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("webcamerad", "openpilot.system.camerad.webcam.camerad", driverview, enabled=WEBCAM),
   PythonProcess("proclogd", "openpilot.system.proclogd", only_onroad, enabled=platform.system() != "Darwin"),
