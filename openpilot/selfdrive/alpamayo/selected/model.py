@@ -19,7 +19,7 @@ PREFILL_SPLITS = (0,576,768)
 PREFILL_PARTS = {(end-start,start) for start,end in zip(PREFILL_SPLITS,(*PREFILL_SPLITS[1:],PREFILL_ROWS))}  # (rows, first row)
 from . import amd_gemm, amd_decode, weights
 EXPERT_LAYERS = 28
-DIFFUSION_STEPS = (1,2,3)  # Euler steps qualified on the Chestnut
+DIFFUSION_STEPS = range(1,11)  # NVIDIA uses 10 Euler steps (5 on its car)
 from .serial_attention import direct as serial_cache_attention
 from .kernels import bf16_linear, frozen_ops, serial_mlp, tiled_gemm, vision_tiles
 
@@ -441,7 +441,7 @@ class SelectedModel(EdgeModel):
 
   def _trajectory(self, actions, cos, sin, length, steps, offset):
     if steps not in DIFFUSION_STEPS or self.cache[0].shape[3] != 2304 or self.trajectory_active or self.verifying:
-      raise ValueError('Selected expert requires one to three Euler steps and 2304 KV rows')
+      raise ValueError('Selected expert requires one to ten Euler steps and 2304 KV rows')
     before = self.trace_counts['expert_attention']
     self.trajectory_active = True
     try:

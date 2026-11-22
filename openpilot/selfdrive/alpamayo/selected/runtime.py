@@ -25,7 +25,7 @@ class Config:
   native_fresh_patches: bool = False
   # Euler steps of the trajectory expert. On 24 real samples the 3 s heading error to the driven path was 9.3 deg with one
   # or two steps, 9.4 deg with three and 9.9 deg with ten. Predicted turns reached 66-68% of the driven heading at 1 s with
-  # every step count. One step differs from two by 1.0 deg on average at 3 s.
+  # every step count. One step differs from two by 1.0 deg on average at 3 s. NVIDIA uses 10 steps (5 on its car).
   diffusion_steps: int = 1
   # Chestnut socket power limit (W). 144 is the firmware stock limit with clocks held high (the pinned recipe); comma's
   # openpilot defaults Chestnut to 100 W with automatic clocks (commaai/openpilot#38992). Below 144 the clocks are automatic.
@@ -39,8 +39,8 @@ class Config:
       raise ValueError('Device timeout must be positive')
     if type(self.native_fresh_patches) is not bool:
       raise ValueError('native_fresh_patches must be boolean')
-    if self.diffusion_steps not in (1,2,3):
-      raise ValueError('diffusion_steps must be 1, 2 or 3')
+    if type(self.diffusion_steps) is not int or not 1 <= self.diffusion_steps <= 10:
+      raise ValueError('diffusion_steps must be an integer from 1 to 10')
     if type(self.power_limit_w) is not int or not 100 <= self.power_limit_w <= 144:
       raise ValueError('power_limit_w must be an integer from 100 to 144')
 

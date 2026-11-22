@@ -55,7 +55,7 @@ This adapter requires `initial_noise`. The shared worker, scheduler, frontend, a
 | Serial language MLP | Signed four-bit FC1 and FC2 weights with one FP16 scale per 32 weights; FP8 activations |
 | Reasoning | Reduced CoC vocabulary; the prefill verifies up to 31 draft tokens with 32 independent heads |
 | Continuation | Target-verified lookup carry, per-row FP8 draft verification, serial blocks of six, maximum 64 tokens |
-| Expert | One Euler step (`diffusion_steps`, 1 to 3); restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
+| Expert | One Euler step (`diffusion_steps`, 1 to 10); restored BF16 action projections; one fused attention launch per layer; 64-row FP8 tiles 2x2 (1x2 for 512 outputs) |
 | Compiler | WGP AMD LLVM22; isolated tinygrad `89846dcfb383a98ee01cfec3bba440ae7dcf9b1e` |
 
 Each prediction uploads uncached images in one pixel transfer. The GPU expands the byte patches to BF16 and encodes up to two images per call.
