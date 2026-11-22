@@ -22,6 +22,8 @@ from openpilot.system.sidecam.config import ADDRESS, CONNECTED, HELPER, HOTSPOT_
 from openpilot.system.sidecam.transport import FRAME, HELLO, PING, PONG, Connection
 
 CONNECTED_GRACE = 30.  # keep cameras running through short reconnects
+REJOIN_AFTER = 20.  # re-activate the camera network when the host stays unreachable this long
+LOG_EVERY = 30.
 CLOCK_SAMPLES = 16
 FRAME_NS = 50_000_000  # 20 Hz cameras
 
@@ -239,8 +241,9 @@ class Camera:
         if kind != PING or len(payload) != 8:
           raise ValueError('Unexpected host message')
         conn.send(PONG, payload + now().to_bytes(8, 'little'))
-    except (OSError, ValueError, EOFError, RuntimeError):
+    except (OSError, ValueError, EOFError, RuntimeError) as error:
       if self.conn is conn:
+        cloudlog.warning(f'sidecam: host connection ended: {type(error).__name__}: {str(error)[:160]}')
         self.conn = None
       conn.close()
 
@@ -257,17 +260,25 @@ class Camera:
     for v in self.views:
       messaging.sub_sock(f'{v}EncodeData', poller=poller, conflate=False)
     network = Network(self.config, self.stop)
-    last_mark = 0.
+    last_mark = last_log = 0.
+    down_since, connected = time.monotonic(), False
     while not self.stop.is_set():
       if self.conn is None:
+        if connected:
+          connected, down_since = False, time.monotonic()
+        down_s = time.monotonic() - down_since
         try:
-          network.join_if_visible()
+          network.join_if_visible(down_s)
         except (subprocess.SubprocessError, OSError):
           cloudlog.exception('sidecam: camera network check failed')
         try:
           self.conn = self.connect()
-          cloudlog.warning('sidecam: connected to host')
-        except (OSError, ValueError, EOFError, RuntimeError):
+          connected = True
+          cloudlog.warning(f'sidecam: connected to host after {down_s:.0f} s')
+        except (OSError, ValueError, EOFError, RuntimeError) as error:
+          if time.monotonic() - last_log >= LOG_EVERY:
+            last_log = time.monotonic()
+            cloudlog.warning(f'sidecam: host unreachable for {down_s:.0f} s ({network.state()}): {type(error).__name__}: {str(error)[:120]}')
           self.mark_connected()
           self.stop.wait(1)
           continue
@@ -288,8 +299,9 @@ class Camera:
             continue  # drop frames while disconnected; stale video is useless
           try:
             conn.send(FRAME, data)
-          except (OSError, ValueError, RuntimeError):
+          except (OSError, ValueError, RuntimeError) as error:
             if self.conn is conn:
+              cloudlog.warning(f'sidecam: frame send failed: {type(error).__name__}: {str(error)[:160]}')
               self.conn = None
             conn.close()
     CONNECTED.unlink(missing_ok=True)
@@ -301,7 +313,7 @@ class Network:
   PATH = '/etc/NetworkManager/system-connections/asius-sidecam.nmconnection'
 
   def __init__(self, config, stop):
-    self.ssid, self.stop, self.next_scan, self.scans = config['network']['ssid'], stop, 0., 0
+    self.ssid, self.stop, self.next_scan, self.scans, self.last_rejoin = config['network']['ssid'], stop, 0., 0, 0.
     escaped = config['network']['password'].replace('\\', '\\\\').replace(' ', '\\s')
     # `hidden` makes NetworkManager probe for this SSID in its own scans.
     profile = '\n'.join([
@@ -323,16 +335,32 @@ class Network:
       except (subprocess.SubprocessError, OSError):
         cloudlog.exception('sidecam: cannot write the camera network profile')
 
-  def join_if_visible(self):
+  def join_if_visible(self, down_s=0.):
+    """Join the hotspot when it is visible. While joined but unable to reach the host, re-activate the profile:
+    a stale association or lease after a hotspot restart otherwise blocks reconnection."""
     if time.monotonic() < self.next_scan:
       return
     self.next_scan = time.monotonic() + 10
     active = subprocess.run(['nmcli', '-g', 'GENERAL.CON-UUID', 'device', 'show', 'wlan0'], capture_output=True, text=True, timeout=10)
     if active.stdout.strip() == self.UUID:
+      if down_s >= REJOIN_AFTER and time.monotonic() - self.last_rejoin >= REJOIN_AFTER:
+        self.last_rejoin = time.monotonic()
+        cloudlog.warning(f'sidecam: host unreachable for {down_s:.0f} s on the camera network; rejoining')
+        self.up()
       return
     if self.visible():
       cloudlog.warning('sidecam: joining the camera network')
-      subprocess.run(['sudo', 'nmcli', '--wait', '15', 'connection', 'up', 'uuid', self.UUID], capture_output=True, timeout=20)
+      self.up()
+
+  def up(self):
+    subprocess.run(['sudo', 'nmcli', '--wait', '15', 'connection', 'up', 'uuid', self.UUID], capture_output=True, timeout=20)
+
+  def state(self):
+    try:
+      return subprocess.run(['nmcli', '-g', 'GENERAL.CONNECTION,IP4.ADDRESS', 'device', 'show', 'wlan0'],
+                            capture_output=True, text=True, timeout=10).stdout.strip().replace('\n', ', ')
+    except subprocess.SubprocessError:
+      return 'unknown network'
 
   def visible(self):
     """Probe for the hotspot as root: the device user cannot trigger NetworkManager scans, so its list goes stale.
