@@ -18,7 +18,7 @@ import uuid
 import openpilot.cereal.messaging as messaging
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.asius.identity import get_device_private_key
-from openpilot.system.sidecam.config import ADDRESS, CONNECTED, HELPER, PORT, RUNTIME, VIEWS, load
+from openpilot.system.sidecam.config import ADDRESS, CONNECTED, HELPER, HOTSPOT_MHZ, PORT, RUNTIME, VIEWS, load
 from openpilot.system.sidecam.transport import FRAME, HELLO, PING, PONG, Connection
 
 CONNECTED_GRACE = 30.  # keep cameras running through short reconnects
@@ -260,7 +260,10 @@ class Camera:
     last_mark = 0.
     while not self.stop.is_set():
       if self.conn is None:
-        network.join_if_visible()
+        try:
+          network.join_if_visible()
+        except (subprocess.SubprocessError, OSError):
+          cloudlog.exception('sidecam: camera network check failed')
         try:
           self.conn = self.connect()
           cloudlog.warning('sidecam: connected to host')
@@ -298,12 +301,13 @@ class Network:
   PATH = '/etc/NetworkManager/system-connections/asius-sidecam.nmconnection'
 
   def __init__(self, config, stop):
-    self.ssid, self.stop, self.next_scan = config['network']['ssid'], stop, 0.
+    self.ssid, self.stop, self.next_scan, self.scans = config['network']['ssid'], stop, 0., 0
     escaped = config['network']['password'].replace('\\', '\\\\').replace(' ', '\\s')
+    # `hidden` makes NetworkManager probe for this SSID in its own scans.
     profile = '\n'.join([
       '[connection]', 'id=Asius side cameras', f'uuid={self.UUID}', 'type=wifi', 'interface-name=wlan0',
       'autoconnect=true', 'autoconnect-priority=100',
-      '[wifi]', 'mode=infrastructure', 'band=a', 'powersave=2', f'ssid={";".join(str(b) for b in self.ssid.encode())};',
+      '[wifi]', 'mode=infrastructure', 'band=a', 'hidden=true', 'powersave=2', f'ssid={";".join(str(b) for b in self.ssid.encode())};',
       '[wifi-security]', 'key-mgmt=wpa-psk', f'psk={escaped}',
       '[ipv4]', 'method=auto', 'never-default=true', '[ipv6]', 'method=disabled', '',
     ])
@@ -312,9 +316,12 @@ class Network:
     except subprocess.SubprocessError:
       current = None
     if current != profile:
-      # The password travels on stdin, never in arguments.
-      subprocess.run(['sudo', 'install', '-m', '600', '/dev/stdin', self.PATH], input=profile, text=True, check=True, timeout=10)
-      subprocess.run(['sudo', 'nmcli', 'connection', 'load', self.PATH], capture_output=True, timeout=15)
+      try:
+        # The password travels on stdin, never in arguments.
+        subprocess.run(['sudo', 'install', '-m', '600', '/dev/stdin', self.PATH], input=profile, text=True, check=True, timeout=10)
+        subprocess.run(['sudo', 'nmcli', 'connection', 'load', self.PATH], capture_output=True, timeout=15)
+      except (subprocess.SubprocessError, OSError):
+        cloudlog.exception('sidecam: cannot write the camera network profile')
 
   def join_if_visible(self):
     if time.monotonic() < self.next_scan:
@@ -323,11 +330,20 @@ class Network:
     active = subprocess.run(['nmcli', '-g', 'GENERAL.CON-UUID', 'device', 'show', 'wlan0'], capture_output=True, text=True, timeout=10)
     if active.stdout.strip() == self.UUID:
       return
-    visible = subprocess.run(['nmcli', '-g', 'SSID', 'device', 'wifi', 'list', 'ifname', 'wlan0', '--rescan', 'yes'],
-                             capture_output=True, text=True, timeout=20).stdout.splitlines()
-    if self.ssid in visible:
+    if self.visible():
       cloudlog.warning('sidecam: joining the camera network')
       subprocess.run(['sudo', 'nmcli', '--wait', '15', 'connection', 'up', 'uuid', self.UUID], capture_output=True, timeout=20)
+
+  def visible(self):
+    """Probe for the hotspot as root: the device user cannot trigger NetworkManager scans, so its list goes stale.
+    Most probes cover only the hotspot channel to keep the current link usable; every sixth probe covers all channels."""
+    self.scans += 1
+    channel = [] if self.scans % 6 == 0 else ['freq', str(HOTSPOT_MHZ)]
+    scan = subprocess.run(['sudo', 'iw', 'dev', 'wlan0', 'scan', *channel, 'ssid', self.ssid],
+                          capture_output=True, text=True, timeout=20).stdout
+    if not scan:  # busy with another scan: use its results
+      scan = subprocess.run(['sudo', 'iw', 'dev', 'wlan0', 'scan', 'dump'], capture_output=True, text=True, timeout=10).stdout
+    return f'\tSSID: {self.ssid}\n' in scan
 
 
 def main():

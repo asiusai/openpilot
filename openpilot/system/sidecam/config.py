@@ -10,6 +10,7 @@ CONFIG = Path('/data/sidecam/config.json')
 RUNTIME = Path('/dev/shm/sidecam')
 CONNECTED = RUNTIME / 'connected'  # present while a camera device is connected to its host
 ADDRESS, PORT = '192.168.43.1', 39041
+HOTSPOT_MHZ = 5180  # the VamOS camera hotspot uses channel 36
 VIEWS = ('lf', 'lr', 'rf', 'rr')  # left/right side, front/rear facing
 HELPER = '/usr/bin/vamos-local-video'
 
