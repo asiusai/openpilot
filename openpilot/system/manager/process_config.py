@@ -75,6 +75,21 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming") and (started or offroad_camera_ready())
 
+def sidecam(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Camera devices always look for their host; the host runs its hotspot while onroad.
+  from openpilot.system.sidecam.config import current
+  config = current()
+  return config is not None and (config['role'] == 'camera' or started or config.get('always', False))
+
+def sidecam_streaming(started: bool, params: Params, CP: car.CarParams) -> bool:
+  from openpilot.system.sidecam.config import streaming
+  return streaming() and offroad_camera_ready()
+
+def side_views() -> list[str]:
+  from openpilot.system.sidecam.config import current
+  config = current()
+  return [config['wide'], config['road']] if config and config['role'] == 'camera' else ['lf', 'lr']
+
 def asius_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not PC and params.get_bool("CloudUploadEnabled")
 
@@ -95,7 +110,10 @@ procs = [
                 restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
 
-  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(driverview, livestream), enabled=not WEBCAM,
+  PythonProcess("sidecamd", "openpilot.system.sidecam.sidecamd", sidecam, enabled=ASIUS_HARDWARE),
+  NativeProcess("side_encoderd", "openpilot/system/loggerd", ["./encoderd", "--side", *side_views()], sidecam_streaming,
+                enabled=ASIUS_HARDWARE, restart_delay=1.0),
+  NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(or_(driverview, livestream), sidecam_streaming), enabled=not WEBCAM,
                 restart_delay=1.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("webcamerad", "openpilot.system.camerad.webcam.camerad", driverview, enabled=WEBCAM),
   PythonProcess("proclogd", "openpilot.system.proclogd", only_onroad, enabled=platform.system() != "Darwin"),
