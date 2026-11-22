@@ -322,10 +322,8 @@ def main(demo=False):
   pm = PubMaster(pub_socks)
   planner = plan_sock = None
   if use_alpamayo:
-    from openpilot.selfdrive.alpamayo.calibration import LateralCalibration
-    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_calibration_path, configured_lateral_gain, configured_tuning
-    calibration = LateralCalibration(configured_calibration_path())
-    planner = PlanSelector(calibration, configured_lateral_gain(), **configured_tuning())
+    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_tuning
+    planner = PlanSelector(**configured_tuning())
     # Every queued plan packet: an invalid packet for a skipped slot can follow a valid plan within one camera frame.
     plan_sock = messaging.sub_sock('alpamayoPlan')
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
@@ -400,13 +398,9 @@ def main(demo=False):
       for event in messaging.drain_sock(plan_sock):
         if event.valid:
           planner.receive(event.alpamayoPlan, time.monotonic_ns(), event.logMonoTime)
-          if len(event.alpamayoPlan.yaw) == 64:
-            calibration.plan(event.alpamayoPlan.queryMonoTime, sm['carState'].vEgo, event.alpamayoPlan.yaw[9])  # 1.0 s
       if sm.updated['deviceMotion'] and sm.valid['deviceMotion']:
         motion = sm['deviceMotion']
         stamp = motion.timestamp if motion.timestamp > 0 else sm.logMonoTime['deviceMotion']
-        steered = sm['carControl'].latActive and not sm['carState'].steeringPressed
-        calibration.motion(stamp, motion.orientationNED.z, steered, time.monotonic_ns())
         planner.motion(stamp, sm['carState'].vEgo, -motion.orientationNED.z)  # NED yaw is clockwise
     desire = DH.desire
     is_rhd = sm["driverMonitoringState"].isRHD

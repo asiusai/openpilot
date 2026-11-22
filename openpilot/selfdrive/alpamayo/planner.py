@@ -72,39 +72,20 @@ def _config():
   return json.loads(Path(path).read_text()) if path and os.path.isfile(path) else {}
 
 
-def configured_calibration_path():
-  """Learned lateral calibration file from ALPAMAYO_CONFIG `lateral_calibration` (default next to the config)."""
-  return _config().get('lateral_calibration', '/data/alpamayo-calibration/lateral.json')
-
-
 def configured_tuning():
-  """Optional ALPAMAYO_CONFIG test settings: `straight_lookahead_s` (path tracker lookahead on straight plans, default
-  LOOKAHEAD_S) and `accel_gain` (multiplies positive planned acceleration, default 1)."""
-  config = _config()
-  straight, gain = float(config.get('straight_lookahead_s', LOOKAHEAD_S)), float(config.get('accel_gain', 1.))
-  if not (LOOKAHEAD_S <= straight <= 4. and 1. <= gain <= 2.):
-    raise ValueError('straight_lookahead_s must be 1.5..4 s and accel_gain 1..2')
-  return dict(straight_lookahead_s=straight, accel_gain=gain)
-
-
-def configured_lateral_gain():
-  """Fixed lateral gain from ALPAMAYO_CONFIG `lateral_gain`; None uses the learned calibration."""
-  gain = _config().get('lateral_gain')
-  if gain is None:
-    return None
-  gain = float(gain)
-  if not (np.isfinite(gain) and 0.5 <= gain <= 4.):
-    raise ValueError(f'lateral_gain {gain} outside 0.5..4')
-  return gain
+  """Optional ALPAMAYO_CONFIG test setting `straight_lookahead_s` (path tracker lookahead on straight plans, default
+  LOOKAHEAD_S). The plan's steering and acceleration are used without gains."""
+  straight = float(_config().get('straight_lookahead_s', LOOKAHEAD_S))
+  if not LOOKAHEAD_S <= straight <= 4.:
+    raise ValueError('straight_lookahead_s must be 1.5..4 s')
+  return dict(straight_lookahead_s=straight)
 
 
 class PlanSelector:
-  def __init__(self, calibration=None, fixed_gain=None, straight_lookahead_s=LOOKAHEAD_S, accel_gain=1.):
+  def __init__(self, straight_lookahead_s=LOOKAHEAD_S):
     # On a straight plan the near path mostly continues the current heading; the plan's correction toward the lane shows
     # farther ahead, so the lookahead grows to straight_lookahead_s as the plan's 3 s heading change falls below 0.05 rad.
-    self.straight_lookahead_s, self.accel_gain = straight_lookahead_s, accel_gain
-    self.calibration = calibration  # selfdrive.alpamayo.calibration.LateralCalibration; gain 1 without it
-    self.fixed_gain = fixed_gain  # replaces the learned gain when set; the calibration still learns
+    self.straight_lookahead_s = straight_lookahead_s
     self.query = self.ready = self.streak = 0
     self.curve = self.path = None
     self.held = None
@@ -149,18 +130,14 @@ class PlanSelector:
       return 0.
     return (b[2]-a[2])/(v_ego*CURVATURE_WINDOW)
 
-  def tracked_curvature(self, now, v_ego, lat_delay, gain):
-    """Pure pursuit on the newest plan's path (heading profile scaled by `gain`), or None without odometry for it.
+  def tracked_curvature(self, now, v_ego, lat_delay):
+    """Pure pursuit on the newest plan's path, or None without odometry for it.
     The result is left positive, like the plan and the odometry."""
     query, current = self.pose_at(self.query), self.pose_at(now)
     if query is None or current is None or self.path is None:
       self.count('no query pose' if query is None else 'no current pose' if current is None else 'no path')
       return None
-    x, y, yaw = self.path
-    if gain != 1.:
-      step = np.hypot(np.diff(x), np.diff(y))
-      heading = gain*(yaw[:-1]+yaw[1:])/2
-      x = np.concatenate(([0.], np.cumsum(step*np.cos(heading)))); y = np.concatenate(([0.], np.cumsum(step*np.sin(heading))))
+    x, y, _ = self.path
     qx, qy, qh = query
     wx, wy = qx+math.cos(qh)*x-math.sin(qh)*y, qy+math.sin(qh)*x+math.cos(qh)*y
     # Pose after the steering delay, with the measured curvature.
@@ -221,26 +198,18 @@ class PlanSelector:
     theta = np.interp(age, T, yaw)
     curvature = get_curvature_from_plan(theta-sample(yaw), -sample(yaw_rate), ACTION_TIMES, v_ego, lat_delay)
     a = get_accel_from_plan(v, sample(accel), ACTION_TIMES, long_delay)
-    # The plan itself must be within limits; the configured accel_gain only scales it and is then clipped. Rejecting the
-    # gained value dropped whole plans (and blocked engagement) whenever a plan accelerated out of a turn.
     if (not np.isfinite([curvature,a]).all() or not ACCEL_MIN <= a <= ACCEL_MAX or
         abs(curvature) > MAX_CURVATURE or abs(curvature)*v_ego**2 > MAX_LATERAL_ACCEL_NO_ROLL):
       return None
-    if a > 0:
-      a = min(a*self.accel_gain, ACCEL_MAX)
-    # The calibrated command stays inside the same curvature and lateral-acceleration limits as the plan itself.
+    # The tracked command stays inside the same curvature and lateral-acceleration limits as the plan itself.
     limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
-    if self.fixed_gain is not None:
-      gain = self.fixed_gain
-    else:
-      gain = self.calibration.gain(v_ego) if self.calibration is not None else 1.
-    tracked = self.tracked_curvature(now, v_ego, lat_delay, gain)
+    tracked = self.tracked_curvature(now, v_ego, lat_delay)
     if tracked is not None:
       tracked = -tracked  # openpilot desiredCurvature is right positive, like the feedforward below
     if tracked is not None and np.isfinite(tracked):
       alpha = .05/(COMMAND_TAU+.05)
       tracked = self.last_curvature+alpha*(tracked-self.last_curvature)
-    curvature = float(np.clip(tracked if tracked is not None and np.isfinite(tracked) else curvature*gain, -limit, limit))
+    curvature = float(np.clip(tracked if tracked is not None and np.isfinite(tracked) else curvature, -limit, limit))
     self.last_curvature = curvature
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
 
