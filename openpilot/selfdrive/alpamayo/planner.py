@@ -221,11 +221,13 @@ class PlanSelector:
     theta = np.interp(age, T, yaw)
     curvature = get_curvature_from_plan(theta-sample(yaw), -sample(yaw_rate), ACTION_TIMES, v_ego, lat_delay)
     a = get_accel_from_plan(v, sample(accel), ACTION_TIMES, long_delay)
-    if a > 0:
-      a *= self.accel_gain
+    # The plan itself must be within limits; the configured accel_gain only scales it and is then clipped. Rejecting the
+    # gained value dropped whole plans (and blocked engagement) whenever a plan accelerated out of a turn.
     if (not np.isfinite([curvature,a]).all() or not ACCEL_MIN <= a <= ACCEL_MAX or
         abs(curvature) > MAX_CURVATURE or abs(curvature)*v_ego**2 > MAX_LATERAL_ACCEL_NO_ROLL):
       return None
+    if a > 0:
+      a = min(a*self.accel_gain, ACCEL_MAX)
     # The calibrated command stays inside the same curvature and lateral-acceleration limits as the plan itself.
     limit = min(MAX_CURVATURE, MAX_LATERAL_ACCEL_NO_ROLL/max(v_ego, 1e-3)**2)
     if self.fixed_gain is not None:
