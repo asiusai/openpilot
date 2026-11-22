@@ -74,3 +74,29 @@ def test_unauthorized_camera_is_rejected():
   assert 'error' in result
   host.close()
   camera.close()
+
+
+def test_network_rejoins_only_when_host_stays_unreachable(monkeypatch):
+  from openpilot.system.sidecam import sidecamd
+  calls, active = [], {'uuid': sidecamd.Network.UUID}
+
+  def run(cmd, **kwargs):
+    calls.append(cmd)
+    out = active['uuid'] if 'GENERAL.CON-UUID' in cmd else ''
+    if cmd[:2] == ['sudo', 'iw']:
+      out = 'BSS 00:11:22:33:44:55(on wlan0)\n\tSSID: Asius-Cameras-test\n'
+    return type('Result', (), {'stdout': out, 'returncode': 0})()
+  monkeypatch.setattr(sidecamd.subprocess, 'run', run)
+  network = sidecamd.Network({'network': NETWORK}, threading.Event())
+
+  def joins(down_s):
+    calls.clear()
+    network.next_scan = 0.
+    network.join_if_visible(down_s)
+    return any(cmd[:3] == ['sudo', 'nmcli', '--wait'] for cmd in calls)
+
+  assert not joins(5.)  # joined and recently connected: keep the link
+  assert joins(sidecamd.REJOIN_AFTER)  # joined but the host is unreachable: re-activate
+  assert not joins(sidecamd.REJOIN_AFTER + 1)  # at most once per REJOIN_AFTER
+  active['uuid'] = 'other-network'
+  assert joins(0.)  # visible hotspot while on another network: join
