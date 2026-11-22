@@ -479,11 +479,14 @@ def main(demo=False):
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
       modelv2_send.modelV2.big = model.chestnut
       if planner is not None:
-        # The local model keeps perception and odometry live; the action always comes from Alpamayo (planner.apply).
+        # The local model keeps perception and odometry live; the action always comes from an Alpamayo plan, optionally
+        # pulled toward the local lane centre (planner.apply, lane_centering).
         # A local frame drop or invalid local output does not affect the GPU plan. selfdrived handles car-state faults.
         m = modelv2_send.modelV2
         m.localAction = action
-        planner.apply(m, time.monotonic_ns(), v_ego, lat_delay+action_delay, long_delay+action_delay)
+        cs = sm['carState']
+        planner.apply(m, time.monotonic_ns(), v_ego, lat_delay+action_delay, long_delay+action_delay,
+                      cs.leftBlinker or cs.rightBlinker)
         if frame_id % 100 == 0 and planner.tracker_status:
           odo = planner.odometry
           cloudlog.warning(f"alpamayo tracker {planner.tracker_status} odometry {len(odo)} "
