@@ -480,7 +480,8 @@ def load_adapter(config):
   if variant == 'default':
     from openpilot.selfdrive.alpamayo.inference import ShadowAdapter
   elif variant == 'selected':
-    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches', 'diffusion_steps'}
+    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches', 'diffusion_steps',
+               'power_limit_w'}
     if extra := settings.keys()-allowed:
       raise ValueError(f'Unexpected selected inference fields: {sorted(extra)}')
     settings['cache_dir'] = str(Path(config['cache']).resolve())
