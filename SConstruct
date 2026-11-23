@@ -43,9 +43,6 @@ for p in reversed(submodule_python_paths):
   if p not in sys.path:
     sys.path.insert(0, p)
 
-from openpilot.system.asius.apply_patches import apply_tinygrad_patches
-apply_tinygrad_patches(Path(Dir('#').abspath))
-
 if external_pythonpath := os.environ.get("PYTHONPATH"):
   submodule_python_paths += [p for p in external_pythonpath.split(os.pathsep) if p and p not in submodule_python_paths]
 
