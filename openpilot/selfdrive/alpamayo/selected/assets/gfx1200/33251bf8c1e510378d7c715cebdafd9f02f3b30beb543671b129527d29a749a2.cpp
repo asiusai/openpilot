@@ -1,3 +1,8 @@
+// LAUNCH 192 256
+#define WAVES 8
+#define THREADS 256
+#define WPE
+#define PMAX 1
 
 #define DEV __attribute__((device)) __attribute__((always_inline)) inline
 typedef unsigned short u16;
@@ -11,6 +16,7 @@ DEV u8 load_eight(const u16 *source,int head,int row,int dim) {
   return *(const volatile u8 *)(source+(head*720+row)*72+dim);
 }
 typedef short s8 __attribute__((ext_vector_type(8)));
+typedef __attribute__((address_space(1))) s8 gs8;
 typedef float f8 __attribute__((ext_vector_type(8)));
 extern "C" __attribute__((device)) unsigned long __ockl_get_local_id(unsigned);
 extern "C" __attribute__((device)) unsigned long __ockl_get_group_id(unsigned);
@@ -51,59 +57,60 @@ DEV f8 transpose_probability(f8 x, int lane) {
   for(int j=0;j<8;j++) x[j]=lane_read(x[j],source);
   return x;
 }
-extern "C" __attribute__((global,amdgpu_flat_work_group_size(1,256),amdgpu_waves_per_eu(8,8)))
+extern "C" __attribute__((global,amdgpu_flat_work_group_size(1,THREADS)WPE))
 void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
-#if 0
-,const float *mask
+#if PMAX
+,float *partial
 #endif
 ) {
+  // Same arithmetic as the staged kernel. Each wave reads its K operand and the transposed V operand straight from
+  // memory (gfx12 transposing load) instead of a shared-memory copy; waves no longer synchronize.
   constexpr int H=16, KH=16, R=720, K=720, W=72, D=(W+15)/16;
-  int thread=__ockl_get_local_id(0), lane=thread%32, wave=thread/32, block=__ockl_get_group_id(0);
-  int group=block%((R+16*8-1)/(16*8));
-  int tile=group*8+wave, head=block/((R+16*8-1)/(16*8)), kh=(head/H)*KH+(head%H)/(H/KH);
+  int thread=__ockl_get_local_id(0), lane=thread%32, wave=__builtin_amdgcn_readfirstlane(thread/32), block=__ockl_get_group_id(0);
+  int group=block%((R+16*WAVES-1)/(16*WAVES));
+  int tile=group*WAVES+wave, head=block/((R+16*WAVES-1)/(16*WAVES)), kh=(head/H)*KH+(head%H)/(H/KH);
+  if(tile*16>=R) {  // all 16 query rows are padding
+#if PMAX
+    if(lane==0) partial[block*WAVES+wave]=0.0f;
+#endif
+    return;
+  }
   int qr=tile*16+lane%16;
-  __attribute__((shared,aligned(16))) short probabilities[8*16*(16+0)];
-  #if 1
-  // K rows and transposed V rows are 16-byte aligned for one vector access per lane.
-  __attribute__((shared,aligned(16))) short shared_k2[2][32*(D*16+8)],shared_vt2[2][D*16*40];
-  #endif
-  short *prob=probabilities+wave*16*(16+0);
   s8 query[D];
   for(int d=0;d<D;d++) for(int i=0;i<8;i++) {
     int dim=d*16+(lane/16)*8+i;
     query[d][i]=qr<R && dim<W?q[(head*R+qr)*W+dim]:0;
   }
+  const u16 *kbase=k+(long)kh*R*W, *vbase=v+(long)kh*R*W;
+  // Per-lane byte offsets. K operand: key row lane%16, dims (lane/16)*8.. ; V: the transposing load takes key row
+  // (lane/16)*8+lane%8 and dim half (lane/8)%2 and returns dim lane%16, keys (lane/16)*8.. per lane.
+  // The last fragment holds dims 64-71 only: all lanes address dims 64-71 (in bounds). K lanes of dims 72-79 are zeroed;
+  // V results of dims 72-79 only reach outputs that are never written.
+  unsigned ko=((lane%16)*W+(lane/16)*8)*2, ko4=((lane%16)*W)*2;
+  unsigned vo=(((lane/16)*8+lane%8)*W+((lane/8)%2)*8)*2, vo4=(((lane/16)*8+lane%8)*W)*2;
+#define KADDR(row,dim,off) ((const gs8*)((const char*)(kbase+(row)*W+(dim))+(off)))
+#define VADDR(row,dim,off) ((gs8*)((const char*)(vbase+(row)*W+(dim))+(off)))
   // Row statistics live in the lanes that own a query row: lane%16 (both halves hold the same values).
   f8 accum[D]={}; float denom=0.0f, maxima=-__builtin_inff();
-  int limit=(group+1)*8*16;
-  int end=0?(K<limit?K:limit):K;
-  // Double buffer: block j+1 is fetched into registers while block j is computed. Arithmetic is unchanged.
-  constexpr int SLOTS=(32*D*16+256*8-1)/(256*8);
-  u8 pk[SLOTS],pv[SLOTS];
-  auto fetch=[&](int base) {
-    for(int s=0;s<SLOTS;s++) { int index=thread*8+s*256*8; if(index<32*D*16) {
-      int row=index/(D*16),dim=index%(D*16);
-      pk[s]=load_plain(k,kh,base+row,dim); pv[s]=load_plain(v,kh,base+row,dim); } }
-  };
-  auto stage=[&](int buffer) {
-    for(int s=0;s<SLOTS;s++) { int index=thread*8+s*256*8; if(index<32*D*16) {
-      int row=index/(D*16),dim=index%(D*16);
-      *(u8*)(shared_k2[buffer]+key_index(row,dim))=pk[s];
-      for(int i=0;i<8;i++) shared_vt2[buffer][(dim+i)*40+row]=pv[s][i]; } }
-  };
-  fetch(0); stage(0);
-  __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
-  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
-  int buffer=0;
+  int end=K;
+  #pragma unroll 1
   for(int start=0;start<end;start+=32) {
-    short *shared_k=shared_k2[buffer], *shared_vt=shared_vt2[buffer];
-    bool more=start+32<end;
-    if(more) fetch(start+32);
-    if(tile*16<R) {  // waves whose 16 query rows are all padding only stage K/V
+    asm volatile("" : "+v"(ko), "+v"(vo), "+v"(ko4), "+v"(vo4));
     f8 scores[32/16]={};
-    for(int sub=0;sub<32/16;sub++) for(int d=0;d<D;d++) {
-      s8 key=*(const s8*)(shared_k+key_index(sub*16+lane%16,d*16+(lane/16)*8));
-      scores[sub]=mma(key,query[d],scores[sub]);
+    s8 value[D][32/16];
+    for(int sub=0;sub<32/16;sub++) {
+      if(start+sub*16<K) {
+        for(int d=0;d<D;d++) {
+          s8 key;
+          if(d*16+8<W) key=*KADDR(start+sub*16,d*16,ko);
+          else { key=*KADDR(start+sub*16,d*16,ko4); key=lane<16?key:(s8){}; }
+          scores[sub]=mma(key,query[d],scores[sub]);
+        }
+        for(int d=0;d<D;d++)
+          value[d][sub]=__builtin_amdgcn_global_load_tr_b128_v8i16(d*16+8<W?VADDR(start+sub*16,d*16,vo):VADDR(start+sub*16,d*16,vo4));
+      } else {
+        for(int d=0;d<D;d++) { scores[sub]=mma((s8){},query[d],scores[sub]); value[d][sub]=(s8){}; }
+      }
     }
     // K.Q^T: this lane holds query row tile*16+lane%16 and keys start+sub*16+(lane/16)*8+i, the PV operand layout.
     float localmax=-__builtin_inff();
@@ -130,48 +137,26 @@ void alpamayo_online(u16 *out,const u16 *q,const u16 *k,const u16 *v
     }
     denom=denom*scale+total_sum; maxima=next;
     for(int sub=0;sub<32/16;sub++) {
-    #if 1
-    s8 probability;
-    for(int i=0;i<8;i++) probability[i]=tobf(scores[sub][i]);
-    #elif 0
-    f8 transposed=transpose_probability(scores[sub],lane);
-    s8 probability;
-    for(int i=0;i<8;i++) probability[i]=tobf(transposed[i]);
-    #else
-    for(int i=0;i<8;i++) prob[((lane/16)*8+i)*(16+0)+lane%16]=tobf(scores[sub][i]);
-    #if 0
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE,"wavefront"); __builtin_amdgcn_wave_barrier();
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"wavefront");
-    #else
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
-    #endif
-    s8 probability;
-    for(int i=0;i<8;i++) probability[i]=prob[(lane%16)*(16+0)+(lane/16)*8+i];
-    #endif
-    for(int d=0;d<D;d++) {
-      s8 value=*(const s8*)(shared_vt+(d*16+lane%16)*40+sub*16+(lane/16)*8);
-      accum[d]=mma(probability,value,accum[d]);
+      s8 probability;
+      for(int i=0;i<8;i++) probability[i]=tobf(scores[sub][i]);
+      for(int d=0;d<D;d++) accum[d]=mma(probability,value[d][sub],accum[d]);
     }
-    #if !0 && !1
-    #if 0
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE,"wavefront"); __builtin_amdgcn_wave_barrier();
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"wavefront");
-    #else
-    __builtin_amdgcn_s_barrier();
-    #endif
-    #endif
-    }
-    }
-    if(more) stage(buffer^1);
-    // Block j+1 is visible, and every wave finished reading the buffer that block j+2 will replace.
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE,"workgroup"); __builtin_amdgcn_s_barrier();
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE,"workgroup");
-    buffer^=1;
   }
+  float top=0.0f;
   for(int d=0;d<D;d++) for(int i=0;i<8;i++) {
     int row=tile*16+(lane/16)*8+i;
     float row_denom=lane_read(denom,(lane/16)*8+i);
-    if(row<R && d*16+lane%16<W) out[(head*R+row)*W+d*16+lane%16]=tobf(accum[d][i]/row_denom);
+    if(row<R && d*16+lane%16<W) {
+      short o=tobf(accum[d][i]/row_denom);
+      out[(head*R+row)*W+d*16+lane%16]=o;
+#if PMAX
+      top=__builtin_fmaxf(top,__builtin_fabsf(frombf((u16)o)));
+#endif
+    }
   }
+#if PMAX
+  // Per-wave maximum of |out| (order-free): partial[block*WAVES+wave]; blocks of image 0 come first.
+  top=maximum(top); top=__builtin_fmaxf(top,shuffle<0x401f>(top));
+  if(lane==0) partial[block*WAVES+wave]=top;
+#endif
 }

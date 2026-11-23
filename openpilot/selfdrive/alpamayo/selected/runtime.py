@@ -30,6 +30,9 @@ class Config:
   # Chestnut socket power limit (W). 144 is the firmware stock limit with clocks held high (the pinned recipe); comma's
   # openpilot defaults Chestnut to 100 W with automatic clocks (commaai/openpilot#38992). Below 144 the clocks are automatic.
   power_limit_w: int = 144
+  # SMU compute workload profile: clocks rise faster after idle gaps. The power limit stays unchanged. In a 300 ms duty
+  # cycle at 100 W the GPU time per plan fell from 211 to 203 ms; full-pipeline timing is unverified.
+  compute_profile: bool = False
 
   def __post_init__(self):
     for name in ('checkpoint','fp8_cache','prefill_calibration','cache_dir','initial_noise'):
@@ -43,6 +46,8 @@ class Config:
       raise ValueError('diffusion_steps must be an integer from 1 to 10')
     if type(self.power_limit_w) is not int or not 100 <= self.power_limit_w <= 144:
       raise ValueError('power_limit_w must be an integer from 100 to 144')
+    if type(self.compute_profile) is not bool:
+      raise ValueError('compute_profile must be boolean')
 
 
 @dataclass
@@ -191,6 +196,9 @@ class Runtime:
     loader = threading.Thread(target=load_adapter, name='alpamayo-adapter', daemon=True)
     try:
       self.backend = Backend(self.config.device_timeout_ms)
+      if self.config.compute_profile:
+        smu = Device['AMD'].iface.dev_impl.smu
+        smu._send_msg(smu.smu_mod.PPSMC_MSG_SetWorkloadMask, 1 << smu.smu_mod.WORKLOAD_PPLIB_COMPUTE_BIT, timeout=200)
       finished('gpu_backend')
       loader.start()  # after GPU init, which is CPU-bound; the weight upload below mostly waits on I/O
       self.model = SelectedModel(self.config.checkpoint,self.config.fp8_cache,scales)
@@ -226,7 +234,7 @@ class Runtime:
       self.manifest = {'variant':'selected','native_fresh_patches':self.config.native_fresh_patches,
                        'recipe':'fp8-group2-pad2112-draft32-euler3-w4-serial-mlp','precision':'mixed-w4-fp8-bf16',
                        'serial_mlp':'W4 group32 FP16 scales, dynamic E4M3 activations, BF16 output',
-                       'diffusion_steps':self.config.diffusion_steps,'power_limit_w':self.config.power_limit_w,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2112,
+                       'diffusion_steps':self.config.diffusion_steps,'power_limit_w':self.config.power_limit_w,'compute_profile':self.config.compute_profile,'solver':'euler','greedy':True,'max_tokens':64,'prefill_rows':2112,
                        'cache_rows':2304,'vision_group_limit':2,'vision_cache_capacity':144,'images':10,'patches_per_image':720,
                        'history_offsets_s':[-2,-1,-.5,-.1,0],'front_fov_degrees':[120,30],'bf16_vision_layers':2,
                        'bf16_expert_projections':True,'vision_scales':'dynamic-per-image','language_scales':'fixed-112',

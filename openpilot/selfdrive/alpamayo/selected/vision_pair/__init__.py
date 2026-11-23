@@ -14,7 +14,7 @@ PREFIX = 'vlm.model.visual.encoder.layers.'
 PROJECTIONS = ('self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj', 'self_attn.out_proj', 'mlp.fc1', 'mlp.fc2')
 BULK_LAYOUT = 'f052598ec86566ec63f98908ecf412b6e20e3f5cb4f5de5d47137dc02ade9fb0'
 CHECKPOINT = 'f0471a81f8a1b191eb92c12639660a7bbcf831ff379d1b0d724fba23c533785d'
-ORDERED_PROGRAMS = '0b03fa0ebc356b2aaa7a35383501ed83ab8b4f625cbaf9a236c2b5f3850711b8'
+ORDERED_PROGRAMS = 'b6da5dc02b203ef34b55b7961c67a6c0058d2dc848fbee019cbecee5104fbfa3'
 
 
 def root(t):

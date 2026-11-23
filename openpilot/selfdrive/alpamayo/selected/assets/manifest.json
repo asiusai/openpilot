@@ -12,9 +12,9 @@
     720,
     72
    ],
-   "source_sha256": "557da7f2ac67c8ab4d2e0e02a5c879f70783ef35336e80c2f2c30479a3125a7b",
-   "binary_sha256": "bf33eec307fc9e32bc3c4068af5f5d175ae54473037917e264b20fd0be5397a7",
-   "bytes": 22184
+   "source_sha256": "1d508bb1e070fb606d64154bb1267a71d553bbfb6a954124ad70e9d630efcd88",
+   "binary_sha256": "df8b276ff73345a8dfdb45696b741a597dcbc118cf0a0d5e9c08d5d338f65ec8",
+   "bytes": 20520
   },
   {
    "kind": "absmax",
@@ -229,9 +229,9 @@
     720,
     72
    ],
-   "source_sha256": "6f70190716baa4d9f22fb5e31df9f00226159516efbef6cd5536b361c3791966",
-   "binary_sha256": "6f881d8201f0b2d9b934d1a48d5cfa15af04fddcb2b9761c90075072191feecd",
-   "bytes": 23336
+   "source_sha256": "33251bf8c1e510378d7c715cebdafd9f02f3b30beb543671b129527d29a749a2",
+   "binary_sha256": "6ffd00f1fd44dfbad219f9829ba488c6b2d99f34b9c5570343406947990ad65d",
+   "bytes": 21928
   },
   {
    "kind": "vision_o_residual",
@@ -251,9 +251,9 @@
     4304,
     1152
    ],
-   "source_sha256": "c85f36b4ae348d5c8fde4821f33726d286c7b14a55eafa5deb28c40a8d46defb",
-   "binary_sha256": "6687c8d9b85248a9f936b6e015f62598498b3aeb45c7617d46d11178467013ea",
-   "bytes": 54424
+   "source_sha256": "8861ae7cd37c05ecfe51331a69361b6b4cc0fa0b5d3893862f66bcafe68cf906",
+   "binary_sha256": "febe56280180bb649f81609b1dd2d7e1190fe015b46dcda063d40cead4e33f63",
+   "bytes": 46616
   },
   {
    "kind": "vision_partial_max",

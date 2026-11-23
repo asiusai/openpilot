@@ -43,9 +43,8 @@ DEV float gelu(float x) {
   float x3=(x*x)*x;
   float t=__builtin_fmaf(x3,__builtin_bit_cast(float,0x3d372713u),x);
   float y=t*__builtin_bit_cast(float,0xc0135761u);
-  bool small=y<-126.0f;
-  float e=__builtin_amdgcn_exp2f(small?y+64.0f:y);
-  e=__builtin_amdgcn_ldexpf(e,small?-64:0);
+  // Below -126 the scaled exp2 result is under 2^-126, so 1+e is exactly 1 with or without the range scaling.
+  float e=__builtin_amdgcn_exp2f(y);
   return x*__builtin_amdgcn_rcpf(1.0f+e);
 }
 #if SWAP

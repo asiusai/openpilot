@@ -88,6 +88,9 @@ two query heads of one KV head for one 16-row tile; V uses the gfx12 transposing
 Two-image FP8 vision layers use fused frozen objects: LayerNorm and attention also emit |output| maxima for the next FP8 scale,
 one merged Q/K/V projection writes attention heads directly, FC1 applies GELU and emits maxima, and O and FC2 add the residual.
 Each image's FP8 scale still uses the `grouped_quantize` expressions. Single-image encodes keep the general path.
+Vision attention waves read K and the transposed V straight from memory (gfx12 transposing load). Shared-memory staging and workgroup barriers are removed.
+Score, softmax and PV arithmetic are unchanged; the attention launch takes 231 instead of 251 us on Karel at 100 W.
+The FC1 GELU uses the plain exp2 instruction. The removed range scaling changes no result for any BF16 input (all 65,536 checked).
 The frozen pair plan holds 38 programs. A regenerated plan keeps the programs of unchanged operations and compiles only changed ones.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
 In full blocks each serial layer is eleven launches with the original arithmetic: norm and FP8 quantize, one Q/K/V GEMV with RoPE
@@ -138,6 +141,9 @@ The first startup checks the complete `weights.bin` digest and stores per-4 KiB 
 Each upload then recomputes the proofs on the GPU into randomly initialized memory and compares them with the stored file.
 The tokenizer and input adapter load on a thread while the weights upload. Packing runs as batched schedules.
 The GPU runs at its highest clock level (`AM_PERF_LEVEL=high`) under the 144 W power limit, so short idle gaps do not slow the next stage.
+Below 144 W the clocks are automatic and the first graphs after an idle gap run up to 1.7 times slower.
+`compute_profile` (default `false`) selects the SMU compute workload profile, which shortens this ramp; the power limit stays unchanged.
+The profile stays set in the GPU until a full reset. Full-pipeline timing with it is unverified.
 Changing these artifacts requires a separate numerical qualification.
 
 The selected dispatcher uses 30 HIP source/object pairs under `assets/gfx1200`.

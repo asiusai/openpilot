@@ -435,8 +435,11 @@ class SelectedModel(EdgeModel):
     x = projection(fp8(attention.transpose(1,2).reshape(64,2048), scale), scale, f'{prefix}.self_attn.o_proj', (1,2), x.reshape(64,512))
     h = self.norm(x.reshape(1,64,512), f'{prefix}.post_attention_layernorm', rms=True).reshape(64,512)
     scale = scale_of(h.float().abs().max())
-    hidden = projection(fp8(h, scale), scale, f'{prefix}.mlp.fc1', (2,2)).relu().square()
-    scale = scale_of(hidden.float().abs().max())
+    raw = projection(fp8(h, scale), scale, f'{prefix}.mlp.fc1', (2,2))
+    hidden = raw.relu().square()
+    # ReLU and the rounded BF16 square are monotonic: the maximum of ReLU^2 equals ReLU^2 of the signed maximum, with the
+    # same rounding. The reduction then reads the FC1 output only (about 0.2 ms less per Euler step).
+    scale = scale_of(raw.float().max().cast(dtypes.bfloat16).relu().square().float().abs())
     return projection(fp8(hidden, scale), scale, f'{prefix}.mlp.fc2', (1,2), x).reshape(1,64,512).realize()
 
   def _trajectory(self, actions, cos, sin, length, steps, offset):
