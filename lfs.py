@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A small Git LFS client backed by a Hugging Face bucket."""
+"""Git LFS downloads from upstream Hugging Face and fork-owned GitHub storage."""
 
 import argparse
 import concurrent.futures
@@ -24,6 +24,7 @@ import urllib.request
 POINTER_VERSION = "https://git-lfs.github.com/spec/v1"
 POINTER_RE = re.compile(rb"\Aversion " + POINTER_VERSION.encode() + rb"\noid sha256:([0-9a-f]{64})\nsize ([0-9]+)\n\Z")
 BUCKET = os.environ.get("OPENPILOT_LFS_BUCKET", "commaai/openpilot-lfs")
+FORK_LFS = "https://github.com/asiusai/openpilot.git/info/lfs"
 ZERO = "0" * 40
 RANGES = 8
 RANGE_MIN = 16 << 20
@@ -183,16 +184,33 @@ def object_info(objects):
   return found
 
 
-def download_http(oid, size, path, span=None):
+def fork_downloads(objects):
+  request = urllib.request.Request(f"{FORK_LFS}/objects/batch", data=json.dumps({
+    "operation": "download", "transfers": ["basic"], "objects": [{"oid": oid, "size": size} for oid, size in objects.items()],
+  }).encode(), headers={"Content-Type": "application/vnd.git-lfs+json", "Accept": "application/vnd.git-lfs+json"})
+  with urllib.request.urlopen(request, timeout=30) as response:
+    found = {item["oid"]: item for item in json.load(response)["objects"]}
+  actions = {}
+  for oid, size in objects.items():
+    item = found.get(oid, {})
+    action = item.get("actions", {}).get("download")
+    if item.get("size") != size or not action:
+      raise RuntimeError(f"fork LFS object {oid} is missing or has the wrong size")
+    actions[oid] = action
+  return actions
+
+
+def download_http(oid, size, path, span=None, action=None):
   ranges = min(RANGES, max(1, (size + RANGE_MIN - 1) // RANGE_MIN))
   if span is None and ranges > 1:
     # each range writes its own slice of one preallocated file
     with path.open("wb") as out:
       out.truncate(size)
-    parallel(download_http, [(oid, size, path, (i * size // ranges, (i + 1) * size // ranges - 1)) for i in range(ranges)], ranges)
+    parallel(download_http, [(oid, size, path, (i * size // ranges, (i + 1) * size // ranges - 1), action) for i in range(ranges)], ranges)
     return
 
-  request = hf_request(f"https://huggingface.co/buckets/{BUCKET}/resolve/sha256/{oid}")
+  request = (urllib.request.Request(action["href"], headers=action.get("header", {})) if action else
+             hf_request(f"https://huggingface.co/buckets/{BUCKET}/resolve/sha256/{oid}"))
   if span is not None:
     request.add_header("Range", f"bytes={span[0]}-{span[1]}")
   expected_size = size if span is None else span[1] - span[0] + 1
@@ -225,7 +243,12 @@ def download_one(oid, size):
     dst.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"{oid}-", dir=dst.parent) as directory:
       tmp = Path(directory) / "object"
-      download_http(oid, size, tmp)
+      try:
+        download_http(oid, size, tmp)
+      except urllib.error.HTTPError as error:
+        if error.code != 404:
+          raise
+        download_http(oid, size, tmp, action=fork_downloads({oid: size})[oid])
       if tmp.stat().st_size != size or hash_file(tmp) != oid:
         raise RuntimeError(f"sha256 mismatch for {oid}")
       os.replace(tmp, dst)
@@ -415,37 +438,6 @@ def pull(exclude=None):
     git("update-index", "-q", "--refresh", check=False)
 
 
-def bucket_request(path, data=None):
-  headers = {"Content-Type": "application/x-ndjson"} if data is not None else {}
-  request = hf_request(f"https://huggingface.co/api/buckets/{BUCKET}/{path}", data=data, headers=headers)
-  for attempt in range(4):
-    try:
-      with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read(), response.headers
-    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError) as error:
-      retryable = not isinstance(error, urllib.error.HTTPError) or error.code in (408, 429) or 500 <= error.code < 600
-      if not retryable or attempt == 3:
-        raise
-      time.sleep(2 ** attempt)
-
-
-def upload_xet(objects, upload_files):
-  def connection():
-    _, headers = bucket_request("xet-write-token")
-    return headers["X-Xet-Cas-Url"], (headers["X-Xet-Access-Token"], int(headers["X-Xet-Token-Expiration"]))
-
-  oids = list(objects)
-  for start in range(0, len(oids), 100):
-    batch = oids[start:start + 100]
-    paths = [object_path(oid) for oid in batch]
-    endpoint, token = connection()
-    infos = upload_files([str(path) for path in paths], endpoint, token, lambda: connection()[1], None, "bucket", skip_sha256=True)
-    payload = b"".join(json.dumps({"type": "addFile", "path": f"sha256/{oid}", "xetHash": info.hash,
-                                  "mtime": int(path.stat().st_mtime * 1000)}).encode() + b"\n"
-                       for oid, path, info in zip(batch, paths, infos, strict=True))
-    bucket_request("batch", payload)
-
-
 def upload(objects):
   objects = dict(objects)
   if not objects:
@@ -461,21 +453,15 @@ def upload(objects):
     pending[oid] = size
   if not pending:
     return
-  try:
-    from hf_xet import upload_files
-  except ImportError:
-    raise RuntimeError("Missing hf-xet: run 'uv sync' and activate .venv.") from None
   for oid, size in pending.items():
     path = object_path(oid)
     if not valid(path, size):
       raise RuntimeError(f"missing local LFS object {oid}")
     if hash_file(path) != oid:
       raise RuntimeError(f"local sha256 mismatch for {oid}")
-  upload_xet(pending, upload_files)
-  uploaded = object_info(pending)
-  for oid, size in pending.items():
-    if uploaded.get(f"sha256/{oid}") != size:
-      raise RuntimeError(f"uploaded object {oid} is missing or has the wrong size")
+  git("-c", f"lfs.url={FORK_LFS}", "-c", f"lfs.pushurl={FORK_LFS}", "lfs", "push", "--object-id", "origin", "--stdin",
+      stdin=("\n".join(pending) + "\n").encode())
+  fork_downloads(pending)
 
 
 def pre_push(remote):
@@ -494,7 +480,7 @@ def pre_push(remote):
   except urllib.error.HTTPError as error:
     if error.code not in (401, 403):
       raise
-    sys.exit(f"lfs.py: uploading LFS objects to {BUCKET} needs a Hugging Face token with write access (hf auth login, or set HF_TOKEN)")
+    sys.exit(f"lfs.py: cannot read LFS metadata from upstream or {FORK_LFS}: HTTP {error.code}")
 
 
 def main():

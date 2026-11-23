@@ -7,3 +7,6 @@ The export updates operation identifiers, native-function nodes, external runtim
 CPU helpers remain portable and compile when loaded.
 
 The unchanged big-model weight payload has SHA-256 `76a5c0712e4a9fd2c8bb95d1a562661f0b668c309cb7d4ac03ac7a6f79fc8c94`.
+
+Run `./lfs.py pull` to download artifacts. Upstream objects use Hugging Face; Asius exports use GitHub LFS.
+Publishing new Asius objects requires `git-lfs` and write access to `asiusai/openpilot`.
