@@ -233,9 +233,13 @@ class Store:
 DEFAULT_NAVIGATION = 'Follow the road.'
 
 
-def navigation(rows, query, default=DEFAULT_NAVIGATION):
+def navigation(rows, query, default=DEFAULT_NAVIGATION, within_m=None):
   # Without usable route guidance the model gets the default instruction, so it follows the road where straight ends.
   text, meta = route_navigation(rows, query)
+  if text and within_m is not None and meta['instruction']['maneuverDistance'] > within_m:
+    # A maneuver far ahead makes the model start it early: with "Turn right in 800m" 39% of straight-road plans moved more
+    # than 1 m right within 6.4 s (12% at 150 m). The model gets the instruction only inside `navigation_within_m`.
+    return default, dict(meta, source='default-far', model_instruction=default)
   if text:
     return text, meta
   return default, dict(meta, source='default', model_instruction=default)
@@ -283,8 +287,9 @@ def route_navigation(rows, query):
 
 class Preparer:
   def __init__(self, geometry, cache_limit=48, sampler=None, *, segmented=False, period_ns=HALF_SECOND_NS, free=False,
-               default_navigation=DEFAULT_NAVIGATION):
+               default_navigation=DEFAULT_NAVIGATION, navigation_within_m=None):
     self.default_navigation = default_navigation  # ALPAMAYO_CONFIG `default_navigation`
+    self.navigation_within_m = navigation_within_m  # ALPAMAYO_CONFIG `navigation_within_m`; None sends every distance
     self.state_pool = None  # created on first use, on the worker thread's cores
     if cache_limit < 0:
       raise ValueError('Negative image cache capacity')
@@ -400,7 +405,7 @@ class Preparer:
                                             'values': copy.deepcopy(parameters),
                                             'applied_stiffness_factor': max(parameters['stiffnessFactor'], .1),
                                             'applied_steer_ratio': max(parameters['steerRatio'], .1)})
-    nav, nav_meta = navigation(states['navInstruction'], query, self.default_navigation)
+    nav, nav_meta = navigation(states['navInstruction'], query, self.default_navigation, self.navigation_within_m)
     return cal, cal_ns, xyz, rot, history, nav, nav_meta
 
   def older(self, opening, query):

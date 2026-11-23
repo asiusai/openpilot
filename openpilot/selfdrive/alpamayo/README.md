@@ -145,6 +145,8 @@ The private JSON configuration contains:
 - `tinygrad`: isolated tinygrad checkout path.
 - `output`: existing output directory, separate from route recordings.
 - `cache`: absolute existing writable persistent cache directory, separate from route recordings and `output`.
+- `navigation_within_m`: optional distance (20-5000 m). A route maneuver farther ahead sends `default_navigation` instead of its text.
+  A far maneuver makes the model start it early; the car uses 150.
 - `period_ms`: live slot period; `250` for the car test, `500` for 2 Hz. Accepted values are `0` (free running), `250`, and `500`.
 - `retained_cpu_inputs`: optional boolean, default `false`. The selected 500 ms worker can retain immutable calibrated images and byte patches.
 - `geometry`: the qualified source-camera geometry object described below.

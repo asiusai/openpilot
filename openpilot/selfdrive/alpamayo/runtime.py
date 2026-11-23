@@ -518,7 +518,7 @@ def worker(config, directory, handoff):
     raise ValueError('retained_cpu_inputs requires the selected free-running, 100, 250 or 500 ms worker')
   preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented, free=period_ms == 0,
                       period_ns=period_ms*1_000_000 if period_ms in (100, 250, 500) else 500_000_000,
-                      default_navigation=default_navigation_text(config))
+                      default_navigation=default_navigation_text(config), navigation_within_m=navigation_within(config))
   # Selected inference removes ALPAMAYO_* tuning variables during initialization.
   publish_plans = planner_mode()
   adapter = load_adapter(config)
@@ -768,6 +768,14 @@ def worker(config, directory, handoff):
     finally:
       signal.signal(signal.SIGTERM, previous)
       adapter.close()
+
+
+def navigation_within(config):
+  """ALPAMAYO_CONFIG `navigation_within_m`: the model gets a maneuver only when it is at most this far ahead (default: any)."""
+  limit = config.get('navigation_within_m')
+  if limit is not None and (isinstance(limit, bool) or not isinstance(limit, (int, float)) or not 20 <= limit <= 5000):
+    raise ValueError('navigation_within_m must be a distance from 20 to 5000 m')
+  return limit
 
 
 def default_navigation_text(config):
