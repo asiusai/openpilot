@@ -27,12 +27,13 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 1
-          lfs: true
+          lfs: false
           persist-credentials: false
       - name: Check build inputs
         run: |
           test -f /ASIUS
           test "$(uname -m)" = aarch64
+          ./lfs.py pull --exclude=''
           git lfs fsck
           python3 -m unittest discover -s tools/release -p 'test_package_prebuilt.py'
       - name: Build and package
