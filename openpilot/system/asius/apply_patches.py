@@ -4,6 +4,22 @@ import tempfile
 from pathlib import Path
 
 
+def apply_tinygrad_patches(root: Path) -> None:
+  """Apply the pinned Dragon runtime patch, rejecting unexpected source changes."""
+  source = root / 'tinygrad_repo'
+  patch = Path(__file__).resolve().parent / 'patches/tinygrad-msm.patch'
+  command = ['git', 'apply', '--unsafe-paths', f'--directory={source.resolve()}', '--whitespace=error-all']
+  # Releases contain the already patched sources, without a nested Git repository.
+  for reverse in (True, False):
+    check = subprocess.run([*command, '--check', *(['--reverse'] if reverse else []), str(patch)],
+                           cwd=root, capture_output=True, text=True)
+    if check.returncode == 0:
+      if not reverse:
+        subprocess.run([*command, str(patch)], cwd=root, check=True)
+      return
+  raise RuntimeError(f'Cannot apply {patch.name}; reconcile the patch with tinygrad_repo before building.\n{check.stderr}')
+
+
 def patched_msgq_source(root: Path) -> Path:
   """Prepare a build-only source copy, leaving the upstream checkout untouched."""
   source = root / 'msgq_repo/msgq/visionipc/visionbuf.cc'
@@ -26,4 +42,6 @@ def patched_msgq_source(root: Path) -> Path:
 
 
 if __name__ == '__main__':
-  patched_msgq_source(Path(__file__).resolve().parents[3])
+  root = Path(__file__).resolve().parents[3]
+  apply_tinygrad_patches(root)
+  patched_msgq_source(root)
