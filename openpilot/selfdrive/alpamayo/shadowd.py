@@ -346,6 +346,10 @@ if __name__ == '__main__':
   if len(sys.argv) == 4:
     if os.environ.get('ALPAMAYO_SHADOW') != '1' and not planner_mode():
       raise RuntimeError('Explicit shadow opt-in is required')
+    # msgq publishers wake readers with SIGUSR2 by thread ID and keep the IDs of readers that exited. After the kernel
+    # reuses such an ID for a thread of this worker, which does not use msgq, the default action killed the worker
+    # mid-drive (exit -12, Karel 2026-11-22). Ignore it; compiler child processes inherit the setting.
+    signal.signal(signal.SIGUSR2, signal.SIG_IGN)
     if not planner_mode():
       os.nice(10)  # Shadow-only plans must not slow openpilot. In planner mode Alpamayo is the driving model.
     # Startup mask; runtime.worker moves per-slot threads to cores 5 and 7 once the onroad policy brings them online
