@@ -88,8 +88,6 @@ function launch {
   ln -sfn teleoprtc_repo/teleoprtc teleoprtc
   ln -sfn tinygrad_repo/tinygrad tinygrad
 
-  python3 "$DIR/openpilot/system/asius/apply_patches.py" || return 1
-
   # hardware specific init
   if [ -f /AGNOS ]; then
     agnos_init
