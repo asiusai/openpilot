@@ -24,6 +24,16 @@
       "fp8_index_sha256": "81dfdd0fc974d7e3ea9e83cce782354148a91d9810644278b8952de96329527f",
       "fp8_weights_sha256": "c940b23edae5d6e8c2e4337856e89847c259eba5a9bdadf08bbdd9434880c481",
       "views": "180/60"
+    },
+    "dist-gt10": {
+      "fp8_index_sha256": "f5da069f3c822c59b7f36a58a97775d775aa786fcfbaf6987edf90a0d31465ac",
+      "fp8_weights_sha256": "866e287b0c077d60fab3cef10007a2525e48ac9f50fd4931526a4aa6cac1d628",
+      "views": "120/30"
+    },
+    "lat10": {
+      "fp8_index_sha256": "189ac8a583ed38a55d3d66bd2dbd5caf96e93786adb773da81a6261d040ef562",
+      "fp8_weights_sha256": "836a0d0bca36052cf636cd97798406f414d3df029cc93e9a4cee9e62d8bad71e",
+      "views": "120/30"
     }
   },
   "fp8_finetunes_changed": "Only expert.expert.layers.N.{self_attn.q_proj,k_proj,v_proj,o_proj,mlp.fc1,fc2}.weight and their scales differ from the base FP8 cache."
