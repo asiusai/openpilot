@@ -7,11 +7,14 @@ from unittest.mock import patch
 
 import pytest
 
+from tinygrad import Context, Device
+from tinygrad.codegen import to_program
 from tinygrad.dtype import dtypes
+from tinygrad.renderer import TinyELF
 from tinygrad.runtime.autogen import mesa, msm_drm
-from tinygrad.runtime.ops_qcom import MSMIface, QCOMComputeQueue, _qcom_pvtmem_sizes, pkt4_hdr, pkt7_hdr
+from tinygrad.runtime.ops_qcom import MSMIface, QCOMComputeQueue, QCOMProgramData, _qcom_pvtmem_sizes, pkt4_hdr, pkt7_hdr
 from tinygrad.runtime.support.memory import TLSFAllocator
-from tinygrad.uop.ops import UOp
+from tinygrad.uop.ops import KernelInfo, UOp
 
 
 def test_private_memory_register_units():
@@ -20,11 +23,25 @@ def test_private_memory_register_units():
   assert _qcom_pvtmem_sizes(513, 4096, 2) == (2, 1024, 2048, 8 << 20)
 
 
+@pytest.mark.parametrize('arch', ['a630', 'a635,GPU_ID=635,CHIP_ID=0x306030500'])
+def test_program_metadata_compiles_from_target_without_gpu(arch):
+  with Context(DEV=f'MSM+QCOM:IR3:{arch}:copy=0'):
+    buf, i = UOp.param(0, dtypes.float32, 64), UOp.range(64, 0)
+    ast = buf[i].store(buf[i] + 1).end(i).sink(arg=KernelInfo('target_metadata'))
+    program = to_program(ast, Device.renderer_for('QCOM'))
+    data = QCOMProgramData('QCOM', TinyELF.from_program(program))
+    assert data.NIR and data.image_size > 0
+    assert data.dev_info.fibers_per_sp > 0 and data.dev_info.num_sp_cores > 0
+    assert data.dev_info.a6xx.has_lpac == arch.startswith('a635')
+    assert Device.target_for('QCOM').interface == 'MSM'
+    assert Device.target_for('QCOM').get('copy', 1) == 0
+
+
 def test_a635_registers_follow_compiler_metadata():
   queue = object.__new__(QCOMComputeQueue)
   queue.devs, queue.blob, queue.patches = ('QCOM',), bytearray(), []
-  queue.dev = SimpleNamespace(dev_info=SimpleNamespace(a6xx=SimpleNamespace(supports_double_threadsize=False, has_lpac=True)))
-  data = SimpleNamespace(NIR=True, wgsz=1, hregs=0, fregs=0, brnchstck=0, shared_size=1, prg_offset=0,
+  data = SimpleNamespace(dev_info=SimpleNamespace(a6xx=SimpleNamespace(supports_double_threadsize=False, has_lpac=True)),
+                         NIR=True, wgsz=1, hregs=0, fregs=0, brnchstck=0, shared_size=1, prg_offset=0,
                          pvtmem_size_per_item=0, pvtmem_size_total=0, pvtmem_per_wave=False, stack_size=4096,
                          hw_stack_offset=0, image_size=0x3280, constlen=28, double_threadsize=False, early_preamble=False,
                          mergedregs=False, samp_cnt=0, tex_cnt=0, ibo_cnt=0, wgid=0xfc, lid=0xfc, max_threads=1024, kernargs_alloc_size=2048)
