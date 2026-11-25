@@ -95,14 +95,6 @@ _services: dict[str, tuple] = {
   "livestreamWideRoadEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "livestreamNarrowRoadEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "livestreamCabinEncodeData": (False, 20., None, QueueSize.MEDIUM),
-  "lfEncodeIdx": (False, 20., 1),
-  "lrEncodeIdx": (False, 20., 1),
-  "rfEncodeIdx": (False, 20., 1),
-  "rrEncodeIdx": (False, 20., 1),
-  "lfEncodeData": (False, 20., None, QueueSize.MEDIUM),
-  "lrEncodeData": (False, 20., None, QueueSize.MEDIUM),
-  "rfEncodeData": (False, 20., None, QueueSize.MEDIUM),
-  "rrEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "customReservedRawData0": (True, 0.),
 }
 SERVICE_LIST = {name: Service(*vals) for

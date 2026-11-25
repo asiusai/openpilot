@@ -80,7 +80,7 @@ class SessionChanged(ValueError):
 
 class SecureSession:
   def __init__(self, identity: RootIdentity, transport: str, now=time.monotonic):
-    if transport not in ('web', 'bluetooth', 'camera'):
+    if transport not in ('web', 'bluetooth'):
       raise ValueError('Invalid transport')
     self.identity = identity
     self.public_key = identity.identity()
@@ -159,32 +159,21 @@ class SecureSession:
                    reverse if initiator else forward, self.now())
 
   def encrypt(self, peer, text, expected_sid=None):
-    return self.encrypt_bytes(peer, text.encode(), expected_sid)
-
-  def encrypt_bytes(self, peer, data, expected_sid=None):
-    if not isinstance(data, bytes):
-      raise ValueError('Expected bytes')
     with self.lock:
       channel = self.active.get(peer)
       if channel is None:
         raise ValueError('Session is not ready')
       if expected_sid is not None and channel.sid != expected_sid:
         raise SessionChanged('Session changed before delivery')
-      size = len(data)
+      size = len(text.encode())
       if not self.usable(channel, size):
         raise ValueError('Session key usage limit reached')
       channel.bytes_used += size
       channel.created = self.now()
       channel.tx += 1
-      return encrypt_data(channel.send, self.public_key, peer, self.transport, channel.sid, channel.tx, data)
+      return encrypt_data(channel.send, self.public_key, peer, self.transport, channel.sid, channel.tx, text.encode())
 
   def receive(self, message):
-    return self._receive(message, binary=False)
-
-  def receive_bytes(self, message):
-    return self._receive(message, binary=True)
-
-  def _receive(self, message, binary):
     with self.lock:
       self.prune()
       if not isinstance(message, dict) or message.get('v') != 7 or message.get('to') != self.public_key or message.get('transport') != self.transport:
@@ -201,15 +190,14 @@ class SecureSession:
         message_nonce(counter)
         if channel is None or channel.peer != peer or counter <= channel.rx or not self.usable(channel):
           raise ValueError('Replayed or unknown session')
-        data = decrypt_data(channel.receive, message)
-        value = data if binary else data.decode()
-        if not self.usable(channel, len(data)):
+        text = decrypt_data(channel.receive, message).decode()
+        if not self.usable(channel, len(text.encode())):
           raise ValueError('Session key usage limit reached')
-        channel.bytes_used += len(data)
+        channel.bytes_used += len(text.encode())
         channel.rx = counter
         self.activate(channel)
         self.candidates = {sid: candidate for sid, candidate in self.candidates.items() if candidate.peer != peer}
-        return {'peer': peer, 'data' if binary else 'text': value, 'ready': True}
+        return {'peer': peer, 'text': text, 'ready': True}
       if (message.get('type') not in ('hello', 'welcome') or len(unb64(message.get('nonce'))) != 32
           or len(unb64(message.get('kem'))) != (xwing.PUBLIC_BYTES if message['type'] == 'hello' else xwing.CIPHERTEXT_BYTES)):
         raise ValueError('Invalid handshake')

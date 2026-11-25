@@ -955,13 +955,6 @@ void CameraState::process_pix_frame(int buf_idx, uint64_t timestamp) {
   pm->send(camera.cc.publish_name, msg);
 }
 
-// Side camera devices stream only road and wide. A missing cabin camera would otherwise
-// restart camerad every thirty seconds for re-probing and interrupt the other streams.
-static bool use_camera(const CameraConfig &config) {
-  static const bool no_cabin = getenv("CAMERAD_NO_CABIN") != nullptr;
-  return config.enabled && !(no_cabin && config.stream_type == VISION_STREAM_CABIN);
-}
-
 void camerad_thread() {
   LOG("-- v0 camerad starting (VFE PIX DMABUF required; no runtime RDI/MMAP CPU fallback)");
 
@@ -973,7 +966,7 @@ void camerad_thread() {
     return;
   }
   for (const auto &config : ALL_CAMERA_CONFIGS) {
-    if (!use_camera(config)) continue;
+    if (!config.enabled) continue;
 
     const int i = config.camera_num;
     v0_cams[i] = resolve_cam_config(media_fd, i);
@@ -987,7 +980,7 @@ void camerad_thread() {
 
   std::vector<std::unique_ptr<CameraState>> cams;
   for (const auto &config : ALL_CAMERA_CONFIGS) {
-    if (!use_camera(config)) continue;
+    if (!config.enabled) continue;
 
     auto cam = std::make_unique<CameraState>(config);
     cam->init(&v);

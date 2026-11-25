@@ -70,11 +70,6 @@ struct EncoderSettings {
     };
   }
 
-  // Side cameras send Alpamayo's 768x432 model size. One keyframe per second bounds file switching and loss recovery.
-  static EncoderSettings SideEncoderSettings() {
-    return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::FULL_H_E_V_C, .bitrate = 2'500'000, .gop_size = 20};
-  }
-
   static EncoderSettings StreamEncoderSettings() {
     int _stream_bitrate = getenv("STREAM_BITRATE") ? atoi(getenv("STREAM_BITRATE")) : 5'000'000;
     return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::QCAMERA_H264, .bitrate = _stream_bitrate , .gop_size = 5};
@@ -89,8 +84,6 @@ public:
   bool record = true;
   bool include_audio = false;
   bool is_live = false;
-  // Received from another device: follow loggerd's segments instead of driving rotation.
-  bool follow_segments = false;
   int frame_width = -1;
   int frame_height = -1;
   int fps = MAIN_FPS;
@@ -182,20 +175,6 @@ const EncoderInfo qcam_encoder_info = {
   .get_settings = [](int){return EncoderSettings::QcamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(QNarrowRoadEncode),
 };
-
-#define SIDE_ENCODER_INFO(view, View)                                        \
-  EncoderInfo{                                                            \
-    .publish_name = #view "EncodeData",                                   \
-    .filename = #view "camera.mp4",                                       \
-    .follow_segments = true,                                              \
-    .frame_width = 768,                                                   \
-    .frame_height = 432,                                                  \
-    .get_settings = [](int){return EncoderSettings::SideEncoderSettings();}, \
-    INIT_ENCODE_FUNCTIONS(View##Encode),                                  \
-  }
-
-// Left/right side, front/rear facing.
-const EncoderInfo side_encoder_infos[] = {SIDE_ENCODER_INFO(lf, Lf), SIDE_ENCODER_INFO(lr, Lr), SIDE_ENCODER_INFO(rf, Rf), SIDE_ENCODER_INFO(rr, Rr)};
 
 const LogCameraInfo narrow_road_camera_info{
   .thread_name = "narrow_road_cam_encoder",
