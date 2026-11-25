@@ -148,7 +148,10 @@ def install_dependencies(project, environment):
     raise RuntimeError('Review the changed ANTLR build before installation')
   environment = dict(environment, UV_PROJECT_ENVIRONMENT=str(project/'.venv'), UV_PYTHON_DOWNLOADS='never')
   uv = shutil.which('uv', path=environment['PATH'])
-  subprocess.run([uv, 'venv', '--python', '3.12', str(project/'.venv')], env=environment, check=True)
+  # The environment uses openpilot's own interpreter version, not another Python 3.12 that uv finds first.
+  if sys.version_info[:2] != (3, 12):
+    raise RuntimeError('The Alpamayo runtime requires Python 3.12')
+  subprocess.run([uv, 'venv', '--python', sys.executable, str(project/'.venv')], env=environment, check=True)
   python = project/'.venv/bin/python'
   setuptools = packages['setuptools']
   requirement = f'setuptools=={setuptools["version"]} '+' '.join(f'--hash={wheel["hash"]}' for wheel in setuptools['wheels'])+'\n'
