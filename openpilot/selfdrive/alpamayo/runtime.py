@@ -476,18 +476,14 @@ def live_timing(selected, worker_started_ns, output_ready_ns, slot=None):
 
 def load_adapter(config):
   settings = dict(config['inference'])
-  variant = settings.pop('variant', 'default')
-  if variant == 'default':
-    from openpilot.selfdrive.alpamayo.inference import ShadowAdapter
-  elif variant == 'selected':
-    allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches', 'diffusion_steps',
-               'power_limit_w', 'compute_profile'}
-    if extra := settings.keys()-allowed:
-      raise ValueError(f'Unexpected selected inference fields: {sorted(extra)}')
-    settings['cache_dir'] = str(Path(config['cache']).resolve())
-    from openpilot.selfdrive.alpamayo.selected import ShadowAdapter
-  else:
-    raise ValueError(f'Unknown Alpamayo variant: {variant}')
+  if settings.pop('variant', 'selected') != 'selected':
+    raise ValueError('Only the selected Alpamayo variant exists')
+  allowed = {'checkpoint', 'fp8_cache', 'prefill_calibration', 'initial_noise', 'device_timeout_ms', 'native_fresh_patches', 'diffusion_steps',
+             'power_limit_w', 'compute_profile'}
+  if extra := settings.keys()-allowed:
+    raise ValueError(f'Unexpected selected inference fields: {sorted(extra)}')
+  settings['cache_dir'] = str(Path(config['cache']).resolve())
+  from openpilot.selfdrive.alpamayo.selected import ShadowAdapter
   return ShadowAdapter(settings)
 
 
@@ -501,21 +497,19 @@ def worker(config, directory, handoff):
   if not input_storage_ok(handoff):
     raise RuntimeError('Shadow worker requires a RAM-backed input slot')
   load_started = time.monotonic_ns()
-  sampler = None
-  if config['inference'].get('variant', 'default') == 'selected':
-    from functools import partial
-    from openpilot.selfdrive.alpamayo.geometry import lens_rays
-    from openpilot.selfdrive.alpamayo.selected.camera import calibrated_image, library
-    # The lens grid and sampler binary need no exposure or live calibration. Build them before the first timed camera pair.
-    geometry_json = json.dumps(config['geometry'], sort_keys=True)
-    for camera in CAMERAS:
-      lens_rays(camera, geometry_json)
-    library(str(config['cache']))
-    sampler = partial(calibrated_image, cache_dir=config['cache'])
+  from functools import partial
+  from openpilot.selfdrive.alpamayo.geometry import lens_rays
+  from openpilot.selfdrive.alpamayo.selected.camera import calibrated_image, library
+  # The lens grid and sampler binary need no exposure or live calibration. Build them before the first timed camera pair.
+  geometry_json = json.dumps(config['geometry'], sort_keys=True)
+  for camera in CAMERAS:
+    lens_rays(camera, geometry_json)
+  library(str(config['cache']))
+  sampler = partial(calibrated_image, cache_dir=config['cache'])
   segmented = config.get('retained_cpu_inputs', False)
   period_ms = config.get('period_ms', 500)
-  if type(segmented) is not bool or (segmented and (sampler is None or period_ms not in (0, 100, 250, 500))):
-    raise ValueError('retained_cpu_inputs requires the selected free-running, 100, 250 or 500 ms worker')
+  if type(segmented) is not bool or (segmented and period_ms not in (0, 100, 250, 500)):
+    raise ValueError('retained_cpu_inputs requires the free-running, 100, 250 or 500 ms worker')
   preparer = Preparer(config['geometry'], sampler=sampler, segmented=segmented, free=period_ms == 0,
                       period_ns=period_ms*1_000_000 if period_ms in (100, 250, 500) else 500_000_000,
                       default_navigation=default_navigation_text(config), navigation_within_m=navigation_within(config))
@@ -730,7 +724,7 @@ def worker(config, directory, handoff):
         # An anchor stays useful until its query is 1 s old; with 100 ms slots, several anchor-only slots can queue behind a prediction.
         # The encode dispatch is mostly USB transfer: the early thread meanwhile projects the next queued slot.
         primed = None
-        if isinstance(error, Priming) and sampler is not None:
+        if isinstance(error, Priming):
           primed = adapter.prime(error.anchors, selected.query_ns+1_000_000_000, wait=False, inputs=queued_inputs(error.anchors))
           marks.pop('lookahead_ns', None)  # the mark belongs to predictions only
         if primed is False:

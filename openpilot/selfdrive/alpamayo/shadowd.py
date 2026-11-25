@@ -54,6 +54,16 @@ def cache_directory(config, output):
   return cache
 
 
+def prune_output(output, limit_bytes):
+  """Keep the newest prediction sessions within the limit. Each session is one directory."""
+  import shutil
+  total = 0
+  for session in sorted((p for p in output.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True):
+    total += sum(f.stat().st_size for f in session.rglob('*') if f.is_file())
+    if total > limit_bytes:
+      shutil.rmtree(session, ignore_errors=True)
+
+
 def worker_environment(config, cache):
   repository = Path(__file__).resolve().parents[3]
   paths = [Path(config['tinygrad']), repository, repository/'opendbc_repo']
@@ -84,7 +94,7 @@ def main():
   from openpilot.selfdrive.alpamayo.runtime import private_output, ram_handoff, storage_ok
   config_path = Path(os.environ['ALPAMAYO_CONFIG']).resolve()
   config = json.loads(config_path.read_text())
-  if planner_mode() and (config.get('period_ms', 500) not in (0, 100, 250, 500) or config['inference'].get('variant') != 'selected'):
+  if planner_mode() and (config.get('period_ms', 500) not in (0, 100, 250, 500) or config['inference'].get('variant', 'selected') != 'selected'):
     raise ValueError('Planner evaluation requires the selected free-running, 100, 250 or 500 ms configuration')
   python = Path(config['python'])
   if not python.is_file() or python == Path(sys.executable):
@@ -93,6 +103,8 @@ def main():
   if not output.is_absolute() or not output.is_dir() or not storage_ok(output, 128*1024**2):
     raise ValueError('Configure an existing output directory with recording disk reserve')
   output = private_output(output)
+  if (limit := config.get('output_limit_gb')) is not None:
+    prune_output(output, float(limit)*1024**3)
   os.umask(0o077)
   cache = cache_directory(config, output)
   def stop(*_):

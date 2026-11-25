@@ -1013,6 +1013,18 @@ def alpamayo_reasoning() -> str | None:
   return None
 
 
+def alpamayo_install_status() -> str | None:
+  """Progress of the Alpamayo installer, until it is done."""
+  from openpilot.selfdrive.alpamayo.install import STATUS, complete, managed
+  if not managed() or complete():
+    return None
+  try:
+    value = json.loads(STATUS.read_text())
+  except (OSError, ValueError):
+    return "Alpamayo install: waiting to start (parked, with network)"
+  return f"Alpamayo install: {value.get('step')}: {value.get('text')}"
+
+
 def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
   build_metadata = get_build_metadata()
   services = _live_services(sm)
@@ -1033,6 +1045,8 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
   if reasoning := alpamayo_reasoning():
     # Offroad_Chestnut* alerts stay visible in the app while driving.
     offroad_alerts.append({"key": "Offroad_ChestnutReasoning", "text": reasoning, "severity": 0})
+  if install_status := alpamayo_install_status():
+    offroad_alerts.append({"key": "Offroad_ChestnutInstall", "text": install_status, "severity": 0})
 
   snapshot = {
     "navigation": getNavigationState(),

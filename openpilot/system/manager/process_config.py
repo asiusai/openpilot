@@ -66,17 +66,22 @@ def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
-def alpamayo_shadow(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # ALPAMAYO_KEEP_WARM=1 loads and compiles offroad and keeps the worker across ignition cycles.
-  # Warmup then never overlaps the onroad camera and Adreno load (Karel dropped USB under that combined load).
-  keep_warm = os.environ.get('ALPAMAYO_KEEP_WARM') == '1'
-  if (not started and not keep_warm) or os.environ.get('ALPAMAYO_SHADOW') == '1':
-    return started or keep_warm
+def alpamayo(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # ALPAMAYO_KEEP_WARM=1 loads the model offroad and keeps the worker across ignition cycles.
+  # Warmup then never overlaps the onroad camera and Adreno load (the external GPU dropped off USB under that combined load).
+  from openpilot.selfdrive.alpamayo.install import ready
+  if not (started or os.environ.get('ALPAMAYO_KEEP_WARM') == '1') or not ready():
+    return False
+  if os.environ.get('ALPAMAYO_SHADOW') == '1':
+    return True
   from openpilot.selfdrive.alpamayo.shadowd import planner_mode
-  if planner_mode() and os.path.isfile(os.environ['ALPAMAYO_CONFIG']):
-    from openpilot.selfdrive.modeld.helpers import chestnut_present
-    return chestnut_present()
-  return False
+  from openpilot.selfdrive.modeld.helpers import chestnut_present
+  return planner_mode() and chestnut_present()
+
+def alpamayo_install(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Downloads the runtime, model and compiled GPU graphs once, offroad. The planner starts when it is complete.
+  from openpilot.selfdrive.alpamayo.install import complete, managed
+  return not started and managed() and not complete()
 
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("NavigationEnabled")
@@ -116,7 +121,8 @@ procs = [
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
-  PythonProcess("alpamayod", "openpilot.selfdrive.alpamayo.shadowd", alpamayo_shadow),
+  PythonProcess("alpamayod", "openpilot.selfdrive.alpamayo.shadowd", alpamayo),
+  PythonProcess("alpamayo_install", "openpilot.selfdrive.alpamayo.install", alpamayo_install, enabled=not PC),
   PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
 
