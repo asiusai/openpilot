@@ -129,8 +129,6 @@ class NativeProducer:
             value['routeRevision'] = revision
           # state_value constructs detached Python values. The store can keep them without copying the full modelV2 again.
           self.store.add_state(kind, stamp, received, value, bool(event.valid and valid), owned=True)
-      if params.get_bool('ChestnutActive') or params.get_bool('ChestnutLoading'):
-        raise RuntimeError('Driving model attempted Chestnut ownership')
       self.health = {'time_ns': received, 'model_alive': bool(sm.alive['modelV2'] and sm.valid['modelV2']),
                      'model_age_ns': received-int(sm.logMonoTime['modelV2']),
                      'device_valid': bool(sm.alive['deviceState'] and sm.valid['deviceState']),

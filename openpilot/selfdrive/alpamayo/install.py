@@ -5,7 +5,7 @@ The manager runs this offroad until `complete()` is true. Steps:
 1. The isolated runtime: pinned tinygrad and NVIDIA Alpamayo 2 Edge sources with their locked Python dependencies.
 2. The model files of `release.json` from Hugging Face, each checked against its pinned SHA-256.
 3. The pinned AMD GPU firmware and the compiled GPU graphs for this code and model.
-4. `config.json`, which `ALPAMAYO_CONFIG` selects.
+4. `config.json`, the configuration that the planner reads.
 
 Every step keeps verified work, so an interrupted install continues. The normal openpilot environment stays unchanged.
 """
@@ -49,9 +49,14 @@ def identity():
   return digest.hexdigest()
 
 
+def config_path():
+  """The installed configuration, or the file that ALPAMAYO_CONFIG names."""
+  return Path(os.environ.get('ALPAMAYO_CONFIG') or CONFIG)
+
+
 def managed():
-  """True when ALPAMAYO_CONFIG selects the configuration that this installer writes."""
-  return os.environ.get('ALPAMAYO_CONFIG') == str(CONFIG)
+  """True when the planner reads the configuration that this installer writes."""
+  return config_path() == CONFIG
 
 
 def complete():
@@ -63,8 +68,7 @@ def complete():
 
 def ready():
   """The configured planner can start: its configuration exists and, when this installer owns it, matches this code."""
-  path = os.environ.get('ALPAMAYO_CONFIG')
-  return bool(path) and os.path.isfile(path) and (not managed() or complete())
+  return complete() if managed() else config_path().is_file()
 
 
 def write(path, text):

@@ -67,8 +67,6 @@ class SelfdriveD:
     self.excessive_actuation_check = ExcessiveActuationCheck()
     self.excessive_actuation = self.params.get("Offroad_ExcessiveActuation") is not None
     self.big_model_loading = False
-    from openpilot.selfdrive.alpamayo.shadowd import planner_mode
-    self.alpamayo_planner = planner_mode()
     self.big_model_active = False
     self.big_model_failed = False
     self.big_model_ready_t = 0.
@@ -180,11 +178,6 @@ class SelfdriveD:
       self.big_model_active = True
     if not self.enabled and not model_unavailable:
       self.big_model_active = False
-
-    # Alpamayo planner mode never drives with the local model's action: modeld marks each frame whose action came from
-    # a current Alpamayo plan. Without one, engagement is blocked and an engaged drive soft-disables.
-    if self.alpamayo_planner and self.sm.seen['modelV2'] and not self.sm['modelV2'].alpamayoQueryMonoTime:
-      self.events.add(EventName.alpamayoUnavailable)
 
     if self.sm.recv_frame['lateralManeuverPlan'] > 0:
       self.events.add(EventName.lateralManeuver)

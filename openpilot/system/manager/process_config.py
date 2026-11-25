@@ -67,21 +67,19 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
 def alpamayo(started: bool, params: Params, CP: car.CarParams) -> bool:
-  # ALPAMAYO_KEEP_WARM=1 loads the model offroad and keeps the worker across ignition cycles.
-  # Warmup then never overlaps the onroad camera and Adreno load (the external GPU dropped off USB under that combined load).
-  from openpilot.selfdrive.alpamayo.install import ready
-  if not (started or os.environ.get('ALPAMAYO_KEEP_WARM') == '1') or not ready():
+  # Alpamayo takes the place of the big driving model: its GPU worker loads when the car starts, with a Chestnut present.
+  # ALPAMAYO_KEEP_WARM=1 loads it while parked and keeps it loaded between drives.
+  if not (started or os.environ.get('ALPAMAYO_KEEP_WARM') == '1'):
     return False
-  if os.environ.get('ALPAMAYO_SHADOW') == '1':
-    return True
+  from openpilot.selfdrive.alpamayo.install import ready
   from openpilot.selfdrive.alpamayo.shadowd import planner_mode
   from openpilot.selfdrive.modeld.helpers import chestnut_present
-  return planner_mode() and chestnut_present()
+  return (ready() if os.environ.get('ALPAMAYO_SHADOW') == '1' else planner_mode()) and chestnut_present()
 
 def alpamayo_install(started: bool, params: Params, CP: car.CarParams) -> bool:
   # Downloads the runtime, model and compiled GPU graphs once, offroad. The planner starts when it is complete.
   from openpilot.selfdrive.alpamayo.install import complete, managed
-  return not started and managed() and not complete()
+  return not started and managed() and not complete() and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'
 
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("NavigationEnabled")

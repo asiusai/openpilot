@@ -19,8 +19,9 @@ RING_LATENESS_NS = 80_000_000  # the same with 100 ms slots, where a later slot 
 RING_STARVATION_NS = 400_000_000  # with 100 ms slots, a slot after this long without a prediction uses START_LATENESS_NS
 
 def planner_mode():
-  return (bool(os.environ.get('ALPAMAYO_CONFIG')) and os.environ.get('ALPAMAYO_PLANNER', '1') == '1'
-          and os.environ.get('ALPAMAYO_SHADOW') != '1')
+  """Alpamayo takes the place of the big driving model: installed, not turned off, and not in record-only mode."""
+  from openpilot.selfdrive.alpamayo.install import ready
+  return os.environ.get('ALPAMAYO_PLANNER', '1') == '1' and os.environ.get('ALPAMAYO_SHADOW') != '1' and ready()
 
 
 class WorkerStopped(RuntimeError):
@@ -92,7 +93,8 @@ def main():
     return
   os.sched_setaffinity(0, {0, 1, 2, 3, 6})  # Frame copies stay off the worker's cores 5 and 7.
   from openpilot.selfdrive.alpamayo.runtime import private_output, ram_handoff, storage_ok
-  config_path = Path(os.environ['ALPAMAYO_CONFIG']).resolve()
+  from openpilot.selfdrive.alpamayo.install import config_path as installed_config
+  config_path = installed_config().resolve()
   config = json.loads(config_path.read_text())
   if planner_mode() and (config.get('period_ms', 500) not in (0, 100, 250, 500) or config['inference'].get('variant', 'selected') != 'selected'):
     raise ValueError('Planner evaluation requires the selected free-running, 100, 250 or 500 ms configuration')

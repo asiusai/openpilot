@@ -11,8 +11,3 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
-
-# Alpamayo planner on the external GPU (openpilot/selfdrive/alpamayo/README.md).
-# ALPAMAYO_SHADOW=1 only records its plans. ALPAMAYO_PLANNER=0 turns it off.
-export ALPAMAYO_CONFIG="${ALPAMAYO_CONFIG:-/data/alpamayo/config.json}"
-export ALPAMAYO_KEEP_WARM="${ALPAMAYO_KEEP_WARM:-1}"

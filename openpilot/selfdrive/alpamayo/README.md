@@ -1,7 +1,7 @@
 # Alpamayo planner
 
-This branch drives with plans from NVIDIA Alpamayo 2 Edge on an external AMD GPU.
-The standard openpilot model keeps running for perception, camera odometry and driver monitoring. It never steers on this branch.
+On this branch NVIDIA Alpamayo 2 Edge takes the place of the big driving model on the external GPU (Chestnut).
+It loads and reports its state like the big model. The small model keeps running for perception, camera odometry and as the fallback.
 
 This is research software. It is not a safety-rated driving system. Supervise it at all times.
 openpilot engagement rules, vehicle-specific controls and Panda safety stay in force.
@@ -30,7 +30,7 @@ Other GPUs do not work: the GPU kernels are compiled for `gfx1200` only.
    ```
 
 2. Keep the car parked with network access. openpilot builds, then `alpamayo_install` runs by itself.
-3. Wait until the Asius app no longer shows `Alpamayo install`. The GPU worker then loads the model.
+3. Wait until the Asius app no longer shows `Alpamayo install`. Until then the device drives as on `master`.
 
 The installer does these steps. Each step checks its result and continues after an interruption.
 
@@ -47,29 +47,39 @@ Without the compiled graphs the first start compiles for 10 to 20 minutes. Any c
 
 ## Operation
 
-- `launch_env.sh` sets `ALPAMAYO_CONFIG=/data/alpamayo/config.json` and `ALPAMAYO_KEEP_WARM=1`.
-- With `ALPAMAYO_KEEP_WARM=1` the GPU worker loads the model while parked and stays loaded between drives.
-- The worker predicts on a 100 ms slot grid. Each plan uses five frames per camera at -2, -1, -0.5, -0.1 and 0 s.
+Alpamayo uses the states, parameters and alerts of the big driving model:
+
+| State | Condition | Effect |
+| --- | --- | --- |
+| Loading | From the start of the drive until the first usable plan | `ChestnutLoading`; alert "Big Model Loading"; no engagement |
+| Active | Usable plans arrive | `ChestnutActive` true; `modelV2.big` true; Alpamayo gives steering and acceleration |
+| Failed | No plan within 240 s of the start, or no usable plan for 2 s | `ChestnutActive` false; alert "Big Model Failed"; the small model drives |
+
+- The manager starts the GPU worker (`alpamayod`) when the car starts and a Chestnut is present at 5 Gbps.
+- The load takes 1 to 2 minutes. The small model runs during the load.
 - A plan is usable when it was ready within 750 ms of its camera frame. It drives while that frame is under 1.5 s old.
 - Two consecutive plans at most 1 s apart are necessary before the first use.
+- In a frame without a usable plan the small model's action stays. `modelV2.alpamayoQueryMonoTime` is then zero.
+- A failed Alpamayo becomes active again when its plans return and openpilot is not engaged.
+- Without a Chestnut, or before the install is complete, the device behaves as on `master`.
 - modeld tracks the plan path with odometry and pure pursuit. It uses the plan's steering and acceleration without gains.
-- Without a usable plan, `selfdrived` raises `alpamayoUnavailable`: no entry, or a soft disable when engaged.
+- The worker predicts on a 100 ms slot grid. Each plan uses five frames per camera at -2, -1, -0.5, -0.1 and 0 s.
 - Navigation text is `Continue straight.` without a route. A route maneuver replaces it when it is at most 150 m ahead.
-- The Asius app shows the model's reasoning text and the GPU state.
+- The Asius app shows the GPU state, the GPU temperatures and the model's reasoning text.
 
 ## Settings
 
-Environment variables, set before `launch_openpilot.sh` (for example in `/data/continue.sh`):
+No setting is necessary. Optional environment variables, set before `launch_openpilot.sh` (for example in `/data/continue.sh`):
 
 | Variable | Effect |
 | --- | --- |
-| `ALPAMAYO_SHADOW=1` | Compute and record plans only. The standard model drives. |
-| `ALPAMAYO_PLANNER=0` | Turn Alpamayo off. The standard model drives. |
-| `ALPAMAYO_KEEP_WARM=0` | Load the model only while onroad. The load then takes part of the drive. |
+| `ALPAMAYO_KEEP_WARM=1` | Load the model while parked and keep it loaded between drives. The GPU then stays powered. |
+| `ALPAMAYO_SHADOW=1` | Compute and record plans only. The small model drives. |
+| `ALPAMAYO_PLANNER=0` | Turn Alpamayo off. The standard models drive. |
 | `ALPAMAYO_CONFIG=/path` | Use your own configuration file. The installer then does nothing. |
 
 To change single settings, write them to `/data/alpamayo/overrides.json`.
-The installer applies the file while parked, then the GPU worker restarts. Example:
+The installer applies the file while parked. Example:
 
 ```json
 {"inference": {"power_limit_w": 144}, "navigation_within_m": 100}
@@ -111,7 +121,7 @@ To run another fine-tune, publish its files in the same layout, pin it in both f
 - Tested on one Tesla Model 3 with one device. On straight roads it held the lane. In turns it started to turn too early.
 - Night, rain, snow and dense traffic are not tested.
 - The plan rate is about 5 per second and a plan is about 0.2 s old when it arrives.
-- The GPU can leave the USB bus. The worker restarts up to three times; then openpilot must restart.
+- The GPU can leave the USB bus. The worker restarts up to three times; then the small model drives until the next start.
 - The GNSS receiver can lose its fix near the GPU and its cable.
 
 ## Licenses

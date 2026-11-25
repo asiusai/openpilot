@@ -211,6 +211,19 @@ def publish_reasoning(result):
     pass  # display only
 
 
+GPU_METRICS_PATH = Path('/dev/shm/alpamayo-gpu.json')
+
+
+def publish_gpu_metrics(metrics, power_limit_w):
+  """Latest GPU temperatures and power for modeld's chestnutGpuState (RAM only)."""
+  try:
+    temporary = GPU_METRICS_PATH.with_suffix('.tmp')
+    temporary.write_text(json.dumps(dict(metrics, power_limit_w=power_limit_w, monotonic=time.monotonic())))
+    temporary.replace(GPU_METRICS_PATH)
+  except OSError:
+    pass  # monitoring only
+
+
 def frame_layout(ref):
   """Shape and payload size; a frame the worker already holds ('cached') has no payload."""
   shape = ref['shape']
@@ -716,7 +729,9 @@ def worker(config, directory, handoff):
         if count % 40 == 0 and hasattr(adapter, 'gpu_metrics'):
           # About every 10 s at 4 Hz, between slots: heat and power stay visible during long drives.
           try:
-            print(f'alpamayo gpu {json.dumps(adapter.gpu_metrics())}', file=sys.stderr, flush=True)
+            metrics = adapter.gpu_metrics()
+            print(f'alpamayo gpu {json.dumps(metrics)}', file=sys.stderr, flush=True)
+            publish_gpu_metrics(metrics, config['inference'].get('power_limit_w', 144))
           except Exception as error:  # noqa: BLE001 - telemetry only
             print(f'alpamayo gpu metrics unavailable: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
       except (Unavailable, PromptTooLong, NoTrajectoryAnchor) as error:

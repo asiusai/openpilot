@@ -1,7 +1,7 @@
 """GPU status shared by the app's Bluetooth, relay and video snapshots."""
-import os
 import time
 
+from openpilot.selfdrive.alpamayo.install import ready as alpamayo_ready
 from openpilot.selfdrive.modeld.helpers import chestnut_compiled
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 
@@ -19,14 +19,10 @@ def gpu_status(sm, params) -> str:
   loading = params.get('ChestnutLoading') is True
   if not device.chestnutPresent:
     return 'failed' if device.started and active is not None else 'disconnected'
-  if not chestnut_compiled():
+  if not (alpamayo_ready() or chestnut_compiled()):
     return 'uncompiled'
   if not device.started:
     return 'ready'
-  if os.environ.get('ALPAMAYO_CONFIG') and os.environ.get('ALPAMAYO_SHADOW') != '1':
-    # Alpamayo planner mode owns the external GPU; modeld's own big model stays off by design.
-    fresh = sm.seen['modelV2'] and sm.valid['modelV2'] and now - sm.logMonoTime['modelV2'] / 1e9 < 1
-    return 'active' if fresh and sm['modelV2'].alpamayoQueryMonoTime else 'loading'
   if loading:
     return 'loading'
   if active is False:

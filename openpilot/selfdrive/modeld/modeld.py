@@ -244,15 +244,16 @@ def main(demo=False):
   cloudlog.warning("modeld init")
 
   # A cable can be a Chestnut awaiting enumeration, unless a USB host is connected.
-  use_alpamayo = planner_mode()
-  CHESTNUT = (os.environ.get('DISABLE_CHESTNUT', '1') == '0' and os.environ.get('ALPAMAYO_SHADOW') != '1' and not use_alpamayo and
+  # An installed Alpamayo takes the place of the big driving model. Its GPU worker is a separate process (alpamayod).
+  use_alpamayo = planner_mode() and chestnut_present(timeout=45.)
+  CHESTNUT = (not use_alpamayo and os.environ.get('ALPAMAYO_SHADOW') != '1' and
               chestnut_compiled() and (chestnut_present(timeout=45.) if ASIUS_HARDWARE else
                                       (chestnut_present() or (cable_connected() and not usb_host_connected()))))
   if CHESTNUT:
     from tinygrad.runtime.ops_amd import AMDDevice
     AMDDevice.wait_timeout_ms = 3000
   params = Params()
-  params.put_bool("ChestnutLoading", CHESTNUT)
+  params.put_bool("ChestnutLoading", CHESTNUT or use_alpamayo)
   params.remove("ChestnutActive")
 
   gc.disable()
@@ -311,19 +312,20 @@ def main(demo=False):
   small_model = ModelState(cam_w, cam_h, False) if model is None or CHESTNUT else None
   if model is None:
     model = small_model
-  params.put_bool("ChestnutLoading", False)
+  params.put_bool("ChestnutLoading", use_alpamayo)  # Alpamayo loads in its worker while the small model runs
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
-  # Alpamayo planner mode: the prime core 7 runs the Alpamayo worker; modeld shares core 6 with camerad.
+  # With Alpamayo the prime core 7 runs its GPU worker; modeld shares core 6 with camerad.
   config_realtime_process(6 if use_alpamayo else 7, 54)
 
   # messaging
-  pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutGpuState"] if CHESTNUT else [])
+  pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutGpuState"] if CHESTNUT or use_alpamayo else [])
   pm = PubMaster(pub_socks)
-  planner = plan_sock = None
+  planner = plan_sock = alpamayo_state = None
   if use_alpamayo:
-    from openpilot.selfdrive.alpamayo.planner import PlanSelector, configured_tuning
+    from openpilot.selfdrive.alpamayo.planner import BigModelState, PlanSelector, configured_tuning, gpu_state_message
     planner = PlanSelector(**configured_tuning())
+    alpamayo_state = BigModelState(time.monotonic())
     # Every queued plan packet: an invalid packet for a skipped slot can follow a valid plan within one camera frame.
     plan_sock = messaging.sub_sock('alpamayoPlan')
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState",
@@ -479,11 +481,22 @@ def main(demo=False):
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
       modelv2_send.modelV2.big = model.chestnut
       if planner is not None:
-        # The local model keeps perception and odometry live; the action always comes from Alpamayo (planner.apply).
-        # A local frame drop or invalid local output does not affect the GPU plan. selfdrived handles car-state faults.
+        # Alpamayo gives the action like the big model; the local model keeps perception and odometry live and gives the
+        # action while Alpamayo loads, in a frame without a usable plan, and after a failure.
         m = modelv2_send.modelV2
         m.localAction = action
-        planner.apply(m, time.monotonic_ns(), v_ego, lat_delay+action_delay, long_delay+action_delay)
+        candidate = planner.candidate_action(time.monotonic_ns(), v_ego, lat_delay+action_delay, long_delay+action_delay)
+        before = alpamayo_state.state
+        if alpamayo_state.update(time.monotonic(), candidate is not None, sm['carControl'].enabled):
+          m.action = candidate
+          m.alpamayoQueryMonoTime = planner.query
+        m.big = alpamayo_state.state == BigModelState.ACTIVE
+        if alpamayo_state.state != before:
+          cloudlog.warning(f"alpamayo {before} -> {alpamayo_state.state}")
+          params.put_bool("ChestnutLoading", False)
+          params.put_bool("ChestnutActive", m.big)
+        if run_count % round(ModelConstants.MODEL_RUN_FREQ / SERVICE_LIST['chestnutGpuState'].frequency) == 0:
+          pm.send('chestnutGpuState', gpu_state_message())
         if frame_id % 100 == 0 and planner.tracker_status:
           odo = planner.odometry
           cloudlog.warning(f"alpamayo tracker {planner.tracker_status} odometry {len(odo)} "

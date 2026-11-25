@@ -32,20 +32,63 @@ POSE_EXTRAPOLATION_NS = 300_000_000  # odometry extrapolation after its newest s
 ODOMETRY_S = 3.  # odometry history kept, longer than the latest plan's age
 
 
-def should_stop_now(v_ego, accel):
-  from openpilot.selfdrive.controls.lib.drive_helpers import should_stop
-  return should_stop(v_ego, accel)
+LOAD_TIMEOUT_S = 240.  # the big driving model gets 60 s; Alpamayo loads its weights and runs a warmup in 70 to 120 s
+GAP_FAIL_S = 2.  # road gaps without a usable plan lasted 0.25 to 1.2 s (2026-11-24); the small model drives through them
 
 
-def configured_period():
-  """Slot period from ALPAMAYO_CONFIG for the supervisor's scheduling."""
-  import json, os
-  from pathlib import Path
-  path = os.environ.get('ALPAMAYO_CONFIG')
-  period = json.loads(Path(path).read_text()).get('period_ms', 500)*1_000_000 if path and os.path.isfile(path) else PERIOD
-  if period not in PERIODS:
-    raise ValueError('Alpamayo planner requires a free-running, 100, 250 or 500 ms period')
-  return period
+GPU_METRICS_PATH = '/dev/shm/alpamayo-gpu.json'  # written by the GPU worker about every 8 s (runtime.publish_gpu_metrics)
+
+
+def gpu_state_message(max_age_s=30.):
+  """chestnutGpuState from the worker's latest GPU metrics. modeld publishes it as it does for the big model."""
+  import json, time
+  from openpilot.cereal import messaging
+  msg = messaging.new_message('chestnutGpuState')
+  try:
+    with open(GPU_METRICS_PATH) as f:
+      value = json.load(f)
+    fresh = time.monotonic()-float(value['monotonic']) < max_age_s
+    if fresh:
+      state = msg.chestnutGpuState
+      state.tempC, state.memoryTempC = float(value['hotspot_c']), float(value['memory_c'])
+      state.powerDrawW, state.powerLimitW = float(value['power_w']), float(value['power_limit_w'])
+      state.gpuClockMhz, state.fanSpeedRpm = int(value['gfx_mhz']), int(value['fan_rpm'])
+  except (OSError, ValueError, KeyError, TypeError):
+    fresh = False
+  msg.valid = fresh
+  return msg
+
+
+class BigModelState:
+  """Alpamayo takes the place of the big driving model and reports the same states.
+
+  loading: from the start of the drive until the first usable plan. selfdrived blocks engagement (bigModelLoading).
+  active: Alpamayo plans give the action and modelV2.big is true. In a frame without a usable plan the small model's
+          action stays; alpamayoQueryMonoTime is then zero.
+  failed: no usable plan arrived in time, or the plans stopped for GAP_FAIL_S. The small model drives (bigModelFailed).
+  A failed Alpamayo returns to active when its plans are usable again and openpilot is not engaged.
+  """
+  LOADING, ACTIVE, FAILED = 'loading', 'active', 'failed'
+
+  def __init__(self, now_s):
+    self.state = self.LOADING
+    self.started = self.last_plan = now_s
+
+  def update(self, now_s, plan_usable, engaged):
+    """Returns True when Alpamayo gives this frame's action."""
+    if self.state == self.LOADING:
+      if plan_usable:
+        self.state = self.ACTIVE
+      elif now_s-self.started > LOAD_TIMEOUT_S:
+        self.state = self.FAILED
+    elif self.state == self.ACTIVE:
+      if not plan_usable and now_s-self.last_plan > GAP_FAIL_S:
+        self.state = self.FAILED
+    elif plan_usable and not engaged:
+      self.state = self.ACTIVE
+    if plan_usable:
+      self.last_plan = now_s
+    return self.state == self.ACTIVE and plan_usable
 
 
 def deliverable(query, ready, now):
@@ -66,10 +109,10 @@ def packet(result):
 
 
 def _config():
-  import json, os
-  from pathlib import Path
-  path = os.environ.get('ALPAMAYO_CONFIG')
-  return json.loads(Path(path).read_text()) if path and os.path.isfile(path) else {}
+  import json
+  from openpilot.selfdrive.alpamayo.install import config_path
+  path = config_path()
+  return json.loads(path.read_text()) if path.is_file() else {}
 
 
 def configured_tuning():
@@ -88,7 +131,6 @@ class PlanSelector:
     self.straight_lookahead_s = straight_lookahead_s
     self.query = self.ready = self.streak = 0
     self.curve = self.path = None
-    self.held = None
     self.odometry = deque()  # (ns, x, y, heading) of the vehicle; heading is the device yaw, left positive
     self.last_curvature = 0.
     self.tracker_status = {}  # outcome -> count, for the periodic modeld log
@@ -212,19 +254,3 @@ class PlanSelector:
     curvature = float(np.clip(tracked if tracked is not None and np.isfinite(tracked) else curvature, -limit, limit))
     self.last_curvature = curvature
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
-
-  def apply(self, model, now, speed, lat_delay, long_delay):
-    """Called on a fresh modelV2 builder. The action always comes from Alpamayo, never from the local model.
-
-    Without a current plan, the last Alpamayo curvature is held with non-positive acceleration and
-    alpamayoQueryMonoTime stays zero, so selfdrived blocks engagement or soft-disables.
-    """
-    candidate = self.candidate_action(now, speed, lat_delay, long_delay)
-    if candidate is not None:
-      model.action = candidate
-      model.alpamayoQueryMonoTime = self.query
-      self.held = candidate
-    else:
-      held = self.held or dict(desiredCurvature=0., desiredAcceleration=0., shouldStop=False)
-      accel = min(held['desiredAcceleration'], 0.)
-      model.action = dict(desiredCurvature=held['desiredCurvature'], desiredAcceleration=accel, shouldStop=should_stop_now(speed, accel))
