@@ -6,10 +6,7 @@ Planner mode lets modeld select GPU actions at its regular cadence. This mode is
 Setting `ALPAMAYO_CONFIG` selects the planner (period from the configuration) unless `ALPAMAYO_SHADOW=1` or `ALPAMAYO_PLANNER=0` is set.
 The file must contain a selected-model configuration. With no configuration, the existing openpilot model selection applies.
 Planner mode reserves Chestnut for Alpamayo. The small model keeps running for camera odometry and perception only.
-In planner mode the driving action comes from Alpamayo plans; the small model's action is never used.
-Optional `PlanSelector` settings: `lane_centering` (0..1) pulls the tracked plan path toward the small model's ego lane centre
-when its lane lines are confident and the plan stays near the lane; `plan_curvature_bias` removes a constant plan curvature.
-Blinkers, turns away from the lane and unmarked roads keep the plan unchanged. See `planner.py` for the limits.
+In planner mode the driving action comes only from Alpamayo plans; the small model's action is never used.
 The manager starts the GPU worker onroad when Chestnut enumerates at 5 Gbps and the device is healthy. Weights can load alongside modeld startup.
 Input admission still requires a healthy local model. The first five completed predictions are startup samples.
 A plan is usable when it was ready within 750 ms of its camera query, and it drives while that query is under 1.5 s old.

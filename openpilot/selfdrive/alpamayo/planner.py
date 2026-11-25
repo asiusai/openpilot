@@ -1,4 +1,4 @@
-"""Select a time-aligned Alpamayo trajectory; the driving action comes from Alpamayo plans (optionally lane-centred).
+"""Select a time-aligned Alpamayo trajectory; the driving action comes only from Alpamayo plans.
 
 A plan is usable when it was ready within MAX_LATENCY of its camera query and while that query is younger than
 MAX_PLAN_AGE, whatever the scheduling mode. Bad or late packets are ignored; the current plan simply ages out.
@@ -73,54 +73,19 @@ def _config():
 
 
 def configured_tuning():
-  """Optional ALPAMAYO_CONFIG settings:
-  `straight_lookahead_s`: path tracker lookahead on straight plans (default LOOKAHEAD_S).
-  `lane_centering`: 0..1 weight that pulls the tracked plan path toward the local model's lane centre (default 0).
-  `lane_center_offset_m`: lateral target inside the lane, right positive, for a device mounted off the car centre.
-  `plan_curvature_bias`: constant left-positive curvature (1/m) removed from every plan path (default 0).
-  The plan's steering and acceleration are used without gains."""
-  config = _config()
-  straight = float(config.get('straight_lookahead_s', LOOKAHEAD_S))
+  """Optional ALPAMAYO_CONFIG test setting `straight_lookahead_s` (path tracker lookahead on straight plans, default
+  LOOKAHEAD_S). The plan's steering and acceleration are used without gains."""
+  straight = float(_config().get('straight_lookahead_s', LOOKAHEAD_S))
   if not LOOKAHEAD_S <= straight <= 4.:
     raise ValueError('straight_lookahead_s must be 1.5..4 s')
-  centering = float(config.get('lane_centering', 0.))
-  offset = float(config.get('lane_center_offset_m', 0.))
-  bias = float(config.get('plan_curvature_bias', 0.))
-  if not 0. <= centering <= 1. or not -.5 <= offset <= .5 or not abs(bias) <= 1e-3:
-    raise ValueError('lane_centering must be 0..1, lane_center_offset_m -0.5..0.5 and |plan_curvature_bias| <= 0.001')
-  return {'straight_lookahead_s': straight, 'lane_centering': centering, 'lane_center_offset_m': offset,
-          'plan_curvature_bias': bias}
-
-
-# Lane centring. On Karel's straight roads (2026-11-22, stock, zero noise, 10 steps) Alpamayo's plan kept 90-100% of
-# the car's lateral offset 10-30 m ahead, followed only ~40% of the lane heading relative to the car, and bent
-# ~0.2-0.3 m left by 40-60 m. The car therefore drifted, mostly left, until the driver corrected it. When the local
-# model sees the ego lane, the tracked path is pulled toward its centre. A plan that leaves the lane by more than
-# lane_max_dev (a turn, a fork, an obstacle) ends the blend; blinkers and unmarked roads keep the plan unchanged.
-LANE_PROB = (.4, .7)  # lane line probability: no blend .. full blend
-LANE_WIDTH = (2.4, 4.6)  # m, plausible ego lane widths at the car
-LANE_DEFAULT_WIDTH = 3.3  # m, lane width for a single visible line until both lines have been seen
-LANE_WIDTH_TAU = 5.  # s, smoothing of the measured lane width
-LANE_RAMP_X = (3., 15.)  # m ahead: blend weight ramps in, so the near path stays continuous with the car
-LANE_STALE_NS = 150_000_000  # lane lines older than this are ignored
-
-
-def lane_max_dev(x):
-  """Plan-to-centre distance (m) at x m ahead: full blend below the first value, none above the second."""
-  return 1.2+.02*x, 2.0+.03*x
+  return dict(straight_lookahead_s=straight)
 
 
 class PlanSelector:
-  def __init__(self, straight_lookahead_s=LOOKAHEAD_S, lane_centering=0., lane_center_offset_m=0., plan_curvature_bias=0.):
+  def __init__(self, straight_lookahead_s=LOOKAHEAD_S):
     # On a straight plan the near path mostly continues the current heading; the plan's correction toward the lane shows
     # farther ahead, so the lookahead grows to straight_lookahead_s as the plan's 3 s heading change falls below 0.05 rad.
     self.straight_lookahead_s = straight_lookahead_s
-    self.lane_centering = lane_centering
-    self.lane_center_offset_m = lane_center_offset_m
-    self.plan_curvature_bias = plan_curvature_bias
-    self.lane = None  # (ns, pose at ns, forward x, left y of the lane centre, weight) from the local model
-    self.lane_width = LANE_DEFAULT_WIDTH
-    self.lane_width_ns = 0
     self.query = self.ready = self.streak = 0
     self.curve = self.path = None
     self.held = None
@@ -181,7 +146,6 @@ class PlanSelector:
     px, py, ph = px+d*math.cos(ph+k*d/2), py+d*math.sin(ph+k*d/2), ph+k*d
     fx = math.cos(ph)*(wx-px)+math.sin(ph)*(wy-py)
     fy = -math.sin(ph)*(wx-px)+math.cos(ph)*(wy-py)
-    fy = self.centred(fx, fy, now, (px, py, ph))
     arc = np.concatenate(([0.], np.cumsum(np.hypot(np.diff(fx), np.diff(fy)))))
     age = (now-self.query)/1e9
     turn = abs(np.interp(age+3., T_PATH, self.path[2])-np.interp(age, T_PATH, self.path[2]))
@@ -193,63 +157,6 @@ class PlanSelector:
     tx, ty = np.interp(target, arc, fx), np.interp(target, arc, fy)
     self.count('tracked')
     return 2*ty/max(tx*tx+ty*ty, 1.)
-
-  def observe_lanes(self, model, now, blinker=False):
-    """Keep the local model's ego lane centre (current vehicle frame, left positive) and its blend weight. With one
-    confident line the centre is half the recent lane width from it."""
-    self.lane = None
-    if self.lane_centering <= 0. or blinker:
-      return
-    lines, probs = model.laneLines, model.laneLineProbs
-    if len(lines) < 4 or len(probs) < 4 or len(lines[1].x) < 2 or len(lines[2].x) < 2:
-      return
-    pose = self.pose_at(now)
-    if pose is None:
-      return
-    x = np.asarray(lines[1].x, dtype=float)
-    left, right = np.asarray(lines[1].y, dtype=float), np.interp(x, np.asarray(lines[2].x), np.asarray(lines[2].y))
-    if not np.isfinite([left, right]).all():
-      return
-    cl, cr = (float(np.clip((p-LANE_PROB[0])/(LANE_PROB[1]-LANE_PROB[0]), 0., 1.)) for p in (probs[1], probs[2]))
-    width = right[0]-left[0]
-    if cl > 0 and cr > 0 and LANE_WIDTH[0] <= width <= LANE_WIDTH[1]:
-      dt = min(max((now-self.lane_width_ns)/1e9, 0.), 1.) if self.lane_width_ns else 1.
-      self.lane_width += dt/(LANE_WIDTH_TAU+dt)*(width-self.lane_width)
-      self.lane_width_ns = now
-      centre, weight = (left+right)/2, min(cl, cr)
-    elif cl > 0 and cl >= cr:
-      centre, weight = left+self.lane_width/2, cl
-    elif cr > 0:
-      centre, weight = right-self.lane_width/2, cr
-    else:
-      return
-    # laneLines are right positive; the tracker is left positive.
-    self.lane = now, pose, x, -(centre+self.lane_center_offset_m), self.lane_centering*weight
-
-  def centred(self, fx, fy, now, pose):
-    """Plan path lateral positions (frame of `pose`) pulled toward the lane centre, or `fy` unchanged."""
-    if self.lane is None or not 0 <= now-self.lane[0] <= LANE_STALE_NS:
-      return fy
-    self.count('lane centred')
-    _, (lx0, ly0, lh0), lx, ly, weight = self.lane
-    # Lane centre: lane frame -> odometry -> `pose` frame.
-    wx, wy = lx0+math.cos(lh0)*lx-math.sin(lh0)*ly, ly0+math.sin(lh0)*lx+math.cos(lh0)*ly
-    px, py, ph = pose
-    cx = math.cos(ph)*(wx-px)+math.sin(ph)*(wy-py)
-    cy = -math.sin(ph)*(wx-px)+math.cos(ph)*(wy-py)
-    if not (np.diff(cx) > 0).all():
-      return fy
-    inside = (fx >= cx[0]) & (fx <= cx[-1])
-    centre = np.interp(fx, cx, cy)
-    dev = np.abs(centre-fy)
-    full, none = lane_max_dev(np.maximum(fx, 0.))
-    agree = np.clip((none-dev)/(none-full), 0., 1.)
-    # A plan that leaves the lane stops the blend for the rest of the path. Points behind the lane lines' first point
-    # (the plan starts at its older query pose) neither blend nor stop the blend.
-    agree = np.minimum.accumulate(np.where(fx < cx[0], 1., agree))*inside
-    ramp = np.clip((fx-LANE_RAMP_X[0])/(LANE_RAMP_X[1]-LANE_RAMP_X[0]), 0., 1.)
-    w = weight*agree*ramp
-    return fy+w*(centre-fy)
 
   def count(self, outcome):
     self.tracker_status[outcome] = self.tracker_status.get(outcome, 0)+1
@@ -265,9 +172,6 @@ class PlanSelector:
     if not np.isfinite([x, y, yaw]).all():
       return
     yaw = np.unwrap(yaw)
-    if self.plan_curvature_bias:
-      s = np.concatenate(([0.], np.cumsum(np.hypot(np.diff(x), np.diff(y)))))
-      y, yaw = y-.5*self.plan_curvature_bias*s*s, yaw-self.plan_curvature_bias*s
     speed = np.hypot(np.diff(x), np.diff(y)) / .1
     speed = np.interp(T, T[1:]-.05, speed)
     self.curve = yaw, speed, np.gradient(speed, .1), np.gradient(yaw, .1)
@@ -309,14 +213,12 @@ class PlanSelector:
     self.last_curvature = curvature
     return dict(desiredCurvature=float(curvature), desiredAcceleration=float(a), shouldStop=should_stop(v_ego, a))
 
-  def apply(self, model, now, speed, lat_delay, long_delay, blinker=False):
-    """Called on a fresh modelV2 builder. The action always comes from an Alpamayo plan; with lane_centering the
-    local model's lane lines only pull the tracked plan path toward the lane centre.
+  def apply(self, model, now, speed, lat_delay, long_delay):
+    """Called on a fresh modelV2 builder. The action always comes from Alpamayo, never from the local model.
 
     Without a current plan, the last Alpamayo curvature is held with non-positive acceleration and
     alpamayoQueryMonoTime stays zero, so selfdrived blocks engagement or soft-disables.
     """
-    self.observe_lanes(model, now, blinker)
     candidate = self.candidate_action(now, speed, lat_delay, long_delay)
     if candidate is not None:
       model.action = candidate
