@@ -51,7 +51,7 @@ Alpamayo uses the states, parameters and alerts of the big driving model:
 
 | State | Condition | Effect |
 | --- | --- | --- |
-| Loading | From the start of the drive until the first usable plan | `ChestnutLoading`; alert "Big Model Loading"; no engagement |
+| Loading | From the start of the drive until plans were usable for 3 s | `ChestnutLoading`; alert "Big Model Loading"; no engagement |
 | Active | Usable plans arrive | `ChestnutActive` true; `modelV2.big` true; Alpamayo gives steering and acceleration |
 | Failed | No plan within 240 s of the start, or no usable plan for 2 s | `ChestnutActive` false; alert "Big Model Failed"; the small model drives |
 
@@ -60,7 +60,7 @@ Alpamayo uses the states, parameters and alerts of the big driving model:
 - A plan is usable when it was ready within 750 ms of its camera frame. It drives while that frame is under 1.5 s old.
 - Two consecutive plans at most 1 s apart are necessary before the first use.
 - In a frame without a usable plan the small model's action stays. `modelV2.alpamayoQueryMonoTime` is then zero.
-- A failed Alpamayo becomes active again when its plans return and openpilot is not engaged.
+- A failed Alpamayo becomes active again when its plans were usable for 3 s and openpilot is not engaged.
 - Without a Chestnut, or before the install is complete, the device behaves as on `master`.
 - modeld tracks the plan path with odometry and pure pursuit. It uses the plan's steering and acceleration without gains.
 - The worker predicts on a 100 ms slot grid. Each plan uses five frames per camera at -2, -1, -0.5, -0.1 and 0 s.

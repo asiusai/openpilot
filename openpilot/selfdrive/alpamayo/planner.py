@@ -33,6 +33,7 @@ ODOMETRY_S = 3.  # odometry history kept, longer than the latest plan's age
 
 
 LOAD_TIMEOUT_S = 240.  # the big driving model gets 60 s; Alpamayo loads its weights and runs a warmup in 70 to 120 s
+STABLE_S = 3.  # plans must stay usable this long before Alpamayo takes over
 GAP_FAIL_S = 2.  # road gaps without a usable plan lasted 0.25 to 1.2 s (2026-11-24); the small model drives through them
 
 
@@ -62,32 +63,36 @@ def gpu_state_message(max_age_s=30.):
 class BigModelState:
   """Alpamayo takes the place of the big driving model and reports the same states.
 
-  loading: from the start of the drive until the first usable plan. selfdrived blocks engagement (bigModelLoading).
+  loading: from the start of the drive until plans were usable for STABLE_S. selfdrived blocks engagement (bigModelLoading).
   active: Alpamayo plans give the action and modelV2.big is true. In a frame without a usable plan the small model's
           action stays; alpamayoQueryMonoTime is then zero.
-  failed: no usable plan arrived in time, or the plans stopped for GAP_FAIL_S. The small model drives (bigModelFailed).
-  A failed Alpamayo returns to active when its plans are usable again and openpilot is not engaged.
+  failed: no stable plans arrived in time, or the plans stopped for GAP_FAIL_S. The small model drives (bigModelFailed).
+  A failed Alpamayo returns to active when its plans were usable for STABLE_S and openpilot is not engaged.
   """
   LOADING, ACTIVE, FAILED = 'loading', 'active', 'failed'
 
   def __init__(self, now_s):
     self.state = self.LOADING
     self.started = self.last_plan = now_s
+    self.usable_since = None
 
   def update(self, now_s, plan_usable, engaged):
     """Returns True when Alpamayo gives this frame's action."""
+    if plan_usable:
+      self.last_plan = now_s
+    # The first plans after a load can be followed by a gap of several seconds (first-use GPU work).
+    self.usable_since = (now_s if self.usable_since is None else self.usable_since) if plan_usable else None
+    stable = self.usable_since is not None and now_s-self.usable_since >= STABLE_S
     if self.state == self.LOADING:
-      if plan_usable:
+      if stable:
         self.state = self.ACTIVE
       elif now_s-self.started > LOAD_TIMEOUT_S:
         self.state = self.FAILED
     elif self.state == self.ACTIVE:
-      if not plan_usable and now_s-self.last_plan > GAP_FAIL_S:
+      if now_s-self.last_plan > GAP_FAIL_S:
         self.state = self.FAILED
-    elif plan_usable and not engaged:
+    elif stable and not engaged:
       self.state = self.ACTIVE
-    if plan_usable:
-      self.last_plan = now_s
     return self.state == self.ACTIVE and plan_usable
 
 
