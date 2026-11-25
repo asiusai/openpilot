@@ -42,8 +42,9 @@ The installer does these steps. Each step checks its result and continues after 
 | Compiled GPU graphs | Graphs and kernels for this code, model and `gfx1200` | 0.1 GB |
 | Configuration | `/data/alpamayo/config.json` | - |
 
-Without the compiled graphs the first start compiles for 10 to 20 minutes. Any change to `selected/*.py`, `model.py` or
-`amd_attention.py` makes the published graphs unusable; the device then compiles its own.
+The install takes about 9 minutes at 7 MB/s. Any change to `selected/*.py`, `model.py` or `amd_attention.py` makes the
+published graphs unusable. The device then compiles its own: about 30 minutes with `ALPAMAYO_KEEP_WARM=1` while parked.
+The worker can restart once during that compile.
 
 ## Operation
 
@@ -56,7 +57,7 @@ Alpamayo uses the states, parameters and alerts of the big driving model:
 | Failed | No plan within 240 s of the start, or no usable plan for 2 s | `ChestnutActive` false; alert "Big Model Failed"; the small model drives |
 
 - The manager starts the GPU worker (`alpamayod`) when the car starts and a Chestnut is present at 5 Gbps.
-- The load takes 1 to 2 minutes. The small model runs during the load.
+- The load takes 1.5 to 2 minutes (measured parked: 113 s after an install, 87 s later). The small model runs during the load.
 - A plan is usable when it was ready within 750 ms of its camera frame. It drives while that frame is under 1.5 s old.
 - Two consecutive plans at most 1 s apart are necessary before the first use.
 - In a frame without a usable plan the small model's action stays. `modelV2.alpamayoQueryMonoTime` is then zero.
