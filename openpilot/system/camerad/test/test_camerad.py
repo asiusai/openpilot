@@ -119,11 +119,12 @@ class TestCamerad(OpenpilotTestCase):
     for c in CAMERAS:
       assert set(np.diff(self.logs[c]['frameId'])) == {1, }, f"{c} has frame skips"
 
-  @unittest.skipIf(ASIUS_HARDWARE, "Asius cameras are not hardware-synchronized")
   def test_frame_sync(self):
     SYNCED_CAMS = ('narrowRoadCameraState', 'wideRoadCameraState')
     n = range(len(self.logs['narrowRoadCameraState']['t'][:-10]))
 
+    # Asius v0 has one SoC frame clock (camera_v0.cc FrameSync): road and wide lock to it in software or by FSIN,
+    # and it triggers the cabin camera half a period later.
     frame_ids = {i: [self.logs[cam]['frameId'][i] for cam in CAMERAS] for i in n}
     assert all(len(set(v)) == 1 for v in frame_ids.values()), "frame IDs not aligned"
 
