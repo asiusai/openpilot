@@ -2,7 +2,7 @@
   "schema": 1,
   "model": "lat2v",
   "repository": "karelnagel/alpamayo2-edge-lat2v",
-  "revision": "517380efb5ba2dc8cae9cf13da48510fac614676",
+  "revision": "34c8c070b1557c8df79ebf3688ed0ff840f339a0",
   "prefix": "openpilot/",
   "files": {
     "checkpoint/LICENSE": {
@@ -54,7 +54,13 @@
       "bytes": 21682
     }
   },
-  "graph_cache": {},
+  "graph_cache": {
+    "gfx1200": {
+      "path": "graph-cache/gfx1200-5d5a73ce17a23ea083dc04ad.tar.gz",
+      "sha256": "bc51be5c3a8714b313d42d21fc373bee08ff42dfa5fb04c9b11f093675f2b532",
+      "bytes": 3983392
+    }
+  },
   "firmware": {
     "url": "https://gitlab.com/kernel-firmware/linux-firmware/-/raw/0a6871b19abf5d6e024b5d208b101ae53e7fa0de/amdgpu/",
     "files": {
