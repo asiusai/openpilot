@@ -18,7 +18,6 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
-from opendbc.car.tesla.values import TeslaFlags, TeslaSafetyFlags
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
@@ -108,14 +107,6 @@ class Car:
     else:
       self.CI, self.CP = CI, CI.CP
       self.RI = RI
-
-    # Tesla cooperative steering: steer with LANE_KEEP_ASSIST so the driver can add torque without the EPS cancelling.
-    # The Panda safety then allows only that steering type. Read once per car start.
-    if self.CP.brand == "tesla" and self.params.get_bool("TeslaCoopSteering"):
-      self.CP.flags |= TeslaFlags.COOP_STEERING.value
-      for safety_config in self.CP.safetyConfigs:
-        if safety_config.safetyModel == structs.CarParams.SafetyModel.tesla:
-          safety_config.safetyParam |= TeslaSafetyFlags.COOP_STEERING.value
 
     self.CP.alternativeExperience = 0
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
