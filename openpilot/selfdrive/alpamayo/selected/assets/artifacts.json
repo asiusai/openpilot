@@ -8,7 +8,9 @@
   "prefill_calibration_sha256": "a8522fab229a3e19574f5faafbe84a51479ce9a5b81f09458e237a911393ffbb",
   "compact_checkpoint": {
     "index_sha256": "8abd3fb434eb67039bff84257102e841ad65f3348a7cc683b7caf3f05177dae3",
-    "shards": {"selected-bf16.safetensors": "a0dcb081369afb88ac5bcb82824803e5a99dd8981b8814a046bfdb583c8267a4"}
+    "shards": {
+      "selected-bf16.safetensors": "a0dcb081369afb88ac5bcb82824803e5a99dd8981b8814a046bfdb583c8267a4"
+    }
   },
   "checkpoint_shards": {
     "00000.safetensors": "d13c1a427218baf7b7d365098c0f5496c0e5e6a6bf662836b8eebbe7eb7cfe7f",
@@ -39,7 +41,22 @@
       "fp8_index_sha256": "33d4d86c82adedcb2d9326fc4e3891bd5220decea90533558090a6c8fd730c6e",
       "fp8_weights_sha256": "6d22fc2121e3ce05e5d82ed10c8fbf0362b2878b85f08a0c9be2dec6f9dd2932",
       "views": "120/30"
+    },
+    "lat2v": {
+      "fp8_index_sha256": "3dc1c00c5b5f8272e863616400eb2011a7e453457abd8f91dabebeb520dc7d67",
+      "fp8_weights_sha256": "0945a7197441d232064849a7b2cefc5114f57d3bf6a5fa8a6c0478f35a3e646c",
+      "views": "120/30",
+      "compact_checkpoint": {
+        "index_sha256": "8abd3fb434eb67039bff84257102e841ad65f3348a7cc683b7caf3f05177dae3",
+        "shards": {
+          "selected-bf16.safetensors": "9954d4c74c9f8bc25fb394fb308d9c5a3e237cd39629fb789b6fcb71ebb23a2d"
+        }
+      },
+      "merged_shards": {
+        "00000.safetensors": "828246bd6d1c111a16a7ae6d71dbce8aa13d4a94fc60a03afa9d5d53a9634c41",
+        "00001.safetensors": "13b20d708021afdfdae6e5cc21864381aac9bf10218c5a0255cbcbd4e1594072"
+      }
     }
   },
-  "fp8_finetunes_changed": "Only expert.expert.layers.N.{self_attn.q_proj,k_proj,v_proj,o_proj,mlp.fc1,fc2}.weight and their scales differ from the base FP8 cache."
+  "fp8_finetunes_changed": "Expert fine-tunes change only expert.expert.layers.N.{self_attn.q_proj,k_proj,v_proj,o_proj,mlp.fc1,fc2}.weight and their scales. A fine-tune with `compact_checkpoint` also changes VLM language and vision weights and runs only with that compact checkpoint."
 }

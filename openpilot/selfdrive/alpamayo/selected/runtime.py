@@ -114,15 +114,19 @@ def artifact_identities(config):
            'checkpoint_weight_index_sha256':config.checkpoint/'model.safetensors.index.json',
            'fp8_index_sha256':config.fp8_cache/'index.json','prefill_calibration_sha256':config.prefill_calibration}
   identities = {key:sha(path) for key,path in paths.items()}
-  # A reviewed fine-tune (artifacts.json `fp8_finetunes`) replaces only expert layer weights in the FP8 cache; it is
-  # accepted by its exact index and weight digests, and every other pinned identity stays the base recipe's.
+  # A reviewed fine-tune (artifacts.json `fp8_finetunes`) is accepted by its exact index and weight digests. One that
+  # changes only expert layers keeps every other pinned identity of the base recipe. One that also changes VLM weights
+  # pins its own compact BF16 checkpoint (the restored tensors and the FP8 probe change) and must run with it.
   finetune = next((name for name,pin in expected.get('fp8_finetunes',{}).items()
                    if pin['fp8_index_sha256'] == identities['fp8_index_sha256']),None)
+  pin = expected['fp8_finetunes'][finetune] if finetune is not None else {}
   if finetune is not None:
-    expected = {**expected,**{k:expected['fp8_finetunes'][finetune][k] for k in ('fp8_index_sha256','fp8_weights_sha256')}}
+    expected = {**expected,**{k:pin[k] for k in ('fp8_index_sha256','fp8_weights_sha256','compact_checkpoint') if k in pin}}
     identities['fp8_finetune'] = finetune
   index_key = 'checkpoint_weight_index_sha256'
   compact = identities[index_key] == expected['compact_checkpoint']['index_sha256']
+  if 'compact_checkpoint' in pin and not compact:
+    raise ValueError('A fine-tune with VLM weights requires its pinned compact checkpoint')
   if any(identities[key] != expected[key] for key in paths if key != index_key or not compact):
     raise ValueError('Selected checkpoint, FP8 index, or fixed calibration differs from the pinned recipe')
   index = json.loads(paths[index_key].read_text())['weight_map']
@@ -132,7 +136,7 @@ def artifact_identities(config):
   # Both pinned representations derive from the same checkpoint. Record exactly which files this process verified.
   identities.update(loaded_checkpoint_index_sha256=identities[index_key], loaded_checkpoint_shards=shards,
                     checkpoint_representation='selected-bf16-subset' if compact else 'original')
-  original = expected['checkpoint_shards']
+  original = pin.get('merged_shards',expected['checkpoint_shards'])  # the full checkpoint this representation derives from
   identities.update(checkpoint_weight_index_sha256=expected[index_key], checkpoint_shards=original,
                     checkpoint_weights_sha256=hashlib.sha256(json.dumps(original,sort_keys=True).encode()).hexdigest())
   if config.initial_noise is not None:
@@ -559,6 +563,12 @@ class Runtime:
       decoder.first_token = first
       filler = self.draft[0]
       try:
+        # No history gives no proposal: the text decodes in serial six-token blocks. A model whose warmup texts all
+        # come from the prefill draft would otherwise run this path uncaptured in its first long text (2.5 s).
+        decoder.history = []
+        for _ in range(3):
+          run(0)
+        phase('serial_blocks')
         decoder.history = [[filler]*20]
         run(0)
         for width in (16,32):
