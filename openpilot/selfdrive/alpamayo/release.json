@@ -2,7 +2,7 @@
   "schema": 1,
   "model": "lat2v",
   "repository": "karelnagel/alpamayo2-edge-lat2v",
-  "revision": "main",
+  "revision": "517380efb5ba2dc8cae9cf13da48510fac614676",
   "prefix": "openpilot/",
   "files": {
     "checkpoint/LICENSE": {

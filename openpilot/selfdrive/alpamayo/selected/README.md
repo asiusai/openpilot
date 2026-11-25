@@ -1,9 +1,8 @@
 # Selected Alpamayo inference
 
 This package specializes the shared `openpilot.selfdrive.alpamayo.model.EdgeModel`.
-This branch implements one selected recipe with four-bit weights in the serial language MLP. The shared default remains BF16 with ten Euler steps.
-The initial shadow scheduler target is 500 ms. A 100 ms target belongs to the next phase.
-Four-bit weights can change reasoning and trajectories relative to the FP8 branch. Live vehicle timing remains unverified.
+It implements one recipe: four-bit weights in the serial language MLP and mixed FP8 and BF16 elsewhere.
+The car uses a 100 ms slot grid and two Euler steps. Four-bit and FP8 weights can change reasoning and trajectories relative to BF16.
 
 ## API
 
@@ -42,7 +41,7 @@ Measured ego history is consumed unchanged. An empty navigation string means una
 `manifest` records the exact numerical recipe and artifact identities; `device` identifies the selected backend.
 
 `selected.ShadowAdapter(config)` implements the shared `runtime.run_prediction(adapter, arrays, metadata)` contract.
-This adapter requires `initial_noise`. The shared worker, scheduler, frontend, and replay retain their existing responsibilities.
+This adapter requires `initial_noise`. The shared worker, scheduler and frontend retain their existing responsibilities.
 
 ## Fixed arithmetic
 
@@ -82,14 +81,14 @@ During serial reasoning, 256 threads reduce the 9,216 expansion values to the sa
 Startup creates the 56 four-bit matrices from the verified FP8 weights. They use 567 MiB of additional GPU memory; prompt processing still uses FP8 weights.
 Draft attention retains its original QK, softmax, and PV arithmetic. Its 16- and 32-row products use 1x2 and 2x2 output tiles.
 Output tiles change only which outputs one wave computes. Each output keeps its reduction order, so results stay bit-identical.
-Smaller expert tiles reduced diffusion from 27.6 to 21.9 ms on Karel. The 32 prefill heads take one batched argmax (2.6 ms less).
+Smaller expert tiles reduced diffusion from 27.6 to 21.9 ms on the test car. The 32 prefill heads take one batched argmax (2.6 ms less).
 Prefill attention reads K and V rows below 2112 straight from the KV cache (no K copy or V packing). Each 64-thread workgroup holds the
 two query heads of one KV head for one 16-row tile; V uses the gfx12 transposing load. Online softmax rescales skip rows whose maximum did not change.
 Two-image FP8 vision layers use fused frozen objects: LayerNorm and attention also emit |output| maxima for the next FP8 scale,
 one merged Q/K/V projection writes attention heads directly, FC1 applies GELU and emits maxima, and O and FC2 add the residual.
 Each image's FP8 scale still uses the `grouped_quantize` expressions. Single-image encodes keep the general path.
 Vision attention waves read K and the transposed V straight from memory (gfx12 transposing load). Shared-memory staging and workgroup barriers are removed.
-Score, softmax and PV arithmetic are unchanged; the attention launch takes 231 instead of 251 us on Karel at 100 W.
+Score, softmax and PV arithmetic are unchanged; the attention launch takes 231 instead of 251 us on the test car at 100 W.
 The FC1 GELU uses the plain exp2 instruction. The removed range scaling changes no result for any BF16 input (all 65,536 checked).
 The frozen pair plan holds 38 programs. A regenerated plan keeps the programs of unchanged operations and compiles only changed ones.
 Serial decoding reads both KV planes directly after each write. Full blocks keep six tokens' cache and rotary coordinates on the GPU.
@@ -124,9 +123,9 @@ Entries from other keys are deleted at startup. An entry that fails to bind is r
 
 ## Required assets and shared code
 
-Use the shared installer and its pinned dependency lock. Keep normal openpilot tinygrad unchanged.
+`install.py` installs the runtime with its pinned dependency lock and the published model files. Normal openpilot tinygrad stays unchanged.
 NVIDIA code remains at `02f55a7aeabc1a2b9f7a80445c08e40bddc89f5e`.
-For a car installation, prepare the BF16 tensors used by this recipe once:
+To prepare the BF16 tensors of another full checkpoint for this recipe:
 
 ```sh
 python -m openpilot.selfdrive.alpamayo.selected.prepare_checkpoint /path/to/original /path/to/selected-checkpoint
@@ -135,7 +134,7 @@ python -m openpilot.selfdrive.alpamayo.selected.prepare_checkpoint /path/to/orig
 Set `inference.checkpoint` to the resulting directory. It contains the tokenizer, configuration and a 102 MB BF16 shard.
 Preparation verifies the original 5.30 GB of shards. Startup verifies the complete compact shard and index against independently pinned hashes.
 The runtime records both the source checkpoint identity and the hashes of the files actually loaded.
-The full original checkpoint is also supported. The default BF16 reference still requires the full checkpoint.
+The full original checkpoint is also supported.
 The separate FP8 `weights.bin`/`index.json`, fixed calibration, and per-upload verification remain required.
 The first startup checks the complete `weights.bin` digest and stores per-4 KiB SHA-256 proofs (`leaf-proofs.bin`, zero nonce).
 Each upload then recomputes the proofs on the GPU into randomly initialized memory and compares them with the stored file.
@@ -152,7 +151,7 @@ HIP/COMGR compilation is unnecessary on ARM. Ordinary tinygrad LLVM kernels stil
 The compiler pool uses at most one process per CPU available to the worker. Its SQLite cache persists across production launches.
 The worker reports import, verification, frontend, GPU setup and weight-loading times during startup. Ready does not mean a driving plan is available.
 The constructor requires existing, hash-checked gfx1200 firmware in the configured persistent cache.
-Inference does not fetch firmware or weights.
+Inference does not fetch firmware or weights; `install.py` stages both.
 
 Shared modules remain `model`, `amd_attention`, `inputs`, `geometry`, and `inference` identity helpers.
 `camera.calibrated_image` provides the original portable C sampler using shared projection geometry.

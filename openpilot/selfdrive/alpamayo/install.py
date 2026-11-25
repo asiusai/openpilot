@@ -33,11 +33,19 @@ SOURCES = (('nvidia', 'https://github.com/NVlabs/alpamayo2-edge.git', NVIDIA_REV
 RETRY_S = 60
 
 
+OVERRIDES = ROOT/'overrides.json'
+_PINNED = None
+
+
 def identity():
-  """Changes when the pinned model, runtime sources or dependencies change."""
+  """Changes when the pinned model, runtime sources, dependencies or the user's overrides change."""
+  global _PINNED
+  if _PINNED is None:
+    _PINNED = [hashlib.sha256(part).digest() for part in
+               (RELEASE.read_bytes(), (HERE/'extras.txt').read_bytes(), NVIDIA_REVISION.encode(), TINYGRAD_REVISION.encode())]
   digest = hashlib.sha256()
-  for part in (RELEASE.read_bytes(), (HERE/'extras.txt').read_bytes(), NVIDIA_REVISION.encode(), TINYGRAD_REVISION.encode()):
-    digest.update(hashlib.sha256(part).digest())
+  for part in (*_PINNED, hashlib.sha256(OVERRIDES.read_bytes() if OVERRIDES.is_file() else b'').digest()):
+    digest.update(part)
   return digest.hexdigest()
 
 
@@ -135,18 +143,19 @@ def install_dependencies(project, environment):
   if antlr['version'] != '4.9.3' or antlr['sdist']['hash'] != 'sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b':
     raise RuntimeError('Review the changed ANTLR build before installation')
   environment = dict(environment, UV_PROJECT_ENVIRONMENT=str(project/'.venv'), UV_PYTHON_DOWNLOADS='never')
-  subprocess.run(['uv', 'venv', '--python', '3.12', str(project/'.venv')], env=environment, check=True)
+  uv = shutil.which('uv', path=environment['PATH'])
+  subprocess.run([uv, 'venv', '--python', '3.12', str(project/'.venv')], env=environment, check=True)
   python = project/'.venv/bin/python'
   setuptools = packages['setuptools']
   requirement = f'setuptools=={setuptools["version"]} '+' '.join(f'--hash={wheel["hash"]}' for wheel in setuptools['wheels'])+'\n'
-  subprocess.run(['uv', 'pip', 'install', '--python', str(python), '--no-deps', '--only-binary=:all:', '--require-hashes', '-r', '-'],
+  subprocess.run([uv, 'pip', 'install', '--python', str(python), '--no-deps', '--only-binary=:all:', '--require-hashes', '-r', '-'],
                  input=requirement, text=True, env=environment, check=True)
-  command = ['uv', 'sync', '--frozen', '--no-dev', '--no-install-project', '--no-build-isolation-package', antlr['name'],
+  command = [uv, 'sync', '--frozen', '--no-dev', '--no-install-project', '--no-build-isolation-package', antlr['name'],
              '--project', str(project)]
   for name in sorted(packages.keys()-{antlr['name']}):
     command.extend(['--no-build-package', name])
   subprocess.run(command, env=environment, check=True)
-  subprocess.run(['uv', 'pip', 'install', '--python', str(python), '--no-deps', '--only-binary=:all:', '--require-hashes',
+  subprocess.run([uv, 'pip', 'install', '--python', str(python), '--no-deps', '--only-binary=:all:', '--require-hashes',
                   '-r', str(HERE/'extras.txt')], env=environment, check=True)
   site = Path(subprocess.check_output([str(python), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'], text=True).strip())
   # Import the pinned checkout directly, without invoking its unpinned hatchling build environment.
@@ -170,7 +179,12 @@ def install_runtime(root):
     subprocess.run(['git', '-C', str(path), 'checkout', '-q', '--detach', revision], check=True)
   status('runtime', 'installing the locked Python packages (about 1 GB)')
   uv_cache = root/'uv-cache'
-  environment = {k: v for k, v in os.environ.items() if k not in ('VIRTUAL_ENV', 'PYTHONPATH')}
+  # The device puts wrapper scripts for system-wide installs before the real tools: /usr/comma/shims/uv remounts the root
+  # filesystem and runs a system uv. Use the real uv, and keep openpilot's own environment settings away from it.
+  environment = {k: v for k, v in os.environ.items() if k not in ('VIRTUAL_ENV', 'PYTHONPATH') and not k.startswith('UV_')}
+  environment['PATH'] = os.pathsep.join(d for d in os.environ.get('PATH', os.defpath).split(os.pathsep) if not d.endswith('/shims'))
+  if shutil.which('uv', path=environment['PATH']) is None:
+    raise RuntimeError('uv is not installed')
   install_dependencies(root/'nvidia', dict(environment, UV_CACHE_DIR=str(uv_cache), UV_LINK_MODE='copy'))
   shutil.rmtree(uv_cache, ignore_errors=True)
   write(marker, wanted+'\n')
@@ -234,16 +248,15 @@ def merge(base, override):
 
 
 def configuration(release):
-  """The pinned defaults with this device's paths. `overrides.json` in the same directory changes single settings."""
+  """The pinned defaults with this device's paths. `overrides.json` changes single settings."""
   model = ROOT/'models'/release['model']
   config = json.loads(json.dumps(release['config']))
   config.update(python=str(ROOT/'runtime/nvidia/.venv/bin/python'), tinygrad=str(ROOT/'runtime/tinygrad'),
                 cache=str(ROOT/'cache'), output=str(ROOT/'output'))
   config['inference'].update(variant='selected', checkpoint=str(model/'checkpoint'), fp8_cache=str(model/'fp8-cache'),
                              prefill_calibration=str(model/'prefill-scales.json'), initial_noise=str(model/'initial_noise-zero.npy'))
-  overrides = ROOT/'overrides.json'
-  if overrides.is_file():
-    merge(config, json.loads(overrides.read_text()))
+  if OVERRIDES.is_file():
+    merge(config, json.loads(OVERRIDES.read_text()))
   return config
 
 
