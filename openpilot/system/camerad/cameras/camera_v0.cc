@@ -302,7 +302,7 @@ public:
   void camera_open(VisionIpcServer *v);
   void camera_close();
   void setup_media_links();
-  void set_formats();
+  bool set_formats();
   bool write_vfe_regs(const std::vector<VfeRegWrite> &regs, const char *name);
   bool apply_vfe_tuning();
   void queue_all_buffers();
@@ -398,10 +398,25 @@ void OneCamera::setup_media_links() {
   LOG("cam %d: media links set up (VFE PIX mode)", cam_idx);
 }
 
-void OneCamera::set_formats() {
+bool OneCamera::set_formats() {
   int cam_idx = cc.camera_num;
   auto &dcfg = v0_cams[cam_idx];
   const uint32_t media_bus_code = MEDIA_BUS_FMT_SBGGR12_1X12;
+  bool valid = true;
+  const auto set_format = [cam_idx](int fd, v4l2_subdev_format &fmt, const char *stage) {
+    const auto requested = fmt.format;
+    if (ioctl(fd, VIDIOC_SUBDEV_S_FMT, &fmt) != 0) {
+      LOGE("cam %d: %s pad %u S_FMT failed: %d (%s)", cam_idx, stage, fmt.pad, errno, strerror(errno));
+      return false;
+    }
+    if (fmt.format.code != requested.code || fmt.format.width != requested.width || fmt.format.height != requested.height) {
+      LOGE("cam %d: %s pad %u rejected required format %ux%u code=0x%x; got %ux%u code=0x%x",
+           cam_idx, stage, fmt.pad, requested.width, requested.height, requested.code,
+           fmt.format.width, fmt.format.height, fmt.format.code);
+      return false;
+    }
+    return true;
+  };
   // set format on CSIPHY subdev
   int csiphy_fd = open(util::string_format("/dev/v4l-subdev%d", dcfg.csiphy_subdev).c_str(), O_RDWR);
   if (csiphy_fd >= 0) {
@@ -411,10 +426,12 @@ void OneCamera::set_formats() {
     sfmt.format.width = sensor->frame_width;
     sfmt.format.height = sensor->frame_height;
     sfmt.format.code = media_bus_code;
-    ioctl(csiphy_fd, VIDIOC_SUBDEV_S_FMT, &sfmt);
+    valid &= set_format(csiphy_fd, sfmt, "CSIPHY");
     sfmt.pad = 1;
-    ioctl(csiphy_fd, VIDIOC_SUBDEV_S_FMT, &sfmt);
+    valid &= set_format(csiphy_fd, sfmt, "CSIPHY");
     close(csiphy_fd);
+  } else {
+    return false;
   }
 
   // set format on CSID subdev
@@ -426,7 +443,7 @@ void OneCamera::set_formats() {
     sfmt.format.width = sensor->frame_width;
     sfmt.format.height = sensor->frame_height;
     sfmt.format.code = media_bus_code;
-    ioctl(csid_fd, VIDIOC_SUBDEV_S_FMT, &sfmt);
+    valid &= set_format(csid_fd, sfmt, "CSID");
 
     // PIX source pad matching the selected virtual channel.
     sfmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
@@ -434,8 +451,10 @@ void OneCamera::set_formats() {
     sfmt.format.width = sensor->frame_width;
     sfmt.format.height = sensor->frame_height;
     sfmt.format.code = media_bus_code;
-    ioctl(csid_fd, VIDIOC_SUBDEV_S_FMT, &sfmt);
+    valid &= set_format(csid_fd, sfmt, "CSID");
     close(csid_fd);
+  } else {
+    return false;
   }
 
   // set format on sensor subdev
@@ -446,7 +465,9 @@ void OneCamera::set_formats() {
     sfmt.format.width = sensor->frame_width;
     sfmt.format.height = sensor->frame_height;
     sfmt.format.code = media_bus_code;
-    ioctl(sensor_fd, VIDIOC_SUBDEV_S_FMT, &sfmt);
+    valid &= set_format(sensor_fd, sfmt, "sensor");
+  } else {
+    return false;
   }
 
   int vfe_pix_fd = open(util::string_format("/dev/v4l-subdev%d", dcfg.vfe_pix_subdev).c_str(), O_RDWR);
@@ -457,7 +478,7 @@ void OneCamera::set_formats() {
     sfmt.format.width = sensor->frame_width;
     sfmt.format.height = sensor->frame_height;
     sfmt.format.code = media_bus_code;
-    ioctl(vfe_pix_fd, VIDIOC_SUBDEV_S_FMT, &sfmt);
+    valid &= set_format(vfe_pix_fd, sfmt, "VFE PIX");
 
     struct v4l2_subdev_selection sel = {};
     sel.which = V4L2_SUBDEV_FORMAT_ACTIVE;
@@ -469,20 +490,20 @@ void OneCamera::set_formats() {
     sel.r.height = output_height;
     if (ioctl(vfe_pix_fd, VIDIOC_SUBDEV_S_SELECTION, &sel) != 0) {
       LOGE("cam %d: VFE PIX S_SELECTION compose failed: %d (%s)", cam_idx, errno, strerror(errno));
+      valid = false;
     }
 
     sfmt.pad = 1;
     sfmt.format.width = output_width;
     sfmt.format.height = output_height;
     sfmt.format.code = MEDIA_BUS_FMT_YUYV8_1_5X8;
-    if (ioctl(vfe_pix_fd, VIDIOC_SUBDEV_S_FMT, &sfmt) != 0) {
-      LOGE("cam %d: VFE PIX source S_FMT failed: %d (%s)", cam_idx, errno, strerror(errno));
-    } else {
-      LOG("cam %d: VFE PIX source format %ux%u code=0x%x",
-          cam_idx, sfmt.format.width, sfmt.format.height, sfmt.format.code);
-    }
+    valid &= set_format(vfe_pix_fd, sfmt, "VFE PIX");
     close(vfe_pix_fd);
+  } else {
+    return false;
   }
+
+  if (!valid) return false;
 
   struct v4l2_format vfmt = {};
   vfmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
@@ -493,6 +514,11 @@ void OneCamera::set_formats() {
   vfmt.fmt.pix_mp.plane_fmt[0].bytesperline = stride;
   vfmt.fmt.pix_mp.plane_fmt[0].sizeimage = yuv_size;
   if (ioctl(video_fd, VIDIOC_S_FMT, &vfmt) == 0) {
+    if (vfmt.fmt.pix_mp.pixelformat != V4L2_PIX_FMT_NV12 || vfmt.fmt.pix_mp.num_planes != 1 ||
+        vfmt.fmt.pix_mp.width != output_width || vfmt.fmt.pix_mp.height != output_height) {
+      LOGE("cam %d: VFE PIX rejected required NV12 output", cam_idx);
+      return false;
+    }
     stride = vfmt.fmt.pix_mp.plane_fmt[0].bytesperline;
     y_height = output_height;
     uv_height = (output_height + 1) / 2;
@@ -503,7 +529,9 @@ void OneCamera::set_formats() {
         stride, yuv_size, vfmt.fmt.pix_mp.plane_fmt[0].bytesperline, vfmt.fmt.pix_mp.plane_fmt[0].sizeimage);
   } else {
     LOGE("cam %d: VFE PIX S_FMT failed: %d (%s)", cam_idx, errno, strerror(errno));
+    return false;
   }
+  return true;
 }
 
 bool OneCamera::write_vfe_regs(const std::vector<VfeRegWrite> &regs, const char *name) {
@@ -672,7 +700,11 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   // Do not enable a CAMSS route until the sensor has responded. Leaving an
   // absent camera's media links enabled can interfere with working cameras.
   setup_media_links();
-  set_formats();
+  if (!set_formats()) {
+    LOGE("cam %d: required RAW12 to NV12 media path is unavailable", cam_idx);
+    enabled = false;
+    return;
+  }
 
   if (access("/dev/dma_heap/system", R_OK | W_OK) != 0) {
     LOGE("cam %d: required DMA heap is unavailable: %d (%s)", cam_idx, errno, strerror(errno));

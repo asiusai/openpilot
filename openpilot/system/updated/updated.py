@@ -123,6 +123,17 @@ def dismount_overlay() -> None:
     run(["sudo", "umount", "-l", OVERLAY_MERGED])
 
 
+def prepare_staging_permissions() -> None:
+  # Staging directories must belong to the updater, regardless of their owner
+  # in the installed tree (for example, artifacts from root-run diagnostics).
+  # Change only directories in the overlay; preserve the live checkout and do
+  # not follow links or copy up the generated files that Git will delete.
+  if Path(OVERLAY_MERGED).is_symlink() or not os.path.ismount(OVERLAY_MERGED):
+    raise RuntimeError("Update staging overlay is not mounted")
+  run(["sudo", "find", "-P", OVERLAY_MERGED, "-xdev", "-type", "d", "!", "-uid", str(os.getuid()),
+       "-exec", "chown", "--no-dereference", f"{os.getuid()}:{os.getgid()}", "{}", "+"])
+
+
 def init_overlay() -> None:
 
   # Re-create the overlay if BASEDIR/.git has changed since we created the overlay
@@ -386,6 +397,7 @@ class Updater:
     cloudlog.info("git fetch success: %s", git_fetch_output)
 
     cloudlog.info("git reset in progress")
+    prepare_staging_permissions()
     # Check out without running the installed LFS client, the new checkout installs its own below
     nolfs = ["-c", "filter.lfs.process=", "-c", "filter.lfs.required=false", "-c", "core.hooksPath=/dev/null"]
     cmds = [

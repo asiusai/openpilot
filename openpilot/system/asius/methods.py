@@ -15,6 +15,7 @@ from typing import Any, Protocol, cast
 from collections.abc import Callable
 
 import requests
+from capnp import KjException
 from websocket import ABNF, WebSocket, WebSocketTimeoutException
 
 import openpilot.cereal.messaging as messaging
@@ -907,10 +908,10 @@ def installSoftwareUpdate() -> dict[str, int]:
   return {"success": 1}
 
 
-@dispatcher.add_method(phoneOnline=boolean, localWifiSupported=boolean)
-def prepareLive(phoneOnline: bool = True, localWifiSupported: bool = False) -> dict:
+@dispatcher.add_method(phoneOnline=boolean)
+def prepareLive(phoneOnline: bool = True) -> dict:
   from openpilot.system.asius.turn import prepare_live
-  return prepare_live(phoneOnline, localWifiSupported)
+  return prepare_live(phoneOnline)
 
 
 @dispatcher.add_method(sdp=regex(r'[\x20-\x7e\r\n]*'), cameras=list_of(one_of("road", "wideRoad", "driver")),
@@ -958,7 +959,7 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
         if sm.alive[service]:
           services[service]["sampleMonoTime"] = int(sm.logMonoTime[service]) / 1e9
         continue
-      if (service in ("deviceState", "carState", "navInstruction", "selfdriveState", "onroadEvents", "driverMonitoringState")
+      if (service in ("deviceState", "carState", "navInstruction", "selfdriveState", "onroadEvents", "driverMonitoringState", "extrinsicsCalibration")
           and not (sm.alive[service] and sm.valid[service])):
         continue
       if sm.recv_frame[service] > 0:
@@ -1025,6 +1026,25 @@ def alpamayo_install_status() -> str | None:
   return f"Alpamayo install: {value.get('step')}: {value.get('text')}"
 
 
+def _saved_calibration(params: Params) -> dict[str, Any] | None:
+  raw = params.get("CalibrationParams")
+  if not raw or len(raw) > 8192:
+    return None
+  try:
+    with log.Event.from_bytes(raw) as msg:
+      if msg.which() != "extrinsicsCalibration" or not msg.valid:
+        return None
+      cal = msg.extrinsicsCalibration
+      if len(cal.rpyCalib) != 3 or len(cal.height) not in (0, 1) or not 0 <= cal.calPerc <= 100:
+        return None
+      angles, height = list(cal.rpyCalib), list(cal.height)
+      if not all(math.isfinite(v) for v in angles + height):
+        return None
+      return {"calStatus": str(cal.calStatus), "calPerc": cal.calPerc, "rpyCalib": angles, "height": height}
+  except (KjException, ValueError):
+    return None
+
+
 def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
   build_metadata = get_build_metadata()
   services = _live_services(sm)
@@ -1068,6 +1088,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     "onboarding": setup_status(params),
     "software": _software_update_state(params),
     "services": services,
+    "savedCalibration": _saved_calibration(params) if "extrinsicsCalibration" not in services else None,
     "gpu": gpu_status(sm, params),
     "offroadAlerts": offroad_alerts,
     "authorizedPeers": list(load_authorized_peers().keys()),
@@ -1142,9 +1163,8 @@ clock_challenges = ClockChallenges()
 
 
 def dispatcher_for_peer(sender: str):
-  from openpilot.system.asius.local_video import methods as local_video_methods
   from openpilot.system.asius.live_lighting import methods as lighting_methods
-  return dispatcher | local_video_methods(sender) | lighting_methods(sender) | NavigationRequests().methods(sender) | {
+  return dispatcher | lighting_methods(sender) | NavigationRequests().methods(sender) | {
     "writeParamValue": lambda **kwargs: parameter_editor.write(sender, **kwargs),
     "getTimeChallenge": lambda: clock_challenges.challenge(sender),
     "syncTime": lambda challenge, unixTimeMs: clock_challenges.sync(sender, challenge, unixTimeMs),

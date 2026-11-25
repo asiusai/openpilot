@@ -141,7 +141,7 @@ def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int
 
 
 def compile_copy(tensor: Tensor) -> Callable[[], Tensor]:
-  jit = CapturedJit(tensor, compile_linear(tensor.schedule_linear()), [], [])
+  jit = CapturedJit(tensor, compile_linear(tensor.schedule_linear()), [], [], {})
   return lambda: jit([], {})
 
 

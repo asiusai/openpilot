@@ -1,3 +1,5 @@
+import os
+import shutil
 import subprocess
 from unittest.mock import Mock, PropertyMock, patch
 
@@ -92,15 +94,74 @@ def test_online_check_uses_one_bounded_request(updater, monkeypatch):
 def test_fetch_gets_only_selected_submodule_revisions(updater, monkeypatch):
   commands = []
   monkeypatch.setattr(updated, 'run', lambda cmd, *args, **kwargs: commands.append(cmd) or '')
-  for name in ['set_consistent_flag', 'setup_git_options', 'finalize_update']:
+  for name in ['set_consistent_flag', 'setup_git_options', 'finalize_update', 'prepare_staging_permissions']:
     monkeypatch.setattr(updated, name, Mock())
   monkeypatch.setattr(updated, 'AGNOS', False)
   monkeypatch.setattr(updated, 'vamos_update_supported', lambda: False)
   updater.fetch_update()
   fetch = ['git', 'fetch', '--no-recurse-submodules', 'origin', 'master']
-  checkout = ['git', 'checkout', '--force', '--no-recurse-submodules', '-B', 'master', 'FETCH_HEAD']
+  checkout = next(cmd for cmd in commands if 'checkout' in cmd)
+  assert checkout[-6:] == ['checkout', '--force', '--no-recurse-submodules', '-B', 'master', 'FETCH_HEAD']
   submodules = ['git', 'submodule', 'update', '--init', '--recursive']
   assert commands.index(fetch) < commands.index(checkout) < commands.index(submodules)
+
+
+def test_ownership_repair_requires_mounted_staging(tmp_path, monkeypatch):
+  staging = tmp_path / 'merged'
+  staging.mkdir()
+  monkeypatch.setattr(updated, 'OVERLAY_MERGED', str(staging))
+  run = Mock()
+  monkeypatch.setattr(updated, 'run', run)
+  with pytest.raises(RuntimeError, match='not mounted'):
+    updated.prepare_staging_permissions()
+  staging.rmdir()
+  staging.symlink_to(tmp_path, target_is_directory=True)
+  monkeypatch.setattr(updated.os.path, 'ismount', lambda _: True)
+  with pytest.raises(RuntimeError, match='not mounted'):
+    updated.prepare_staging_permissions()
+  run.assert_not_called()
+
+
+def test_root_owned_caches_clean_in_overlay_only(tmp_path, monkeypatch):
+  # This regression needs real ownership and OverlayFS, not mocked Git output.
+  if os.getuid() == 0 or shutil.which('sudo') is None or subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode:
+    pytest.skip('requires a non-root user with passwordless sudo and OverlayFS')
+  lower, upper, work, merged, outside = [tmp_path / name for name in ('lower', 'upper', 'work', 'merged', 'outside')]
+  for directory in (lower, upper, work, merged, outside):
+    directory.mkdir()
+  updated.run(['git', 'init', str(lower)])
+  (lower / 'tracked.py').write_text('preserved = True\n')
+  updated.run(['git', 'add', 'tracked.py'], str(lower))
+  caches = [lower / '.pytest_cache' / 'v' / 'cache', lower / '.venv' / 'pkg' / '__pycache__']
+  for cache in caches:
+    cache.mkdir(parents=True)
+    (cache / 'generated').write_text('cached\n')
+  (outside / 'keep').write_text('outside\n')
+  (caches[0] / 'outside').symlink_to(outside, target_is_directory=True)
+  updated.run(['sudo', 'chown', '-hR', '0:0', str(lower / '.pytest_cache'), str(lower / '.venv'), str(outside)])
+  mounted = False
+  try:
+    options = f'lowerdir={lower},upperdir={upper},workdir={work}'
+    updated.run(['sudo', 'mount', '-t', 'overlay', '-o', options, 'none', str(merged)])
+    mounted = True
+    monkeypatch.setattr(updated, 'OVERLAY_MERGED', str(merged))
+    with pytest.raises(subprocess.CalledProcessError, match='git') as error:
+      updated.run(['git', 'clean', '-xdff'], str(merged))
+    assert 'Permission denied' in error.value.output
+    updated.prepare_staging_permissions()
+    updated.run(['git', 'clean', '-xdff'], str(merged))
+    assert not (merged / '.pytest_cache').exists()
+    assert not (merged / '.venv').exists()
+    assert (merged / 'tracked.py').read_text() == 'preserved = True\n'
+    for cache in caches:
+      assert cache.stat().st_uid == 0
+      assert (cache / 'generated').read_text() == 'cached\n'
+    assert outside.stat().st_uid == 0
+    assert (outside / 'keep').read_text() == 'outside\n'
+  finally:
+    if mounted:
+      updated.run(['sudo', 'umount', str(merged)])
+    updated.run(['sudo', 'chown', '-hR', f'{os.getuid()}:{os.getgid()}', str(tmp_path)])
 
 
 def test_manual_update_failures_stay_in_software_settings(updater, monkeypatch):

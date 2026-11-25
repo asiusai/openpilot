@@ -23,7 +23,3 @@ def patched_msgq_source(root: Path) -> Path:
     if not target.exists() or target.read_bytes() != content:
       staged.replace(target)
   return target
-
-
-if __name__ == '__main__':
-  patched_msgq_source(Path(__file__).resolve().parents[3])

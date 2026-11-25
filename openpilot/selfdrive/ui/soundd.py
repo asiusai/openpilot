@@ -37,7 +37,9 @@ if HARDWARE.get_device_type() == "tizi":
   VOLUME_BASE = 10
 
 AudibleAlert = log.SelfdriveState.AudibleAlert
-CRITICAL_MAX = -1 # internal sound key, not an AudibleAlert
+# internal sound keys, not AudibleAlerts
+CRITICAL_MAX = -1
+DM_CRITICAL_MAX = -2
 
 
 sound_list: dict[int, tuple[str, int | None, float]] = {
@@ -53,8 +55,17 @@ sound_list: dict[int, tuple[str, int | None, float]] = {
   AudibleAlert.preAlert: ("pre_alert.wav", 1, MAX_VOLUME),
 
   AudibleAlert.warningSoft: ("critical.wav", None, MAX_VOLUME),
-  AudibleAlert.warningImmediate: ("dm_critical.wav", None, MAX_VOLUME),
-  CRITICAL_MAX: ("dm_critical_max.wav", None, MAX_VOLUME),
+  AudibleAlert.warningImmediateSystem: ("critical.wav", None, MAX_VOLUME),
+  AudibleAlert.warningImmediateUser: ("dm_critical.wav", None, MAX_VOLUME),
+  CRITICAL_MAX: ("critical_max.wav", None, MAX_VOLUME),
+  DM_CRITICAL_MAX: ("dm_critical_max.wav", None, MAX_VOLUME),
+}
+
+# critical alerts ramp up in volume, then switch to their max sound
+critical_max_sounds = {
+  AudibleAlert.warningSoft: CRITICAL_MAX,
+  AudibleAlert.warningImmediateSystem: CRITICAL_MAX,
+  AudibleAlert.warningImmediateUser: DM_CRITICAL_MAX,
 }
 
 def check_selfdrive_timeout_alert(sm):
@@ -110,7 +121,7 @@ class Soundd:
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
     ret = np.zeros(frames, dtype=np.float32)
-    critical = self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
+    critical = self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser)
 
     if self.current_alert != AudibleAlert.none:
       num_loops = sound_list[self.current_alert][1]
@@ -133,7 +144,8 @@ class Soundd:
           self.pending_stop = False
           break
 
-    critical = critical or self.voice_critical or self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate)
+    critical = critical or self.voice_critical or self.current_alert in (
+      AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser)
     busy = critical or self.current_alert != AudibleAlert.none or self.voice.playing or self.pairing_speech.playing
     voice_volume = self.current_volume
     mixed = self.voice.mix(ret * self.current_volume, voice_volume, critical)
@@ -188,7 +200,7 @@ class Soundd:
       return
     self.pending_stop = False
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
-      if new_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
+      if new_alert in critical_max_sounds:
         self.ramp_start_volume = self.current_volume
         self.ramp_start_time = time.monotonic()
       self.current_alert = new_alert
@@ -204,7 +216,7 @@ class Soundd:
       new_alert = sm['selfdriveState'].alertSound.raw
       self.update_alert(new_alert)
     elif check_selfdrive_timeout_alert(sm):
-      self.update_alert(AudibleAlert.warningImmediate)
+      self.update_alert(AudibleAlert.warningImmediateSystem)
       self.selfdrive_timeout_alert = True
     elif self.selfdrive_timeout_alert:
       self.update_alert(AudibleAlert.none)
@@ -248,18 +260,19 @@ class Soundd:
         now = time.monotonic()
         onroad = not sm.seen['deviceState'] or sm['deviceState'].started
         state = sm['selfdriveState'] if sm.seen['selfdriveState'] and sm.valid['selfdriveState'] and now - sm.recv_time['selfdriveState'] < 1. else None
-        self.voice_critical = (self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate) or
+        self.voice_critical = (self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediateSystem, AudibleAlert.warningImmediateUser) or
                                (onroad and state is not None and state.alertStatus == log.SelfdriveState.AlertStatus.critical))
         self.voice.update(state, onroad, self.voice_critical, now)
         self.pairing_speech.update(onroad, self.voice_critical, now)
         self.update_preview(sm, now)
 
-        if self.current_alert in (AudibleAlert.warningSoft, AudibleAlert.warningImmediate):
+        if self.current_alert in critical_max_sounds:
           elapsed = time.monotonic() - self.ramp_start_time
           ramp_vol = float(np.interp(elapsed, [0, ALERT_RAMP_TIME], [self.ramp_start_volume, MAX_VOLUME]))
           self.current_volume = max(self.current_volume, ramp_vol)
-          if elapsed >= ALERT_MAX_TIME and self.current_sound != CRITICAL_MAX:
-            self.current_sound = CRITICAL_MAX
+          max_sound = critical_max_sounds[self.current_alert]
+          if elapsed >= ALERT_MAX_TIME and self.current_sound != max_sound:
+            self.current_sound = max_sound
             self.current_sound_frame = 0
 
         rk.keep_time()

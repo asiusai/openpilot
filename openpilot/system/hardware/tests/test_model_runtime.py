@@ -67,3 +67,9 @@ def test_chestnut_artifact_matches_runtime(name):
         artifact = ArtifactUnpickler(source).load()
     assert artifact['input_specs']
     assert artifact['run'].captured is not None
+  # Portable CPU helpers must compile with this runtime on either host architecture.
+  from tinygrad.engine.realize import lower_and_compile
+  from tinygrad.uop.ops import Ops
+  with Context(DEV='CPU:LLVM'):
+    linear = lower_and_compile(artifact['run'].captured._linear)
+  assert all(u.op is not Ops.PROGRAM or len(u.src) == 4 for u in linear.toposort(enter_calls=True))
