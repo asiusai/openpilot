@@ -41,18 +41,21 @@ compiler = Dir('#tinygrad_repo/examples/openpilot').abspath
 # build on all cores
 taskset = 'taskset -c 0-7 ' if arch == 'comma_arm64' else ''
 
-def compile_model(onnx_path, pkl_path, flags=tg_flags):
+def compile_model(onnx_path, pkl_path, flags=tg_flags, kernel_opts=None):
   onnx_path, target_pkl_path = File(onnx_path).abspath, File(pkl_path).abspath
+  # tuned kernel opts for the Asius Adreno 635, kernels not in the table use the heuristics
+  opts_args = f' --kernel-opts "{File(kernel_opts).abspath}"' if kernel_opts else ''
   cmd = (f'{flags} {mac_brew_string} {taskset}python3 "{compiler}/compile_onnx.py" '
-         f'"{onnx_path}" "{target_pkl_path}" --out-of-band --benchmark-runs 1')
+         f'"{onnx_path}" "{target_pkl_path}" --out-of-band --benchmark-runs 1{opts_args}')
   lenv.Command(
     target_pkl_path,
-    tinygrad_files + [onnx_path, Value(cmd)],
+    tinygrad_files + [onnx_path, Value(cmd)] + ([kernel_opts] if kernel_opts else []),
     Action(cmd, "  [ONNX] $TARGET"),
   )
 
 compile_model('models/dmonitoring_model.onnx', 'models/dmonitoring_model_tinygrad.pkl')
-compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl', driving_tg_flags)
+compile_model('models/driving_supercombo.onnx', 'models/driving_tinygrad.pkl', driving_tg_flags,
+              'models/driving_kernel_opts.json' if arch == 'comma_arm64' and ASIUS_HARDWARE else None)
 
 model_w, model_h = MEDMODEL_INPUT_SIZE
 for cam_w, cam_h in camera_configs:

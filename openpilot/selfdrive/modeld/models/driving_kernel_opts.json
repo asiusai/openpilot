@@ -1,0 +1,123 @@
+{
+ "7d1fbde9b6e6ebe56d309afdbc56958d428119e53e52fc5efc1ce07b1adfa0e3": {
+  "name": "E_1536_32_5_2_4",
+  "default_us": 730.1,
+  "us": 588.8,
+  "rel": 0.0,
+  "opts": [
+   [
+    "SPLIT",
+    2,
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   [
+    "SPLIT",
+    2,
+    [
+     32,
+     "LOCAL"
+    ]
+   ],
+   [
+    "SPLIT",
+    1,
+    [
+     5,
+     "LOCAL"
+    ]
+   ],
+   [
+    "SPLIT",
+    0,
+    [
+     2,
+     "LOCAL"
+    ]
+   ]
+  ]
+ },
+ "62e55cfdd017d21ad84572bd588fe535f38287686eae9dde36b953dd54052ba0": {
+  "name": "E_4096_6_2_2_8",
+  "default_us": 1062.2,
+  "us": 939.0,
+  "rel": 0.0,
+  "opts": [
+   [
+    "SPLIT",
+    0,
+    [
+     8,
+     "UPCAST"
+    ]
+   ],
+   [
+    "SPLIT",
+    3,
+    [
+     6,
+     "LOCAL"
+    ]
+   ],
+   [
+    "SPLIT",
+    2,
+    [
+     2,
+     "LOCAL"
+    ]
+   ],
+   [
+    "SPLIT",
+    1,
+    [
+     2,
+     "LOCAL"
+    ]
+   ]
+  ]
+ },
+ "2c477af2e0f22ff344fc733180a9da368a8354d937e18ccc51696a087ed24a65": {
+  "name": "r_128_16_4_32_128_4_2",
+  "default_us": 804.3,
+  "us": 320.6,
+  "rel": 7.960629275007182e-08,
+  "opts": [
+   [
+    "SPLIT",
+    4,
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   [
+    "SPLIT",
+    1,
+    [
+     4,
+     "UPCAST"
+    ]
+   ],
+   [
+    "SPLIT",
+    2,
+    [
+     2,
+     "UPCAST"
+    ]
+   ],
+   [
+    "SPLIT",
+    2,
+    [
+     16,
+     "LOCAL",
+     true
+    ]
+   ]
+  ]
+ }
+}
