@@ -81,7 +81,7 @@ submodules = [
   "pandacan",
   "rednose",
   "teleoprtc",
-  "tinygrad[mesa]",
+  "tinygrad",
 ]
 
 [project.urls]
