@@ -10,13 +10,10 @@
 #include <linux/v4l2-subdev.h>
 #include <linux/videodev2.h>
 
-#include <linux/gpio.h>
-#include <pthread.h>
 #include <time.h>
 
 #include <algorithm>
 #include <atomic>
-#include <thread>
 #include <cassert>
 #include <cerrno>
 #include <cmath>
@@ -159,39 +156,22 @@ static constexpr int ONE_PIX_CSID_SOURCE_PAD = 4;
 static constexpr uint32_t ONE_SENSOR_DELAY_MS = 0xffffffffU;
 static constexpr uint32_t OS04_20FPS_VTS = 2270;
 
-// Frame sync. One 20 Hz frame clock on the SoC is the reference, as the Panda timer is on comma four:
-//   - driver: FSIN trigger on GPIO_64 (CAM_MCLK0, connected on every board), half a period after the tick
-//   - road and wide: FSIN triggers on GPIO_66 and GPIO_67 (CAM_MCLK2, CAM_MCLK3) at the tick. These reach the cameras
-//     only when R358 and R121 (0R) are fitted on the Dragon Q6A. Both sensors start as FSIN slaves. When they do not
-//     follow their triggers, camerad changes them to the software phase lock (FrameClockLock) in the first second.
-// CAMERAD_FSIN=hw keeps road and wide as FSIN slaves without that check. CAMERAD_FSIN=sw uses the software lock from
-// the start, which saves about 0.4 s of camera start on a board without the resistors.
-// CAMERAD_NO_FRAME_SYNC=1 turns all of it off: every sensor then free-runs.
+// Frame sync. One 20 Hz frame clock on the SoC is the reference, as the Panda timer is on comma four. Every sensor
+// free-runs and a software phase lock (FrameClockLock) keeps it on the clock: road and wide at the tick, the driver
+// camera half a period later. Hardware FSIN is not used: on the Dragon Q6A the road and wide FSIN lines need R358 and
+// R121, and assembled devices missed 4 to 48% of the triggers through the camera board's 2.2 kOhm FSIN pull-down.
+// CAMERAD_NO_FRAME_SYNC=1 turns the sync off: every sensor then free-runs at 20 FPS.
 static bool frame_sync_enabled() {
   static const bool enabled = getenv("CAMERAD_NO_FRAME_SYNC") == nullptr;
   return enabled;
 }
-// Road and wide own frame with frame sync: a few lines shorter than 20 FPS. The lock then adds lines to every
-// frame (3.6 on average) and can move the sensor both ways. Exposure stays below this length.
+// Own frame with frame sync: a few lines shorter than 20 FPS. The lock then adds lines to every frame (3.6 on average
+// for road and wide) and can move the sensor both ways. Exposure stays below this length.
 static constexpr uint32_t OS04_SYNC_BASE_VTS = OS04_20FPS_VTS - 4;
-enum class FsinMode { AUTO, HW, SW };
-static FsinMode fsin_mode() {
-  static const FsinMode mode = [] {
-    const char *v = getenv("CAMERAD_FSIN");
-    if (v != nullptr && strcmp(v, "hw") == 0) return FsinMode::HW;
-    if (v != nullptr && strcmp(v, "sw") == 0) return FsinMode::SW;
-    return FsinMode::AUTO;
-  }();
-  return mode;
-}
-// Road and wide start as FSIN slaves.
-static bool hw_fsin() { return frame_sync_enabled() && fsin_mode() != FsinMode::SW; }
-// Road and wide own frame as FSIN slaves: 49.56 ms. A slave ignores a trigger that comes before its own frame ends
-// and then runs at half rate, so the own frame must be shorter than the clock period.
-static constexpr uint32_t OS04_FSIN_ROAD_VTS = OS04_20FPS_VTS - 20;
-static uint32_t os04_road_vts() {
-  return !frame_sync_enabled() ? OS04_20FPS_VTS : (hw_fsin() ? OS04_FSIN_ROAD_VTS : OS04_SYNC_BASE_VTS);
-}
+static constexpr uint32_t OS04_DRIVER_VTS = 2360;  // comma's four-lane 20 FPS mode
+static constexpr uint32_t OS04_DRIVER_SYNC_BASE_VTS = OS04_DRIVER_VTS - 4;
+static uint32_t os04_road_vts() { return frame_sync_enabled() ? OS04_SYNC_BASE_VTS : OS04_20FPS_VTS; }
+static uint32_t os04_driver_vts() { return frame_sync_enabled() ? OS04_DRIVER_SYNC_BASE_VTS : OS04_DRIVER_VTS; }
 
 static const std::vector<i2c_random_wr_payload> &os04_default_init_regs(bool driver) {
   // Comma's documented 728 Mbps, four-lane, 20 FPS RAW12 mode.
@@ -199,13 +179,11 @@ static const std::vector<i2c_random_wr_payload> &os04_default_init_regs(bool dri
   // configuration because Dragon does not supply comma's external FSIN.
   static const std::vector<i2c_random_wr_payload> driver_regs = [] {
     std::vector<i2c_random_wr_payload> result(std::begin(init_array_os04c10), std::end(init_array_os04c10));
-    // With frame sync the driver camera keeps comma's FSIN slave registers (trigger on GPIO_64).
-    if (!frame_sync_enabled()) {
-      result.insert(result.end(), {
-        {0x3002, 0x21}, {0x3663, 0x26}, {0x368a, 0x00}, {0x3822, 0x14},
-        {0x3823, 0x08}, {0x3844, 0x08}, {0x382b, 0x00}, {0x3832, 0x00},
-      });
-    }
+    // Free-run registers in place of comma's FSIN slave values.
+    result.insert(result.end(), {
+      {0x3002, 0x21}, {0x3663, 0x26}, {0x368a, 0x00}, {0x3822, 0x14},
+      {0x3823, 0x08}, {0x3844, 0x08}, {0x382b, 0x00}, {0x3832, 0x00},
+    });
     result.insert(result.end(), {
       // Match the Asius module orientation and Bayer crop used by the road cameras.
       // 0x3716 must match 0x3820's vertical orientation, as in os04c10_mirror_flip.
@@ -241,14 +219,6 @@ static const std::vector<i2c_random_wr_payload> &os04_default_init_regs(bool dri
       {0x5140, 0x04}, {0x5141, 0x00}, {0x5104, 0x04}, {0x5105, 0x00},
       {0x5144, 0x04}, {0x5145, 0x00},
     });
-    if (hw_fsin()) {
-      // comma's FSIN slave values again (the mode list above sets free-run values) and the shorter own frame.
-      result.insert(result.end(), {
-        {0x3002, 0x22}, {0x3663, 0x22}, {0x368a, 0x04}, {0x3822, 0x44}, {0x3823, 0x00}, {0x3829, 0x03},
-        {0x3832, 0xf8}, {0x382c, 0x00}, {0x3844, 0x06}, {0x3843, 0x00}, {0x382a, 0x00}, {0x382b, 0x0c},
-        {0x380e, (OS04_FSIN_ROAD_VTS >> 8) & 0xff}, {0x380f, OS04_FSIN_ROAD_VTS & 0xff},
-      });
-    }
     return result;
   }();
   return driver ? driver_regs : regs;
@@ -325,22 +295,12 @@ static bool write_sensor_regs(int sensor_fd, const std::vector<i2c_random_wr_pay
   return true;
 }
 
-static bool apply_os04_20fps_timing(int sensor_fd, int cam_idx) {
-  // Road and wide only.
-  const uint32_t vts = os04_road_vts();
+static bool apply_os04_20fps_timing(int sensor_fd, int cam_idx, bool driver) {
+  const uint32_t vts = driver ? os04_driver_vts() : os04_road_vts();
   return write_sensor_regs(sensor_fd, {
     {0x380e, (vts >> 8) & 0xff},
     {0x380f, vts & 0xff},
   }, "20fps timing", cam_idx);
-}
-
-// A road or wide sensor that started as an FSIN slave gets the free-run values and the software lock's own frame.
-static bool os04_slave_to_free_run(int sensor_fd, int cam_idx) {
-  return write_sensor_regs(sensor_fd, {
-    {0x3002, 0x21}, {0x3663, 0x26}, {0x368a, 0x00}, {0x3822, 0x14},
-    {0x3823, 0x08}, {0x3844, 0x08}, {0x382b, 0x00}, {0x3832, 0x00},
-    {0x380e, (OS04_SYNC_BASE_VTS >> 8) & 0xff}, {0x380f, OS04_SYNC_BASE_VTS & 0xff},
-  }, "free run", cam_idx);
 }
 
 static int64_t raw_clock_ns() {
@@ -367,13 +327,13 @@ struct FrameClock {
 
 // Software phase lock of one free-running sensor to the frame clock.
 //
-// The sensor's own frame (OS04_SYNC_BASE_VTS) is shorter than the clock period. After every frame the lock
-// writes the VTS low byte 0x380f with 0 to 37 more lines (22 us per line) for one frame:
-//   - rate: the average number of lines that makes the sensor period equal to the clock period (about 3.6),
+// The sensor's own frame (base VTS) is shorter than the clock period. After every frame the lock writes the VTS low
+// byte 0x380f with a few more lines (about 22 us per line) for one frame:
+//   - rate: the average number of lines that makes the sensor period equal to the clock period,
 //     dithered between two integers and estimated from the phase change between windows
 //   - phase: a part of the measured phase error, spread over the next window
 // Start-up moves the sensor to the tick with one long frame (both VTS bytes), then confirms the phase.
-// A write right after a frame's DMA completion (sensor line ~1560 of 2270) applies to exactly one frame
+// A write right after a frame's DMA completion (about line 1560 of the frame) applies to exactly one frame
 // whether the sensor latches VTS at once or at the next frame. Frames never get shorter than the base frame,
 // so exposure stays valid.
 // Frame timestamps are noisy: on an idle board one in five is 0.75 ms late (CPU wake-up). Start-up therefore
@@ -381,10 +341,10 @@ struct FrameClock {
 // The sensor oscillator itself drifts by ppm only.
 class FrameClockLock {
 public:
-  static constexpr uint16_t VTS_LO = OS04_SYNC_BASE_VTS & 0xff;
-  static constexpr int MAX_LINES = 0xff - VTS_LO;        // 37 lines, 0.81 ms
-  static constexpr double LINE_NS = 22025.0;             // measured: 49.996 ms / 2270 lines
-  static constexpr double RATE_START = 3.6;              // lines per frame at start (measured); the lock then tracks it
+  // Sensor mode: base frame length (VTS), line time, and the lines per frame that match the clock at start.
+  struct Mode { uint32_t base_vts; double line_ns; double rate; };
+  static constexpr Mode ROAD_MODE = {OS04_SYNC_BASE_VTS, 22025.0, 3.6};       // measured: 49.996 ms / 2270 lines
+  static constexpr Mode DRIVER_MODE = {OS04_DRIVER_SYNC_BASE_VTS, 21170.0, 7.0};  // measured: 49.962 ms / 2360 lines; 7.0 lines
   static constexpr int64_t TRACK_ENTER_NS = 150000;      // locked: phase within 0.15 ms at start
   static constexpr int64_t LOST_NS = 1500000;            // back to acquisition above 1.5 ms
   static constexpr int64_t ADVANCE_MAX_NS = 1500000;     // late by less: run short frames instead of a 50 ms delay
@@ -395,13 +355,23 @@ public:
   const char *name = "";
   bool failed = false;
   bool locked = false;       // reached lock once; publishing may start
-  double rate = RATE_START;  // lines per frame
+  double rate = ROAD_MODE.rate;  // lines per frame
+  int64_t offset_ns = 0;     // target: the tick plus this offset
+
+  void configure(const Mode &m, int64_t offset) {
+    base_vts = m.base_vts;
+    vts_lo = m.base_vts & 0xff;
+    max_lines = 0xff - vts_lo;
+    line_ns = m.line_ns;
+    rate = m.rate;
+    offset_ns = offset;
+  }
   int64_t window_phase_ns = 0;
   int steps = 0, frames = 0;
 
   // Delay the sensor once by lengthening one frame. skip: frames whose phase is not valid after the request.
   void delay(int64_t ns, int skip) {
-    delay_lines = (int)std::lround(ns / LINE_NS);
+    delay_lines = (int)std::lround(ns / line_ns);
     settle = skip;
     acq_n = 0;
     steps++;
@@ -423,27 +393,30 @@ public:
       advance_frames--;  // shortest frame: the sensor gains (rate * 22 us) on the clock
     } else {
       acc += rate + corr;
-      n = std::clamp((int)std::floor(acc), 0, MAX_LINES);
+      n = std::clamp((int)std::floor(acc), 0, max_lines);
       acc = std::clamp(acc - n, -2.0, 2.0);
       lines_since_mid += n;  // delay frames are not part of the rate estimate: they happen during acquisition
     }
     frames_since_mid++;
     if (delay_lines > 0 || long_frame) {
       // One long frame, then back to the base frame: both VTS bytes in one write.
-      const uint32_t vts = OS04_SYNC_BASE_VTS + n + delay_lines;
+      const uint32_t vts = base_vts + n + delay_lines;
       long_frame = delay_lines > 0;
       delay_lines = 0;
       if (!write_sensor_regs(sensor_fd, {{0x380e, (vts >> 8) & 0xff}, {0x380f, vts & 0xff}}, "exposure", cam_num)) fail("VTS");
       written_lines = n;
     } else if (n != written_lines) {
       // The name "exposure" keeps write_sensor_regs quiet; these writes are per frame.
-      if (!write_sensor_regs(sensor_fd, {{0x380f, (uint32_t)(VTS_LO + n)}}, "exposure", cam_num)) fail("lines");
+      if (!write_sensor_regs(sensor_fd, {{0x380f, (uint32_t)(vts_lo + n)}}, "exposure", cam_num)) fail("lines");
       written_lines = n;
     }
   }
 
 private:
   static constexpr int MAX_WINDOW = 40;
+  uint32_t base_vts = ROAD_MODE.base_vts, vts_lo = ROAD_MODE.base_vts & 0xff;
+  int max_lines = 0xff - (ROAD_MODE.base_vts & 0xff);
+  double line_ns = ROAD_MODE.line_ns;
   bool tracking = false;
   bool long_frame = false;
   int written_lines = 0;
@@ -491,7 +464,7 @@ private:
     }
     if (acq_n < 4) return;  // not in tolerance: look at two more frames before a step
     if (acq_min > 0 && acq_min <= ADVANCE_MAX_NS) {
-      advance_frames = std::max(1, (int)std::lround(acq_min / (rate * LINE_NS)));
+      advance_frames = std::max(1, (int)std::lround(acq_min / (rate * line_ns)));
       settle = advance_frames + 1;
       acq_n = 0;
       steps++;
@@ -520,13 +493,13 @@ private:
       acq_n = 0;
       return;
     }
-    const double phase_lines = m / LINE_NS;
+    const double phase_lines = m / line_ns;
     if (have_prev && frames_half > 0) {
       // Between the two window middles the phase changed by (lines added - rate needed), frame by frame.
       const double rate_est = (lines_half - (phase_lines - prev_phase_lines)) / frames_half;
       // A sensor cannot jump. A window that disagrees with the lines written is a burst of late timestamps:
       // ignore up to two such windows in a row and keep the rate.
-      const double jump_ns = (rate - rate_est) * frames_half * LINE_NS;
+      const double jump_ns = (rate - rate_est) * frames_half * line_ns;
       if (windows > 3 && std::abs(jump_ns) > JUMP_GATE_NS && gated < 2) {
         gated++;
         corr = 0.0;
@@ -545,93 +518,34 @@ private:
   }
 };
 
-// Starts the frame clock in phase with the later of the two sensors and locks road and wide to it.
-// With hardware FSIN (hw) the clock starts at once, the triggers move the sensors, and this class checks that both
-// sensors follow them. A slave without a trigger runs its own frame (49.56 ms), so its phase falls by 0.44 ms per
-// frame. When hw_auto sees that, both sensors change to the software lock.
+// Starts the frame clock in phase with the later of road and wide, locks both to the tick and the driver camera to
+// the tick plus half a period.
 class FrameSync {
 public:
   static constexpr int ROAD = 0, WIDE = 1;
-  static constexpr int START_SKIP = 0;                  // first frames of each sensor that are not measured
   static constexpr int START_SAMPLES = 2;               // frames of each sensor measured before the clock starts
   static constexpr int ACQUIRE_TIMEOUT_FRAMES = 160;    // 8 s, then publish unlocked
-  static constexpr int HW_FOLLOW_FRAMES = 6;            // frames in a row on the trigger; a free sensor crosses the window in 3
-  static constexpr int HW_PROBE_FRAMES = 8;             // frames of a sensor before it can be judged free-running
-  static constexpr int HW_DRIFT_FRAMES = 4;             // the phase change is measured over this many frames
-  static constexpr int64_t HW_FREE_RUN_STEP_NS = 440000;
-  static constexpr int SW_SETTLE_FRAMES = 3;            // frames ignored after the register change
 
   bool enabled = false;
-  bool hw = false;
-  bool hw_auto = false;
+  bool have_driver = false;
   bool timed_out = false;
   FrameClock clock;
   FrameClockLock cam[2];
+  FrameClockLock driver;
 
-  // Road and wide frames are held back while this is true (see camerad_thread).
+  // Road and wide frames are held back while this is true (see camerad_thread). They wait for the driver lock too,
+  // so that all three cameras start publishing with the same frame ID.
   bool acquiring() const {
-    if (hw) return enabled && !timed_out && !hw_acquired;
-    return enabled && !timed_out && !cam[ROAD].failed && !cam[WIDE].failed && !(cam[ROAD].locked && cam[WIDE].locked);
-  }
-
-  // Start of frame within this window of the tick: the sensor follows its trigger (a timestamp can be 0.75 ms late).
-  static bool with_trigger(int64_t phase_ns) { return phase_ns > -300000 && phase_ns < 1000000; }
-
-  void on_hw_frame(int which, int64_t sof_raw_ns) {
-    const int64_t phase = clock.phase(sof_raw_ns);
-    const bool was_acquiring = acquiring();
-    follow[which] = with_trigger(phase) ? follow[which] + 1 : 0;
-    if (!hw_acquired && follow[ROAD] >= HW_FOLLOW_FRAMES && follow[WIDE] >= HW_FOLLOW_FRAMES) hw_acquired = true;
-    hw_hist[which][hw_count[which] % 8] = phase;
-    hw_count[which]++;
-    if (!hw_acquired && hw_auto && hw_count[which] >= HW_PROBE_FRAMES) {
-      const int64_t P = FrameClock::PERIOD_NS;
-      int64_t d = (phase - hw_hist[which][(hw_count[which] - 1 - HW_DRIFT_FRAMES) % 8]) % P;
-      if (d > P / 2) d -= P;
-      if (d <= -P / 2) d += P;
-      const int64_t expect = -HW_DRIFT_FRAMES * HW_FREE_RUN_STEP_NS;
-      // Two frames in a row with the free-run drift, while the sensor is not on its trigger.
-      free_run[which] = (follow[which] < 2 && std::llabs(d - expect) < 800000) ? free_run[which] + 1 : 0;
-      if (free_run[which] >= 2) {
-        LOGW("frame clock: the %s camera does not follow its FSIN trigger (R358 and R121 not fitted?); "
-             "road and wide change to the software lock after %d frames", which == ROAD ? "road" : "wide", frames);
-        for (int k = 0; k < 2; k++) {
-          os04_slave_to_free_run(cam[k].sensor_fd, cam[k].cam_num);
-          count[k] = -SW_SETTLE_FRAMES;
-        }
-        hw = false;
-        clock.t0.store(0);  // the software lock starts the clock from the sensors
-        frames = 0;
-        return;
-      }
-    }
-    if (was_acquiring && !acquiring()) LOGW("frame clock: road and wide follow the trigger after %d frames", frames);
-    if (!timed_out && acquiring() && frames >= 2 * ACQUIRE_TIMEOUT_FRAMES) {
-      timed_out = true;
-      LOGE("frame clock: %s camera does not follow its trigger, phase %.3f ms; publishing. Check R358 and R121.",
-           follow[ROAD] >= HW_FOLLOW_FRAMES ? "wide" : "road", phase / 1e6);
-    }
-    // Report the phase once and when it moves.
-    hw_phase[which][hw_n[which]++] = phase;
-    if (hw_n[which] == 40) {
-      hw_n[which] = 0;
-      std::nth_element(hw_phase[which], hw_phase[which] + 8, hw_phase[which] + 40);
-      const int64_t m = hw_phase[which][8];
-      if (!hw_reported[which] || std::llabs(m) > 500000) {
-        cloudlog_rl(4, 60000, std::llabs(m) > 500000 ? CLOUDLOG_WARNING : CLOUDLOG_INFO,
-                    "frame clock: %s camera %.3f ms from the tick", which == ROAD ? "road" : "wide", m / 1e6);
-        hw_reported[which] = true;
-      }
-      LOGD("frame clock: %s phase %.3f ms", which == ROAD ? "road" : "wide", m / 1e6);
-    }
+    if (!enabled || timed_out || cam[ROAD].failed || cam[WIDE].failed) return false;
+    const bool driver_ready = !have_driver || driver.locked || driver.failed;
+    return !(cam[ROAD].locked && cam[WIDE].locked && driver_ready);
   }
 
   void on_frame(int which, int64_t sof_raw_ns) {
     if (!enabled) return;
     frames++;
-    if (hw) return on_hw_frame(which, sof_raw_ns);
     const bool started = clock.started();
-    if (!started && ++count[which] > START_SKIP) {
+    if (!started) {
       // Both sensors already run at the clock rate. The earliest sample, moved to this frame, is the sensor's phase.
       const int64_t P = FrameClock::PERIOD_NS;
       sof[which] = seen[which] ? std::min(sof[which] + P, sof_raw_ns) : sof_raw_ns;
@@ -651,134 +565,24 @@ public:
     cam[which].on_frame(started, started ? clock.phase(sof_raw_ns) : 0);
     if (!timed_out && acquiring() && frames >= 2 * ACQUIRE_TIMEOUT_FRAMES) {
       timed_out = true;
-      LOGE("frame clock: lock timed out, road phase %.3f ms, wide phase %.3f ms; publishing unlocked",
-           cam[ROAD].window_phase_ns / 1e6, cam[WIDE].window_phase_ns / 1e6);
+      LOGE("frame clock: lock timed out, road phase %.3f ms, wide phase %.3f ms, driver phase %.3f ms; publishing unlocked",
+           cam[ROAD].window_phase_ns / 1e6, cam[WIDE].window_phase_ns / 1e6, driver.window_phase_ns / 1e6);
     }
+  }
+
+  // Driver start of frame against the tick plus half a period, or 0 before the clock runs.
+  int64_t on_driver_frame(int64_t sof_raw_ns) {
+    if (!enabled || !have_driver) return 0;
+    const bool started = clock.started();
+    const int64_t phase = started ? clock.phase(sof_raw_ns - driver.offset_ns) : 0;
+    driver.on_frame(started, phase);
+    return phase;
   }
 
 private:
   int frames = 0;
-  int count[2] = {}, seen[2] = {};
+  int seen[2] = {};
   int64_t sof[2] = {};
-  int follow[2] = {}, hw_n[2] = {}, hw_count[2] = {}, free_run[2] = {};
-  int64_t hw_hist[2][8] = {};
-  bool hw_reported[2] = {}, hw_acquired = false;
-  int64_t hw_phase[2][40] = {};
-};
-
-// Camera triggers (FSIN) from the frame clock: 0.05 ms pulses on SoC GPIOs, timed on the raw clock.
-//   - driver: GPIO_64 (CAM_MCLK0), half a period after the tick. Connected on every board.
-//   - road and wide, only with hardware FSIN: GPIO_66 and GPIO_67 (CAM_MCLK2, CAM_MCLK3) together at the tick.
-// The pulse is short on purpose. The Dragon's level translator (U52) drives the camera board's 2.2k pull-down weakly,
-// and on board a79a1bc0 the road sensor took a second trigger at the falling edge of about 1 pulse in 140. A second
-// trigger more than 0.4 ms after the first costs a frame: the next trigger then comes before the sensor's own frame
-// ends and is ignored. With 2 ms pulses 0.7% of road frames were lost, with 10 ms 3%, with 0.05 ms none.
-// A slave sensor's own frame is shorter than the clock period, as a slave requires: it ignores a trigger that
-// comes before its own frame ends.
-class FsinTrigger {
-public:
-  static constexpr int64_t HIGH_NS = 50000;
-  // Trigger times relative to the tick. A sensor's start-of-frame timestamp is TRIGGER_TO_SOF after its trigger.
-  static constexpr int64_t DRIVER_TRIGGER_TO_SOF_NS = 200000;  // measured 0.18 to 0.25 ms
-  static constexpr int64_t ROAD_TRIGGER_TO_SOF_NS = -530000;   // measured -0.51 to -0.56 ms: the timestamp is before the trigger
-  static constexpr int64_t DRIVER_OFFSET_NS = FrameClock::PERIOD_NS / 2 - DRIVER_TRIGGER_TO_SOF_NS;
-  static constexpr int64_t ROAD_OFFSET_NS = -ROAD_TRIGGER_TO_SOF_NS;
-  std::atomic<bool> road_enabled{true};  // false after road and wide changed to the software lock
-  ~FsinTrigger() { stop(); }
-
-  bool start(const FrameClock *c, bool driver, bool road_wide) {
-    clock = c;
-    for (int i = 0; i < 8 && chip_fd < 0; i++) {
-      int fd = open(util::string_format("/dev/gpiochip%d", i).c_str(), O_RDWR | O_CLOEXEC);
-      if (fd < 0) continue;
-      struct gpiochip_info info = {};
-      if (ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, &info) == 0 && strstr(info.label, "f100000.pinctrl") != nullptr) chip_fd = fd;
-      else close(fd);
-    }
-    if (chip_fd >= 0) {
-      struct gpio_v2_line_request req = {};
-      if (driver) { driver_mask = 1ULL << req.num_lines; req.offsets[req.num_lines++] = 64; }
-      if (road_wide) {
-        road_mask = 3ULL << req.num_lines;
-        req.offsets[req.num_lines++] = 66;
-        req.offsets[req.num_lines++] = 67;
-      }
-      snprintf(req.consumer, sizeof(req.consumer), "camerad-fsin");
-      req.config.flags = GPIO_V2_LINE_FLAG_OUTPUT;
-      if (ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, &req) == 0) line_fd = req.fd;
-    }
-    if (line_fd < 0) {
-      LOGE("camera trigger: GPIO lines not available: %d (%s); the slave sensors free-run", errno, strerror(errno));
-      return false;
-    }
-    running = true;
-    th = std::thread(&FsinTrigger::run, this);
-    return true;
-  }
-
-  void stop() {
-    if (running.exchange(false)) th.join();
-    for (int *fd : {&line_fd, &chip_fd}) {
-      if (*fd >= 0) close(*fd);
-      *fd = -1;
-    }
-  }
-
-private:
-  const FrameClock *clock = nullptr;
-  int chip_fd = -1, line_fd = -1;
-  uint64_t driver_mask = 0, road_mask = 0;
-  std::thread th;
-  std::atomic<bool> running{false};
-
-  void set(uint64_t mask, bool high) {
-    struct gpio_v2_line_values values = {high ? mask : 0ULL, mask};
-    ioctl(line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &values);
-  }
-
-  // Sleep until 150 us before the target, then spin. The sleep clock is slewed, so the end is timed on the raw clock.
-  void sleep_until(int64_t target_raw_ns) const {
-    const int64_t left = target_raw_ns - raw_clock_ns() - 150000;
-    if (left > 0) {
-      struct timespec ts = {(time_t)(left / 1000000000LL), (long)(left % 1000000000LL)};
-      clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, nullptr);
-    }
-    while (running && raw_clock_ns() < target_raw_ns) {}
-  }
-
-  void pulse(int64_t at_raw_ns, uint64_t mask) {
-    if (mask == 0) return;
-    sleep_until(at_raw_ns); set(mask, true);
-    sleep_until(at_raw_ns + HIGH_NS); set(mask, false);
-  }
-
-  void run() {
-    struct sched_param sp = {};
-    sp.sched_priority = 54;
-    pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
-    const int64_t P = FrameClock::PERIOD_NS;
-    // t is a tick. The road and wide pulse comes first in each period, the driver pulse half a period later.
-    int64_t t = 0, t0 = 0;
-    LOGW("camera trigger started: %s%s", driver_mask ? "driver " : "", road_mask ? "road wide" : "");
-    while (running) {
-      const int64_t clock_t0 = clock->t0.load();
-      if (clock_t0 == 0) {  // not started, or restarted for the software lock
-        t0 = 0;
-        usleep(1000);
-        continue;
-      }
-      if (clock_t0 != t0) {
-        t0 = t = clock_t0;
-        t += ((raw_clock_ns() + 3000000 - (t + ROAD_OFFSET_NS)) / P + 1) * P;
-      }
-      if (road_enabled) pulse(t + ROAD_OFFSET_NS, road_mask);
-      pulse(t + DRIVER_OFFSET_NS, driver_mask);
-      t += P;
-      const int64_t now = raw_clock_ns();
-      if (now > t + ROAD_OFFSET_NS) t += ((now - (t + ROAD_OFFSET_NS)) / P + 1) * P;  // never send a burst after a stall
-    }
-    set(driver_mask | road_mask, false);
-  }
 };
 
 class OneCamera {
@@ -1137,7 +941,7 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   // RAW12: HTS=2140; PLL2=354 for driver and 340 for road cameras.
   // Scale EV by the exposure-line duration to retain the same metering policy.
   sensor->ev_scale = driver ? 150.0f : 150.0f * 354.0f / 340.0f;
-  sensor->exposure_time_max = (driver ? 2360 : os04_road_vts()) - 8;
+  sensor->exposure_time_max = (driver ? os04_driver_vts() : os04_road_vts()) - 8;
   // Measured CSID SOF-to-EOF intervals for the two sensor modes.
   sensor->readout_time_ns = driver ? 32934000 : 34234000;
   sensor->max_ev = sensor->exposure_time_max * sensor->dc_gain_factor *
@@ -1194,7 +998,7 @@ void OneCamera::camera_open(VisionIpcServer *v) {
     return;
   }
 
-  if (!driver && !apply_os04_20fps_timing(sensor_fd, cam_idx)) {
+  if (!apply_os04_20fps_timing(sensor_fd, cam_idx, driver)) {
     enabled = false;
     return;
   }
@@ -1551,26 +1355,26 @@ void camerad_thread() {
     if (cam->camera.cc.stream_type == VISION_STREAM_CABIN) driver_cam = cam.get();
   }
   sync.enabled = lock_cam[0] && lock_cam[1] && frame_sync_enabled();
-  sync.hw = sync.enabled && hw_fsin();
-  sync.hw_auto = sync.hw && fsin_mode() == FsinMode::AUTO;
   if (sync.enabled) {
     for (int k = 0; k < 2; k++) {
+      sync.cam[k].configure(FrameClockLock::ROAD_MODE, 0);
       sync.cam[k].sensor_fd = lock_cam[k]->camera.sensor_fd;
       sync.cam[k].cam_num = lock_cam[k]->camera.cc.camera_num;
       sync.cam[k].name = k == FrameSync::ROAD ? "road" : "wide";
       lock_cam[k]->publish = false;
     }
-    // With hardware FSIN no sensor defines the tick: the clock starts now and the triggers move the sensors.
-    if (sync.hw) sync.clock.t0.store(raw_clock_ns() + 20000000);
-    LOG(sync.hw ? "hardware FSIN for road and wide" : "frame clock lock enabled for road and wide");
+    if (driver_cam != nullptr) {
+      // The driver camera locks to the tick plus half a period. Its frames are held back until it is locked.
+      sync.have_driver = true;
+      sync.driver.configure(FrameClockLock::DRIVER_MODE, FrameClock::PERIOD_NS / 2);
+      sync.driver.sensor_fd = driver_cam->camera.sensor_fd;
+      sync.driver.cam_num = driver_cam->camera.cc.camera_num;
+      sync.driver.name = "driver";
+      driver_cam->publish = false;
+    }
+    LOG("frame clock lock enabled for road, wide%s", driver_cam != nullptr ? " and driver" : "");
   }
-  FsinTrigger fsin_trigger;
-  // Driver frames are held back until the sensor follows the trigger: its first triggered frame is up to 50 ms long.
-  if (sync.enabled && (driver_cam != nullptr || sync.hw) && fsin_trigger.start(&sync.clock, driver_cam != nullptr, sync.hw) &&
-      driver_cam != nullptr) {
-    driver_cam->publish = false;
-  }
-  int64_t driver_phase[40] = {}, driver_last_phase = INT64_MAX;
+  int64_t driver_phase[40] = {};
   int driver_phase_n = 0, driver_held = 0;
   bool pair_started = false;
   uint32_t pair_first_id = 0;
@@ -1624,10 +1428,9 @@ void camerad_thread() {
       const int lock_idx = cam.get() == lock_cam[0] ? 0 : (cam.get() == lock_cam[1] ? 1 : -1);
       bool publish_after_frame = false;
       if (lock_idx >= 0 && sync.enabled) {
-        const bool was_acquiring = sync.acquiring();
         sync.on_frame(lock_idx, sof_raw_ns);
-        fsin_trigger.road_enabled = sync.hw;
-        if (was_acquiring && !sync.acquiring()) {
+        // The driver lock can complete between road and wide frames, so test the state, not a change.
+        if (!pair_started && !sync.acquiring()) {
           // Start publishing with a pair: two captures within half a period get the same frame ID.
           CameraState *other = lock_cam[1 - lock_idx];
           const bool other_delivered = std::llabs((int64_t)timestamp - (int64_t)other->last_capture_eof) < FrameClock::PERIOD_NS / 2;
@@ -1654,32 +1457,31 @@ void camerad_thread() {
           pair_first_id = pair_id + publish_after_frame;
           LOG("frame clock: publishing road and wide from frame %u", pair_first_id);
         }
-      } else if (cam.get() == driver_cam && sync.enabled && sync.clock.started()) {
-        // Driver start of frame against the tick plus half a period.
-        const int64_t phase = sync.clock.phase(sof_raw_ns - FrameClock::PERIOD_NS / 2);
+      } else if (cam.get() == driver_cam && sync.enabled) {
+        const int64_t phase = sync.on_driver_frame(sof_raw_ns);
         if (!cam->publish) {
-          // Publish from the second frame in a row that starts with the trigger (a timestamp can be 0.75 ms late).
-          const auto with_trigger = FrameSync::with_trigger;
-          const bool follows = with_trigger(phase) && with_trigger(driver_last_phase);
-          if ((follows && pair_started && cam->frame_id + 1 >= pair_first_id) || ++driver_held >= 2 * FrameSync::ACQUIRE_TIMEOUT_FRAMES) {
+          // Publish once the driver lock holds and road and wide have started; all three then share frame IDs.
+          const bool ready = sync.driver.locked && pair_started && cam->frame_id + 1 >= pair_first_id;
+          if (ready || sync.driver.failed || ++driver_held >= 2 * FrameSync::ACQUIRE_TIMEOUT_FRAMES) {
             cam->publish = true;
-            if (with_trigger(phase)) LOG("frame clock: driver camera follows the trigger; publishing from frame %u", cam->frame_id + 1);
-            else LOGE("frame clock: driver camera does not follow the trigger, phase %.3f ms; publishing", phase / 1e6);
+            if (ready) LOG("frame clock: driver camera locked; publishing from frame %u", cam->frame_id + 1);
+            else LOGE("frame clock: driver camera not locked, phase %.3f ms; publishing", phase / 1e6);
           }
-          driver_last_phase = phase;
         }
-        // Report the phase once and when it moves.
-        driver_phase[driver_phase_n++] = phase;
-        if (driver_phase_n == 40) {
-          driver_phase_n = 0;
-          std::nth_element(driver_phase, driver_phase + 8, driver_phase + 40);
-          const int64_t m = driver_phase[8];
-          if (!driver_reported || std::llabs(m) > 500000) {
-            cloudlog_rl(4, 60000, std::llabs(m) > 500000 ? CLOUDLOG_WARNING : CLOUDLOG_INFO,
-                        "frame clock: driver camera %.3f ms from the tick plus half a period", m / 1e6);
-            driver_reported = true;
+        if (sync.clock.started()) {
+          // Report the phase once and when it moves.
+          driver_phase[driver_phase_n++] = phase;
+          if (driver_phase_n == 40) {
+            driver_phase_n = 0;
+            std::nth_element(driver_phase, driver_phase + 8, driver_phase + 40);
+            const int64_t m = driver_phase[8];
+            if (!driver_reported || std::llabs(m) > 500000) {
+              cloudlog_rl(4, 60000, std::llabs(m) > 500000 ? CLOUDLOG_WARNING : CLOUDLOG_INFO,
+                          "frame clock: driver camera %.3f ms from the tick plus half a period", m / 1e6);
+              driver_reported = true;
+            }
+            LOGD("frame clock: driver phase %.3f ms", m / 1e6);
           }
-          LOGD("frame clock: driver phase %.3f ms", m / 1e6);
         }
       }
       if (sync.enabled && cam->publish && cam->last_capture_eof != 0) {
@@ -1697,7 +1499,6 @@ void camerad_thread() {
   }
 
   LOG("-- v0 camerad stopping");
-  fsin_trigger.stop();
   for (auto &cam : cams) {
     cam->camera.stop_streaming();
   }
