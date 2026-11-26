@@ -5,7 +5,7 @@
 #include "common/hardware/base.h"
 #include "common/util.h"
 
-#if defined(__COMMA_HARDWARE__)
+#if __COMMA_HARDWARE__
 #include "common/hardware/comma/hardware.h"
 #define Hardware HardwareComma
 #elif defined(__ASIUS_HARDWARE__)

@@ -105,8 +105,7 @@ LOGS_SIZE = {  # MB per segment
   "rlog.zst": 8.1,
   "qcamera.mp4": 2.3,
 }
-EXT = "mp4"
-LOGS_SIZE.update(dict.fromkeys([f'ecamera.{EXT}', f'fcamera.{EXT}', f'dcamera.{EXT}'], 76.5))
+LOGS_SIZE.update(dict.fromkeys(['ecamera.mp4', 'fcamera.mp4', 'dcamera.mp4'], 76.5))
 
 
 def cputime_total(ct):

@@ -102,29 +102,24 @@ public:
   std::vector<EncoderInfo> encoder_infos;
 };
 
-constexpr char MAIN_ROAD_FILENAME[] = "fcamera.mp4";
-constexpr char MAIN_WIDE_ROAD_FILENAME[] = "ecamera.mp4";
-constexpr char MAIN_CABIN_FILENAME[] = "dcamera.mp4";
-constexpr char QCAM_FILENAME[] = "qcamera.mp4";
-
 const EncoderInfo main_road_encoder_info = {
   .publish_name = "narrowRoadEncodeData",
   .thumbnail_name = "thumbnail",
-  .filename = MAIN_ROAD_FILENAME,
+  .filename = "fcamera.mp4",
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(NarrowRoadEncode),
 };
 
 const EncoderInfo main_wide_road_encoder_info = {
   .publish_name = "wideRoadEncodeData",
-  .filename = MAIN_WIDE_ROAD_FILENAME,
+  .filename = "ecamera.mp4",
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(WideRoadEncode),
 };
 
 const EncoderInfo main_cabin_encoder_info = {
   .publish_name = "cabinEncodeData",
-  .filename = MAIN_CABIN_FILENAME,
+  .filename = "dcamera.mp4",
   .record = Params().getBool("RecordFront"),
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(CabinEncode),
@@ -163,7 +158,7 @@ const EncoderInfo stream_cabin_encoder_info = {
 
 const EncoderInfo qcam_encoder_info = {
   .publish_name = "qNarrowRoadEncodeData",
-  .filename = QCAM_FILENAME,
+  .filename = "qcamera.mp4",
   .include_audio = Params().getBool("RecordAudio"),
 #ifdef __ASIUS_HARDWARE__
   .frame_width = 672,

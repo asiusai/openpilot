@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -23,7 +22,6 @@
 #include <string>
 #include <vector>
 
-#include "common/params.h"
 #include "common/swaglog.h"
 #include "common/timing.h"
 #include "system/camerad/cameras/hw.h"
@@ -153,7 +151,6 @@ static int v0_ioctl(int fd, unsigned long request, void *arg = nullptr) {
 // The CSID-gen2 driver still programs that PIX/IPP path for sensor VC0.
 static constexpr int ONE_PIX_CSID_SOURCE_PAD = 4;
 
-static constexpr uint32_t ONE_SENSOR_DELAY_MS = 0xffffffffU;
 static constexpr uint32_t OS04_20FPS_VTS = 2270;
 
 // Frame sync. One 20 Hz frame clock on the SoC is the reference, as the Panda timer is on comma four. Every sensor
@@ -271,15 +268,6 @@ static bool write_sensor_regs(int sensor_fd, const std::vector<i2c_random_wr_pay
   };
 
   for (const auto &r : reg_array) {
-    if (r.reg_addr == ONE_SENSOR_DELAY_MS) {
-      if (!flush_regs()) return false;
-
-      const uint32_t delay_ms = std::min(r.reg_data, 10000U);
-      LOG("cam %d: delaying %u ms during %s sensor regs", cam_idx, delay_ms, name);
-      usleep(delay_ms * 1000U);
-      continue;
-    }
-
     regs.push_back({(uint16_t)r.reg_addr, (uint16_t)r.reg_data});
     if (r.reg_addr == 0x0103) {
       if (!flush_regs()) return false;
@@ -600,8 +588,8 @@ public:
   std::unique_ptr<VisionBuf[]> vfe_buffers;
 
   uint32_t output_width = 0, output_height = 0;
-  uint32_t stride = 0, y_height = 0, uv_height = 0, yuv_size = 0, uv_offset = 0;
-  uint32_t vipc_stride = 0, vipc_y_height = 0, vipc_uv_height = 0, vipc_yuv_size = 0, vipc_uv_offset = 0;
+  uint32_t stride = 0, y_height = 0, yuv_size = 0, uv_offset = 0;
+  uint32_t vipc_stride = 0, vipc_yuv_size = 0, vipc_uv_offset = 0;
 
   OneCamera(const CameraConfig &config) : cc(config), enabled(config.enabled) {}
 
@@ -827,7 +815,6 @@ bool OneCamera::set_formats() {
     }
     stride = vfmt.fmt.pix_mp.plane_fmt[0].bytesperline;
     y_height = output_height;
-    uv_height = (output_height + 1) / 2;
     uv_offset = stride * y_height;
     yuv_size = vfmt.fmt.pix_mp.plane_fmt[0].sizeimage;
     LOG("cam %d: VFE PIX format set raw=%dx%d out=%dx%d stride=%u size=%u video_stride=%u sizeimage=%u",
@@ -958,10 +945,9 @@ void OneCamera::camera_open(VisionIpcServer *v) {
   const int output_scale = sensor->out_scale;
   output_width = std::max(2U, (sensor->frame_width / output_scale) & ~1U);
   output_height = std::max(2U, (sensor->frame_height / output_scale) & ~1U);
-  auto [s, yh, uvh, sz] = get_nv12_info(output_width, output_height);
+  auto [s, yh, _, sz] = get_nv12_info(output_width, output_height);
   vipc_stride = stride = s;
-  vipc_y_height = y_height = yh;
-  vipc_uv_height = uv_height = uvh;
+  y_height = yh;
   vipc_yuv_size = yuv_size = sz;
   vipc_uv_offset = uv_offset = stride * y_height;
 

@@ -17,10 +17,6 @@ public:
     return cereal::InitData::DeviceType::V0;
   }
 
-  static std::string get_serial() {
-    return util::strip(util::read_file("/sys/devices/soc0/serial_number"));
-  }
-
   static void set_ir_power(int percent) {
     // get_ir_power applies the automatic or manual limit before the safety checks.
     const int brightness = std::clamp(percent, 0, 100);

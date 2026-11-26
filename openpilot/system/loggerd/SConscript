@@ -8,7 +8,7 @@ if arch == "comma_arm64":
   if ASIUS_HARDWARE:
     src += ['encoder/venus_encoder.cc']
   else:
-    src += ['clip_encoder.cc', 'encoder/v4l_decoder.cc', 'encoder/v4l_encoder.cc']
+    src += ['clip_encoder.cc', 'encoder/v4l_encoder.cc', 'encoder/v4l_decoder.cc']
 else:
   src += ['encoder/ffmpeg_encoder.cc']
   if arch == "Darwin":
@@ -20,6 +20,3 @@ libs.insert(0, logger_lib)
 env.Program('loggerd', ['loggerd.cc'], LIBS=libs, FRAMEWORKS=frameworks)
 env.Program('encoderd', ['encoderd.cc'], LIBS=libs, FRAMEWORKS=frameworks)
 env.Program('bootlog.cc', LIBS=libs, FRAMEWORKS=frameworks)
-
-if GetOption('extras') or any('video_writer_fixture' in target for target in COMMAND_LINE_TARGETS):
-  env.Program('tests/video_writer_fixture', ['tests/video_writer_fixture.cc'], LIBS=libs, FRAMEWORKS=frameworks)

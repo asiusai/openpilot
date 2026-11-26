@@ -145,7 +145,7 @@ void VideoWriter::write(uint8_t *data, int len, long long timestamp, bool codecc
 
       // TODO: can use av_write_frame for non raw?
       int err = av_interleaved_write_frame(ofmt_ctx, &pkt);
-      if (err < 0) { LOGW("video writer packet issue len: %d ts: %lld", len, timestamp); }
+      if (err < 0) { LOGW("ts encoder write issue len: %d ts: %lld", len, timestamp); }
 
       av_packet_unref(&pkt);
       write_pending_audio();

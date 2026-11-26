@@ -106,9 +106,8 @@ procs = [
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
   PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
+  PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
 
-  PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview,
-                enabled=(WEBCAM or not PC)),
   PythonProcess("sensord", "openpilot.system.sensord.sensord", only_onroad, enabled=not PC),
   PythonProcess("ui", "openpilot.selfdrive.ui.ui", always_run, enabled=not ASIUS_HARDWARE),
   PythonProcess("soundd", "openpilot.selfdrive.ui.soundd", sound),
@@ -141,6 +140,7 @@ procs = [
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
   PythonProcess("route_summaryd", "openpilot.system.loggerd.route_summary", always_run),
   PythonProcess("asius_uploader", "openpilot.system.loggerd.asius_uploader", asius_upload),
+
   # debug procs
   PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", always_run),
   PythonProcess("joystick", "openpilot.tools.joystick.joystick_control", and_(joystick, iscar)),

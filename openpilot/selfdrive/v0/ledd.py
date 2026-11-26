@@ -493,10 +493,7 @@ def main() -> None:
   from openpilot.system.asius.onboarding import setup_status
   from openpilot.common.params import Params
   params = Params()
-  try:
-    from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
-  except ModuleNotFoundError:
-    from cereal import log as cereal_log, messaging as cereal_messaging
+  from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
   Ratekeeper = OpenpilotRatekeeper
   log = cereal_log
   messaging = cereal_messaging

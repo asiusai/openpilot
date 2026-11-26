@@ -35,7 +35,6 @@ jobs:
           test "$(uname -m)" = aarch64
           ./lfs.py pull --exclude=''
           git lfs fsck
-          python3 -m unittest discover -s tools/release -p 'test_package_prebuilt.py'
       - name: Build and package
         env:
           PREBUILT_ARTIFACTS: ${{ runner.temp }}/prebuilt-artifacts

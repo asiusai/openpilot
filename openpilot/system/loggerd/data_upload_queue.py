@@ -64,13 +64,6 @@ def record_failure(path: str | Path, invalid_recording: bool) -> None:
   os.setxattr(path, ERROR_ATTR_NAME, json.dumps(failure).encode(), follow_symlinks=False)
 
 
-def upload_status(path: str | Path) -> dict[str, bool | str]:
-  uploaded = attribute_set(path, UPLOAD_ATTR_NAME)
-  failure = upload_failure(path) if not uploaded else {}
-  return {"uploaded": uploaded, "uploadRequested": not uploaded and attribute_set(path, REQUEST_ATTR_NAME),
-          **({"uploadError": failure["reason"]} if failure else {})}
-
-
 def request_uploads(root: str | Path, paths: list[str]) -> dict[str, list[str]]:
   if not isinstance(paths, list) or not 0 < len(paths) <= 256:
     raise ValueError("request between 1 and 256 recording files")

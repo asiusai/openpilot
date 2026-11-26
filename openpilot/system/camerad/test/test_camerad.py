@@ -123,8 +123,6 @@ class TestCamerad(OpenpilotTestCase):
     SYNCED_CAMS = ('narrowRoadCameraState', 'wideRoadCameraState')
     n = range(len(self.logs['narrowRoadCameraState']['t'][:-10]))
 
-    # Asius v0 has one SoC frame clock (camera_v0.cc FrameSync): road and wide lock to it in software,
-    # and the cabin camera locks to it half a period later.
     frame_ids = {i: [self.logs[cam]['frameId'][i] for cam in CAMERAS] for i in n}
     assert all(len(set(v)) == 1 for v in frame_ids.values()), "frame IDs not aligned"
 

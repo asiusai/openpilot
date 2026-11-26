@@ -274,8 +274,7 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     return _json_response({"error": "unsupported media type"}, status=415)
 
   stream_dict = state.streams
-  stream_body = json.loads(raw_body)
-  body = StreamRequestBody(**stream_body)
+  body = StreamRequestBody(**json.loads(raw_body))
 
   async with state.stream_lock:
     # don't remove existing connection on prewarm request

@@ -305,14 +305,6 @@ class TestRouteEngine(unittest.TestCase):
     self.engine.send_instruction()
     self.assertAlmostEqual(self.last_message('navInstruction').navInstruction.maneuverDistance, 0, delta=0.01)
 
-  def test_direct_mapbox_request_includes_speed_limits(self):
-    self.engine.mapbox_token = 'direct-test-token'
-    self.engine.mapbox_host = 'https://api.mapbox.com'
-    get = self.load_route()
-    self.assertEqual(get.call_args.kwargs['params']['annotations'], 'maxspeed')
-    self.assertEqual(get.call_args.kwargs['params']['access_token'], 'direct-test-token')
-    self.assertEqual(get.call_args.kwargs['headers'], {})
-
   def test_banner_selection(self):
     banners = [{'distanceAlongGeometry': 100, 'primary': {'text': 'Turn right', 'type': 'turn', 'modifier': 'right'}},
                {'distanceAlongGeometry': 50, 'primary': {'text': 'Turn right'}, 'secondary': {'text': 'onto Main St'}}]

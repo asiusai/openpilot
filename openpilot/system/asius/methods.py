@@ -141,7 +141,6 @@ LIVE_STATE_PARAM_KEYS = [
   "LastUpdateException",
 ]
 
-NetworkType = log.DeviceState.NetworkType
 
 dispatcher = Dispatcher()
 onboarding = Onboarding()
@@ -1086,14 +1085,6 @@ def send_peer_payload(to: str, body: dict) -> None:
 
 
 terminal_manager = TerminalManager(send_peer_payload)
-
-
-def broadcast_peer_event(name: str, payload: Any) -> None:
-  for public_key in list(load_authorized_peers().keys()):
-    try:
-      send_peer_payload(public_key, {"type": "event", "name": name, "payload": payload})
-    except Exception:
-      cloudlog.exception("relay.websocket.broadcast_failed public_key=%s", public_key)
 
 
 class LiveStateSampler:

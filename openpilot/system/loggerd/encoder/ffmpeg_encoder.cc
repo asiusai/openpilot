@@ -149,8 +149,9 @@ int FfmpegEncoder::encode_frame(VisionBuf* buf, VisionIpcBufExtra *extra) {
                     ? kj::arrayPtr<capnp::byte>(codec_ctx->extradata, codec_ctx->extradata_size)
                     : kj::arrayPtr<capnp::byte>(pkt.data, (size_t)0);
     publisher_publish(segment_num, counter, *extra,
-                      (pkt.flags & AV_PKT_FLAG_KEY) ? V4L2_BUF_FLAG_KEYFRAME : 0,
-                      header, kj::arrayPtr<capnp::byte>(pkt.data, pkt.size));
+      (pkt.flags & AV_PKT_FLAG_KEY) ? V4L2_BUF_FLAG_KEYFRAME : 0,
+      header,
+      kj::arrayPtr<capnp::byte>(pkt.data, pkt.size));
 
     counter++;
   }

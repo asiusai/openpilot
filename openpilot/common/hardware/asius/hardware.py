@@ -25,13 +25,6 @@ class HardwareAsius(HardwareComma):
     with open("/sys/devices/soc0/serial_number") as serial_file:
       return serial_file.read().strip()
 
-  def set_ir_power(self, percent: int):
-    # Automatic exposure uses at most 100 mA of the kernel's 150 mA full scale.
-    level = max(0, min(100, percent)) * 100 // 150
-    for camera in (2, 3):
-      with open(f"/sys/class/leds/asius:cam{camera}:ir/brightness", "w") as brightness:
-        brightness.write(str(level))
-
   def get_thermal_config(self):
     return ThermalConfig(cpu=[ThermalZone(f"cpu{i}-thermal") for i in range(8)],
                          gpu=[ThermalZone("gpuss0-thermal"), ThermalZone("gpuss1-thermal")],

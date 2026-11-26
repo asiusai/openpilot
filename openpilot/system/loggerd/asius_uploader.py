@@ -43,14 +43,12 @@ from openpilot.system.loggerd.route_summary import summary_path, cloud_path, sav
 from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep, force_wifi
 from openpilot.system.loggerd.upload_progress import publish_error
 
-UPLOAD_ATTR_VALUE = b"1"
 STATE_PARAM = "CloudUploadState"
 CENC_FILES = {"qcamera.mp4", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 
 class AsiusUploader(Uploader):
   upload_attr_name = UPLOAD_ATTR_NAME
-  upload_attr_value = UPLOAD_ATTR_VALUE
   max_file_size = MAX_FILE_BYTES
 
   def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: DataApiClient | None = None):

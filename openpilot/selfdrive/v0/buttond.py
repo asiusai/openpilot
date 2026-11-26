@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import glob
 import fcntl
 import os
@@ -132,14 +131,13 @@ class InputButton:
 
 @dataclass
 class DeviceButtons:
-  event_device: str | None = None
   buttons: dict[str, InputButton] = field(default_factory=dict)
   next_scan: float = 0.0
 
   def poll(self, now: float | None = None) -> list[ButtonEvent]:
     now = time.monotonic() if now is None else now
     if now >= self.next_scan:
-      paths = [self.event_device] if self.event_device else find_button_keys()
+      paths = find_button_keys()
       for path in self.buttons.keys() - set(paths):
         self.buttons.pop(path).close()
       for path in paths:
@@ -161,10 +159,6 @@ def main() -> None:
   from openpilot.common.swaglog import cloudlog
   from openpilot.system.asius.pairing_confirmation import send_button
 
-  parser = argparse.ArgumentParser()
-  parser.add_argument("--event-device")
-  args = parser.parse_args()
-
   done = False
 
   def sigterm_handler(signum, frame) -> None:
@@ -174,7 +168,7 @@ def main() -> None:
   signal.signal(signal.SIGINT, sigterm_handler)
   signal.signal(signal.SIGTERM, sigterm_handler)
 
-  button = DeviceButtons(event_device=args.event_device)
+  button = DeviceButtons()
   rk = Ratekeeper(RUNTIME_HZ)
 
   while not done:

@@ -73,7 +73,6 @@ def clear_locks(root: str) -> None:
 
 class Uploader:
   upload_attr_name = UPLOAD_ATTR_NAME
-  upload_attr_value = UPLOAD_ATTR_VALUE
   max_file_size: int | None = None
 
   def __init__(self, dongle_id: str, root: str):
@@ -109,7 +108,7 @@ class Uploader:
         # skip files already uploaded
         try:
           ctime = os.path.getctime(fn)
-          is_uploaded = getxattr(fn, self.upload_attr_name) == self.upload_attr_value
+          is_uploaded = getxattr(fn, self.upload_attr_name) == UPLOAD_ATTR_VALUE
         except OSError:
           cloudlog.event("uploader_getxattr_failed", key=key, fn=fn)
           # deleter could have deleted, so skip
@@ -207,7 +206,7 @@ class Uploader:
     if success:
       # tag file as uploaded
       try:
-        setxattr(fn, self.upload_attr_name, self.upload_attr_value)
+        setxattr(fn, self.upload_attr_name, UPLOAD_ATTR_VALUE)
       except OSError:
         cloudlog.event("uploader_setxattr_failed", exc=last_exc, key=key, fn=fn, sz=sz)
 
