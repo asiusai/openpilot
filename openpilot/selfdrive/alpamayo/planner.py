@@ -100,6 +100,11 @@ def deliverable(query, ready, now):
   return 0 < query < ready <= now and ready-query <= MAX_LATENCY and now-query < MAX_PLAN_AGE
 
 
+def reasoning_text(result):
+  """The plan's reasoning text for the log, without the trajectory token (at most 512 characters)."""
+  return str(result['prediction'].get('reasoning', '')).replace('<|traj_future_start|>', '').strip()[:512]
+
+
 def packet(result):
   """Plan message fields, or None for startup results and plans too late to drive."""
   q,r,d = result['input']['query_ns'], result['output_ready_ns'], result['slot_deadline_ns']
@@ -110,7 +115,8 @@ def packet(result):
   if result['trajectory_axes'] != 'forward/left/up' or not np.allclose(result['trajectory_times_s'], T[1:]):
     raise ValueError('Unsupported trajectory convention')
   return dict(queryMonoTime=result['input']['query_ns'], readyMonoTime=result['output_ready_ns'], slotDeadline=d,
-              x=xyz[:, 0].tolist(), y=xyz[:, 1].tolist(), yaw=np.arctan2(rot[:, 1, 0], rot[:, 0, 0]).tolist())
+              x=xyz[:, 0].tolist(), y=xyz[:, 1].tolist(), yaw=np.arctan2(rot[:, 1, 0], rot[:, 0, 0]).tolist(),
+              reasoning=reasoning_text(result))
 
 
 def _config():

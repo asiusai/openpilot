@@ -18,6 +18,8 @@ struct AlpamayoPlan @0x81c2f05a394cf4af {
   x @3 :List(Float32);
   y @4 :List(Float32);
   yaw @5 :List(Float32);
+  # The model's reasoning text for this plan, without the trajectory token. "<NOMINAL>" means no special event.
+  reasoning @6 :Text;
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {
