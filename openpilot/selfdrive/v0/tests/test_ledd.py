@@ -567,7 +567,7 @@ def test_initialization_takes_over_rgb_triggers_and_preserves_ir(monkeypatch, tm
   assert (ir / 'brightness').read_text() == '20'
 
 
-def test_dim_calibration_keeps_green_and_breath_has_fine_steps(monkeypatch, tmp_path):
+def test_dim_calibration_keeps_green_and_comet_has_fine_steps(monkeypatch, tmp_path):
   from openpilot.selfdrive.v0.led_patterns import calibration_channels, startup_channels
   monkeypatch.setattr(ledd, 'CAM_LED_SYSFS_ROOT', tmp_path)
   board = ledd.CameraLedBoard('test', 3, initialized=True, channel_maxima=(65535,) * 12)
@@ -580,7 +580,7 @@ def test_dim_calibration_keeps_green_and_breath_has_fine_steps(monkeypatch, tmp_
     values = [int((p / 'brightness').read_text()) for p in board.channel_paths]
     assert values[6] > 0 and values[7] > 0 and values[8] == 0
   steps = set()
-  for frame in range(180):
+  for frame in range(264):
     board.set_channels(startup_channels(frame / 60)[3])
     steps.add(int((board.channel_paths[2] / 'brightness').read_text()))
   assert len(steps) > 100
