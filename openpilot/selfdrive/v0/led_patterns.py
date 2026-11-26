@@ -3,8 +3,7 @@ import math
 
 ORANGE_RGB = (255, 32, 0)
 LED_BRIGHTNESS = (1.,) * 8
-STARTUP_PERIOD = 3.
-STARTUP_RISE = 1.2
+STARTUP_PERIOD = 4.4
 BOOT_BRIGHTNESS = 5  # Default before camera exposure is available.
 MIN_AUTO_BRIGHTNESS = 5  # Approximately 2%.
 MAX_AUTO_BRIGHTNESS = 127  # 50%, rounded down to stay within the cap.
@@ -18,13 +17,17 @@ def camera_channels(colors: list[list[float]]) -> dict[int, list[float]]:
 
 
 def startup_levels(elapsed: float) -> list[float]:
-  """Breathe in for 1.2s and out for 1.8s, retaining a faint blue glow."""
+  """Wide blue comet with smooth turns and a trailing glow across both windows."""
+  # Keep the curve aligned with VamOS tools/build/generate_boot_led_pattern.py.
   phase = elapsed % STARTUP_PERIOD
-  if phase < STARTUP_RISE:
-    level = (1. - math.cos(math.pi * phase / STARTUP_RISE)) / 2.
-  else:
-    level = (1. + math.cos(math.pi * (phase - STARTUP_RISE) / (STARTUP_PERIOD - STARTUP_RISE))) / 2.
-  return [(1. + (BOOT_BRIGHTNESS - 1) * level) / BOOT_BRIGHTNESS] * 8
+  positions = [3.5 - 3.5 * math.cos(2. * math.pi * (phase - delay) / STARTUP_PERIOD)
+               for delay in (0., .14, .28)]
+  levels = [sum(weight * math.exp(-.5 * ((index - position) / .82) ** 2)
+                for weight, position in zip((1., .35, .12), positions, strict=True)) for index in range(8)]
+  scale = max(1., max(levels))
+  # Match the 16-bit driver, including truly dark outputs beyond the tail.
+  peak = BOOT_BRIGHTNESS * 257
+  return [round(level / scale * peak) / peak for level in levels]
 
 
 def startup_channels(elapsed: float, brightness: int = BOOT_BRIGHTNESS) -> dict[int, list[float]]:

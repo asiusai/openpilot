@@ -454,7 +454,7 @@ def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool
     return camera_channels([rgb] * 8)
   if state == ORANGE:
     return calibration_channels(sm['extrinsicsCalibration'].calPerc, brightness)
-  # Continue the kernel fade for one cycle while userspace starts. Driving
+  # Continue the kernel comet for one cycle while userspace starts. Driving
   # statuses and Bluetooth pairing take priority immediately.
   if (now - STARTED_AT < STARTUP_PERIOD and state == BLUE and
       (not sm.seen['deviceState'] or not sm.alive['deviceState'] or not sm['deviceState'].started)):

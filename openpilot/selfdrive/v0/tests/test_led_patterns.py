@@ -1,7 +1,7 @@
 import pytest
 
 from openpilot.selfdrive.v0 import ledd
-from openpilot.selfdrive.v0.led_patterns import calibration_channels, startup_channels, startup_levels
+from openpilot.selfdrive.v0.led_patterns import STARTUP_PERIOD, calibration_channels, startup_channels, startup_levels
 from openpilot.selfdrive.v0.tests.test_ledd import healthy_sm
 from openpilot.cereal import log
 
@@ -25,27 +25,26 @@ def test_calibration_partial_progress_and_zero_brightness():
   assert calibration_channels(100, 0) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
 
 
-def test_startup_breathes_pure_blue_on_all_eight_leds():
-  assert startup_levels(0.) == [1. / 5.] * 8
-  assert startup_levels(1.2) == [1.] * 8
-  rising = [startup_levels(frame / 60.)[0] for frame in range(73)]
-  falling = [startup_levels(frame / 60.)[0] for frame in range(72, 181)]
-  assert rising == sorted(rising)
-  assert falling == sorted(falling, reverse=True)
-  assert max(b - a for a, b in zip(rising[:-1], rising[1:], strict=True)) < 0.025
-  for frame in range(180):
+def test_startup_comet_crosses_both_windows_and_returns_without_a_flash():
+  frames = [startup_levels(frame / 60.) for frame in range(265)]
+  assert max(range(8), key=frames[0].__getitem__) == 0
+  assert max(range(8), key=frames[132].__getitem__) == 7
+  assert frames[-1] == frames[0]
+  assert {max(range(8), key=row.__getitem__) for row in frames} == set(range(8))
+  assert max(abs(b - a) for before, after in zip(frames[:-1], frames[1:], strict=True)
+             for a, b in zip(before, after, strict=True)) < .1
+  for frame in range(264):
     elapsed = frame / 60.
     channels = startup_channels(elapsed)
-    assert len(set(startup_levels(elapsed))) == 1
     for camera, values in channels.items():
-      assert values == pytest.approx(startup_channels(elapsed + 3.)[camera])
+      assert values == pytest.approx(startup_channels(elapsed + STARTUP_PERIOD)[camera])
     assert channels[1] == [0] * 12
-    assert channels[2] == channels[3]
-    assert channels[2] == channels[2][:3] * 4
-    assert 1 <= channels[2][2] <= 5
-    assert channels[2][0:2] == [0, 0]
-  assert startup_channels(0.)[2][2] == 1
-  assert startup_channels(1.2)[2][2] == 5
+    for camera in (2, 3):
+      assert all(0 <= value <= 5 for value in channels[camera][2::3])
+      assert channels[camera][0::3] == channels[camera][1::3] == [0] * 4
+  assert startup_channels(0.)[3][-1] == 5
+  assert startup_channels(STARTUP_PERIOD / 2)[2][2] == 5
+  assert startup_channels(0.)[2] == [0] * 12
   assert startup_channels(1.2, 0) == {1: [0] * 12, 2: [0] * 12, 3: [0] * 12}
 
 
@@ -79,11 +78,12 @@ def test_stale_calibration_and_safety_alerts_do_not_render_progress(monkeypatch)
   assert ledd.led_state(sm, 100.) == ledd.RED
 
 
-def test_startup_fade_only_while_parked(monkeypatch):
+def test_startup_comet_keeps_boot_phase_only_while_parked(monkeypatch):
   ledd.log = log
   monkeypatch.setattr(ledd, 'STARTED_AT', 100.)
   sm = healthy_sm(started=False)
   assert ledd.automatic_led_channels(sm, 127, 101.) == startup_channels(101.)
-  assert ledd.automatic_led_channels(sm, 26, 104.) is None
+  assert ledd.automatic_led_channels(sm, 26, 104.3) == startup_channels(104.3)
+  assert ledd.automatic_led_channels(sm, 26, 104.5) is None
   sm['deviceState'].started = True
   assert ledd.automatic_led_channels(sm, 26, 101.) is None
