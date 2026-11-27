@@ -6,7 +6,6 @@ import io
 import hashlib
 import json
 import os
-import time
 from typing import Any
 
 import requests
@@ -14,10 +13,10 @@ from cryptography.hazmat.primitives import hashes
 from openpilot.system.asius.pqc import RootIdentity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from openpilot.system.loggerd.upload_progress import ProgressReader
-from openpilot.system.asius.identity import bytes_to_identity
+from openpilot.system.asius.relayd import wall_time
+from openpilot.system.asius.session import b64 as b64url, canonical
 from openpilot.system.asius.recording_keys import decode_public, get_recording_key, public_text
 
 PROTOCOL_VERSION = 2
@@ -25,20 +24,8 @@ GRANT_ALGORITHM = "XWING-HKDF-SHA384-A256GCM"
 ENCRYPTION_MAGIC = b"ASIUSDATA2\n"
 
 
-def wall_time() -> float:
-  return time.time()  # noqa: TID251
-
-
-def b64url(value: bytes) -> str:
-  return base64.urlsafe_b64encode(value).decode().rstrip("=")
-
-
 def canonical_json(value: Any) -> str:
-  return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def public_identity(private_key: RootIdentity) -> str:
-  return bytes_to_identity(private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
+  return canonical(value).decode()
 
 
 def can_wrap_for(reader: dict[str, str]) -> bool:
@@ -62,7 +49,7 @@ def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_k
 
 
 def access_document(private_key: RootIdentity, state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
-  owner = public_identity(private_key)
+  owner = private_key.identity()
   device = {"publicKey": owner, "storagePublicKey": public_text(get_recording_key(private_key))}
   recipients = list({reader["publicKey"]: reader for reader in [*readers, device]}.values())
   keys = []
@@ -88,7 +75,7 @@ def access_document(private_key: RootIdentity, state: dict[str, Any], readers: l
 
 def recover_state(private_key: RootIdentity, document: dict[str, Any], readers: list[dict[str, str]],
                   authorized_apps: list[str] | None = None) -> dict[str, Any]:
-  owner = public_identity(private_key)
+  owner = private_key.identity()
   if (document.get("v") != PROTOCOL_VERSION or document.get("owner") != owner
       or document.get("signingKey") != b64url(private_key.public_key().public_bytes_raw())):
     raise ValueError("access document owner mismatch")
@@ -157,7 +144,7 @@ class DataApiClient:
   def __init__(self, base_url: str, private_key: RootIdentity, session: requests.Session | None = None):
     self.base_url = base_url.rstrip("/")
     self.private_key = private_key
-    self.owner = public_identity(private_key)
+    self.owner = private_key.identity()
     self.session = session or requests.Session()
     self._config: dict[str, Any] | None = None
 

@@ -5,7 +5,7 @@ import time
 
 import requests
 
-from openpilot.system.asius.identity import dongle_id_from_public_key, get_device_public_key
+from openpilot.system.asius.identity import get_device_identity
 from openpilot.system.asius.relayd import sign_jwt
 
 TURN_PATH = '/v1/turn/credentials'
@@ -18,7 +18,7 @@ def prepare_live(phone_online: bool = True) -> dict:
   if not phone_online:
     return {'mode': 'unavailable', 'error': 'Connect the app to the internet to use Live.'}
 
-  token = sign_jwt({'type': 'turn', 'aud': 'asius-turn', 'identity': dongle_id_from_public_key(get_device_public_key()),
+  token = sign_jwt({'type': 'turn', 'aud': 'asius-turn', 'identity': get_device_identity(),
                     'method': 'POST', 'path': TURN_PATH}, expiry_seconds=60)
   try:
     with requests.post(TURN_URL, headers={'Authorization': f'Bearer {token}'}, timeout=(3, 6),

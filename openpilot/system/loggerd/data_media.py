@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import os
 import struct
@@ -12,15 +11,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from openpilot.system.asius.session import b64 as b64url
+
 
 COMMON_PSSH_SYSTEM_ID = bytes.fromhex("1077efecc0b24d02ace33c1e52e2fb4b")
 CONTAINER_TYPES = {b"moov", b"trak", b"mdia", b"minf", b"stbl"}
 VIDEO_SAMPLE_TYPES = {b"avc1", b"avc3", b"hvc1", b"hev1"}
 AUDIO_SAMPLE_TYPES = {b"mp4a"}
-
-
-def b64url(value: bytes) -> str:
-  return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
 
 @dataclass(frozen=True)

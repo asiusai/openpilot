@@ -56,7 +56,6 @@ AGENT_PATH = "/ai/asius/agent0"
 
 ACTIVE_PEER_SECONDS = 45.
 PAIRING_MODE_SECONDS = 120
-LIVE_STATE_INTERVAL_SECONDS = 0.2
 TERMINAL_OUTPUT_QUEUE_SIZE = 64
 NOTIFICATION_FRAME_DELAY_SECONDS = 0.004
 REGISTER_RETRY_SECONDS = 3.
@@ -665,7 +664,7 @@ class BlePeerEngine:
       except Exception:
         cloudlog.exception("asius.bluetooth.live_state_failed")
       encoders = {peer: encoder for peer, encoder in encoders.items() if peer in self.active_peers}
-      await asyncio.sleep(max(0.01, LIVE_STATE_INTERVAL_SECONDS - (time.monotonic() - started)))
+      await asyncio.sleep(max(0.01, methods.LIVE_STATE_INTERVAL_S - (time.monotonic() - started)))
 
   async def run(self, stop: asyncio.Event) -> None:
     self.loop = asyncio.get_running_loop()

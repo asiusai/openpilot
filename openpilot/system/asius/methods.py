@@ -23,7 +23,7 @@ from openpilot.cereal import log
 from openpilot.system.asius.clock import ClockChallenges
 from openpilot.system.asius.fork import FORK
 from openpilot.system.asius.access_policy import check_param_write, ignition_state, require_ignition_off
-from openpilot.system.asius.identity import get_device_public_key, get_device_private_key
+from openpilot.system.asius.identity import get_device_private_key
 from openpilot.system.asius.relay_room import RelayRoom
 from openpilot.system.asius.pairing_invitation import permits_admission
 from openpilot.system.asius.device_name import device_hostname
@@ -55,8 +55,6 @@ class ParamsReader(Protocol):
   def get(self, key: str) -> Any: ...
 
 
-RECONNECT_TIMEOUT_S = 70
-WS_FRAME_SIZE = 4096
 LIVE_STATE_INTERVAL_S = 0.2
 VAMOS_UPDATE_STATE_FILE = Path("/data/vamos-update/state.json")
 VAMOS_WIFI_COMMAND = Path("/usr/bin/vamos-wifi")
@@ -177,8 +175,6 @@ def _json_value(value: Any) -> bool:
 
 dispatcher.add_method(lambda s: s, method_name="echo", s=_json_value)
 dispatcher.add_method(upstream_athena.getMessage, service=one_of(*messaging.SERVICE_LIST), timeout=integer(0, 10_000))
-dispatcher.add_method(upstream_athena.listDataDirectory, prefix=either(one_of(''), regex(upstream_athena.DATA_PATH)))
-dispatcher.add_method(upstream_athena.setRouteViewed, route=regex(upstream_athena.RE.ROUTE_NAME))
 dispatcher.add_method(setNavDestination, latitude=number(-90, 90), longitude=number(-180, 180), name=_string, address=_string,
                       previewRevision=either(one_of(None), _string), routeIndex=either(one_of(None), integer(0, 2**31 - 1)))
 dispatcher.add_method(getNavigationRoute, revision=_string, offset=integer(0, 2**31 - 1))
@@ -191,9 +187,6 @@ for method in (
   getRecentNavDestinations,
   getNavigationState,
   upstream_athena.clearNavDestination,
-  upstream_athena.getSimInfo,
-  upstream_athena.getNetworkType,
-  upstream_athena.getNetworkMetered,
 ):
   dispatcher.add_method(method)
 
@@ -316,11 +309,6 @@ def previewSound() -> dict:
   return {'queued': True}
 
 
-@dispatcher.add_method
-def getPublicKey() -> str | None:
-  return get_device_public_key()
-
-
 def getDeviceName() -> str:
   return Params().get("DeviceName") or {
     "tici": "comma 3", "tizi": "comma 3X", "mici": "comma four",
@@ -383,11 +371,6 @@ def setGithubUsername(username: str) -> dict[str, str]:
   params.put("GithubUsername", username, block=True)
   params.put("GithubSshKeys", keys, block=True)
   return {"GithubUsername": "ok", "GithubSshKeys": "ok"}
-
-
-@dispatcher.add_method
-def getNetworks():
-  return HARDWARE.get_networks()
 
 
 TAILSCALE_COMMAND = ["sudo", "-n", "tailscale"]
@@ -1206,7 +1189,7 @@ def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:
         Params().put("LastAthenaPingTime", last_ping, block=True)
     except WebSocketTimeoutException:
       ns_since_last_ping = int(time.monotonic() * 1e9) - last_ping
-      if ns_since_last_ping > RECONNECT_TIMEOUT_S * 1e9:
+      if ns_since_last_ping > upstream_athena.RECONNECT_TIMEOUT_S * 1e9:
         cloudlog.exception("relayd.ws_recv.timeout")
         end_event.set()
     except Exception:
@@ -1221,9 +1204,9 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
       if data is None:
         end_event.wait(0.01)
         continue
-      for i in range(0, len(data), WS_FRAME_SIZE):
-        frame = data[i:i+WS_FRAME_SIZE]
-        last = i + WS_FRAME_SIZE >= len(data)
+      for i in range(0, len(data), upstream_athena.WS_FRAME_SIZE):
+        frame = data[i:i+upstream_athena.WS_FRAME_SIZE]
+        last = i + upstream_athena.WS_FRAME_SIZE >= len(data)
         opcode = ABNF.OPCODE_TEXT if i == 0 else ABNF.OPCODE_CONT
         ws.send_frame(ABNF.create_frame(frame, opcode, last))
     except Exception:

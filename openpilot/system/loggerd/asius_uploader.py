@@ -30,7 +30,6 @@ from openpilot.system.loggerd.data_api import (
   can_wrap_for,
   encrypt_object,
   initial_state,
-  public_identity,
   recover_state,
   update_state,
 )
@@ -53,7 +52,7 @@ class AsiusUploader(Uploader):
 
   def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: DataApiClient | None = None):
     self.private_key = get_device_private_key()
-    self.owner = public_identity(self.private_key)
+    self.owner = self.private_key.identity()
     if dongle_id != self.owner:
       raise ValueError("DongleId does not match the device identity")
 

@@ -4,9 +4,8 @@ from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import PC
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.asius.identity import get_device_identity
+from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
 
-
-UNREGISTERED_DONGLE_ID = "UnregisteredDevice"
 
 def register(show_spinner=False) -> str | None:
   params = Params()

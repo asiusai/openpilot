@@ -18,14 +18,11 @@ from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.athenad import backoff
 from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
+from openpilot.system.asius.session import b64
 
 
 APP_AUTHORIZED_KEYS_PARAM = "AppAuthorizedKeys"
 PAIR_TOKEN_SECONDS = 300
-
-def base64url_encode(data: bytes) -> str:
-  return base64.urlsafe_b64encode(data).decode().rstrip("=")
-
 
 def base64url_decode(data: str) -> bytes:
   return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
@@ -104,10 +101,10 @@ def stable_json(value) -> str:
 def sign_jwt(payload: dict, expiry_seconds: int) -> str:
   now = int(wall_time())
   key = get_device_private_key()
-  header = {"alg": "ML-DSA-65", "typ": "JWT", "key": base64url_encode(key.public_key().public_bytes_raw())}
+  header = {"alg": "ML-DSA-65", "typ": "JWT", "key": b64(key.public_key().public_bytes_raw())}
   body = {**payload, "iat": now, "nbf": now, "exp": now + expiry_seconds}
-  signed = f"{base64url_encode(stable_json(header).encode())}.{base64url_encode(stable_json(body).encode())}"
-  return f"{signed}.{base64url_encode(key.sign(signed.encode()))}"
+  signed = f"{b64(stable_json(header).encode())}.{b64(stable_json(body).encode())}"
+  return f"{signed}.{b64(key.sign(signed.encode()))}"
 
 
 def pairing_token(recipient: str, expiry_seconds: int = PAIR_TOKEN_SECONDS) -> str:
@@ -175,8 +172,8 @@ def main(exit_event: threading.Event | None = None):
       if challenge.get("type") != "challenge" or not isinstance(challenge.get("challenge"), str):
         raise ValueError("relay did not send an authentication challenge")
       proof = f"asius-room-auth-pq-v1\n{dongle_id}\n{dongle_id}\n{challenge['challenge']}\n".encode()
-      signature = base64url_encode(get_device_private_key().sign(proof))
-      ws.send(json.dumps({"type": "authenticate", "signature": signature, "key": base64url_encode(get_device_private_key().public_key().public_bytes_raw())}))
+      signature = b64(get_device_private_key().sign(proof))
+      ws.send(json.dumps({"type": "authenticate", "signature": signature, "key": b64(get_device_private_key().public_key().public_bytes_raw())}))
       if json.loads(ws.recv()).get("type") != "ready":
         raise ValueError("relay authentication failed")
       cloudlog.event("relay.main.connected_ws", ws_uri=relay_host + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,
