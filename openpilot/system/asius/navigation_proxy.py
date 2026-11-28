@@ -19,11 +19,11 @@ import requests
 
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
-from openpilot.system.asius.mapbox import NAVIGATION_API, NavigationApi
+from openpilot.system.asius.navigation_api import NAVIGATION_API, NavigationApi
 from openpilot.system.asius.navigation_route import CHUNK_BYTES, MAX_ROUTE_BYTES
 
-BRIDGE_METHODS = {"claimNavigationRequest", "writeNavigationResponse", "releaseNavigationRequest"}
-SEARCH_METHODS = {"searchNavigation", "retrieveNavigationLocation", "previewNavigation"}
+PROXY_METHODS = {"claimNavigationRequest", "writeNavigationResponse", "releaseNavigationRequest"}
+BLOCKING_METHODS = {"searchNavigation", "retrieveNavigationLocation", "previewNavigation"}
 REQUEST_SECONDS = 90
 LEASE_SECONDS = 25
 MAX_PENDING = 4

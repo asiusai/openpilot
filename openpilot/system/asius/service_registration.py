@@ -38,7 +38,7 @@ def service_host(value: str, scheme: str) -> str:
 def set_service_hosts(relay: str, cloud: str, params=None) -> dict:
   params = params if params is not None else Params()
   if not params.get_bool('IsOffroad'):
-    raise PermissionError('Park before changing services')
+    raise PermissionError('Turn ignition off before changing services')
   relay, cloud = service_host(relay, 'wss'), service_host(cloud, 'https')
   # Empty URL parameters resolve to defaults. Disable services before changing their hosts.
   params.put_bool('RelayEnabled', False, block=True)

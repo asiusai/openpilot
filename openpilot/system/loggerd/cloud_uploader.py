@@ -20,8 +20,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import get_upload_stream
-from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
-from openpilot.system.asius.relayd import load_authorized_peers
+from openpilot.system.asius.identity import get_device_private_key, is_identity
+from openpilot.system.asius.relayd import load_authorized_apps
 from openpilot.system.asius.session import unb64_lenient
 from openpilot.system.loggerd.cloud_api import (
   CloudApiClient,
@@ -46,7 +46,7 @@ STATE_PARAM = "CloudUploadState"
 CENC_FILES = {"qcamera.mp4", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 
-class AsiusUploader(Uploader):
+class CloudUploader(Uploader):
   upload_attr_name = UPLOAD_ATTR_NAME
   max_file_size = MAX_FILE_BYTES
 
@@ -165,16 +165,16 @@ class AsiusUploader(Uploader):
 
   def sync_access(self) -> dict:
     readers: list[dict[str, Any]] = []
-    for key, peer in sorted(load_authorized_peers().items()):
-      reader: dict[str, Any] = {"publicKey": key, "storagePublicKey": peer.get("storagePublicKey")}
-      if not is_dongle_id(key) or not can_wrap_for(reader):
+    for key, app in sorted(load_authorized_apps().items()):
+      reader: dict[str, Any] = {"publicKey": key, "storagePublicKey": app.get("storagePublicKey")}
+      if not is_identity(key) or not can_wrap_for(reader):
         raise ValueError("Authorized app has no valid recording public key")
       readers.append(reader)
     authorized_apps = [reader['publicKey'] for reader in readers]
     if self.params.get_bool("ShareDrivingData"):
       config = self.client.get_config()
       reader = {"publicKey": config.get("sharingPublicKey"), "storagePublicKey": config.get("sharingStoragePublicKey")}
-      if not is_dongle_id(reader['publicKey']) or not can_wrap_for(reader):
+      if not is_identity(reader['publicKey']) or not can_wrap_for(reader):
         raise ValueError("Cloud API returned an invalid sharing public key")
       readers.append(reader)
     readers = sorted({reader['publicKey']: reader for reader in readers}.values(), key=lambda reader: reader['publicKey'])
@@ -245,7 +245,7 @@ class AsiusUploader(Uploader):
   def _upload_recording(self, key: str, fn: str, *, replace_checksum: str | None = None) -> requests.Response:
     first_component = key.split("/", 1)[0]
     if not ROUTE_SEGMENT_RE.fullmatch(first_component):
-      raise ValueError("data uploader only accepts route segments")
+      raise ValueError("cloud uploader only accepts route segments")
     route_id, segment_text = first_component.rsplit("--", 1)
     self.sync_summary(route_id)
     if summary_path(self.root, route_id).with_suffix(".deleted").exists():
@@ -274,7 +274,7 @@ class AsiusUploader(Uploader):
           source_checksum=b64url(hashlib.sha256(Path(fn).read_bytes()).digest()),
           **({"replace_checksum": replace_checksum} if replace_checksum else {}),
         )
-        cloudlog.event("data_upload_cenc", key=key, path=object_path, encrypted_size=media["encryptedLength"], fragments=len(media["fragments"]))
+        cloudlog.event("cloud_upload_cenc", key=key, path=object_path, encrypted_size=media["encryptedLength"], fragments=len(media["fragments"]))
         return response
       finally:
         if temporary_name:
@@ -297,7 +297,7 @@ class AsiusUploader(Uploader):
       source_checksum=b64url(hashlib.sha256(plaintext).digest()),
       **({"replace_checksum": replace_checksum} if replace_checksum else {}),
     )
-    cloudlog.event("data_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
+    cloudlog.event("cloud_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
     return response
 
 
@@ -311,11 +311,11 @@ def main(exit_event: threading.Event | None = None) -> None:
   params = Params()
   dongle_id = params.get("DongleId")
   if dongle_id is None:
-    raise RuntimeError("data uploader cannot start without DongleId")
+    raise RuntimeError("cloud uploader cannot start without DongleId")
 
   sm = messaging.SubMaster(["deviceState"])
   sm.update(1000)
-  uploader = AsiusUploader(dongle_id, Paths.log_root(), params=params)
+  uploader = CloudUploader(dongle_id, Paths.log_root(), params=params)
   locks_cleared = False
   backoff = 0.1
   while not exit_event.is_set():
@@ -324,7 +324,7 @@ def main(exit_event: threading.Event | None = None) -> None:
       exit_event.wait(1)
       continue
     if host.rstrip("/") != uploader.client.base_url:
-      uploader = AsiusUploader(dongle_id, Paths.log_root(), params=params)
+      uploader = CloudUploader(dongle_id, Paths.log_root(), params=params)
     sm.update(0)
     if sm["deviceState"].started:
       locks_cleared = False
@@ -349,7 +349,7 @@ def main(exit_event: threading.Event | None = None) -> None:
         continue
     except Exception as error:
       uploader.defer_cloud_policy(error)
-      cloudlog.exception("data access sync failed")
+      cloudlog.exception("cloud access sync failed")
       if allow_sleep:
         exit_event.wait(backoff + random.uniform(0, backoff))
       backoff = min(backoff * 2, 120)
@@ -361,7 +361,7 @@ def main(exit_event: threading.Event | None = None) -> None:
     elif success:
       backoff = 0.1
     else:
-      cloudlog.info("data upload backoff %r", backoff)
+      cloudlog.info("cloud upload backoff %r", backoff)
       backoff = min(backoff * 2, 120)
     if allow_sleep:
       exit_event.wait(backoff + random.uniform(0, backoff))

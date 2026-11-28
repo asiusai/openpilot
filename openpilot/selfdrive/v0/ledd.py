@@ -499,7 +499,7 @@ def main() -> None:
   global Ratekeeper, log, messaging, pairing_mode_active
   from openpilot.common.realtime import Ratekeeper as OpenpilotRatekeeper
   from openpilot.system.asius.bluetoothd import pairing_mode_active as app_pairing_mode_active
-  from openpilot.system.asius.onboarding import setup_status
+  from openpilot.system.asius.onboarding import onboarding_status
   from openpilot.common.params import Params
   params = Params()
   from openpilot.cereal import log as cereal_log, messaging as cereal_messaging
@@ -553,7 +553,7 @@ def main() -> None:
         led.set_channels(manual_channels)
         rk.keep_time()
         continue
-      setup_complete = setup_status(params)["complete"]
+      setup_complete = onboarding_status(params)["complete"]
       animated_channels = automatic_led_channels(sm, brightness, now, setup_complete, offroad_asleep)
       if animated_channels is not None:
         led.set_channels(animated_channels)

@@ -152,7 +152,7 @@ class TileServerCase(unittest.TestCase):
 class TestEndToEnd(TileServerCase):
   def test_navd_to_map_frames(self):
     """navd routes a destination over messaging; mapsd fetches tiles over HTTP and renders map frames."""
-    self.enterContext(patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'))
+    self.enterContext(patch('openpilot.system.asius.navigation_api.NavigationApi.get_token', return_value='test-token'))
     destination = {'latitude': 0.01, 'longitude': 0}
     self.enterContext(patch('requests.get', return_value=mapbox_response([
       {'geometry': {'coordinates': [[0, -0.01], [0, 0.01]]}, 'distance': 2224, 'duration': 100, 'bannerInstructions': []}])))
@@ -277,7 +277,8 @@ class TestRouteEngine(unittest.TestCase):
     return next(call.args[1] for call in reversed(self.pm.send.call_args_list) if call.args[0] == service)
 
   def load_route(self):
-    with patch('requests.get', return_value=self.response) as get, patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
+    with (patch('requests.get', return_value=self.response) as get,
+          patch('openpilot.system.asius.navigation_api.NavigationApi.get_token', return_value='test-token')):
       self.engine.calculate_route((0.002, 0))
     self.engine.send_route()
     return get
@@ -317,7 +318,7 @@ class TestRouteEngine(unittest.TestCase):
   def test_route_sent_on_change_and_periodically(self):
     sent = lambda: sum(call.args[0] == 'navRoute' for call in self.pm.send.call_args_list)  # noqa: E731
     self.sm.frame = 1
-    with patch('requests.get', return_value=self.response), patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
+    with patch('requests.get', return_value=self.response), patch('openpilot.system.asius.navigation_api.NavigationApi.get_token', return_value='test-token'):
       self.engine.update()  # the route to a new destination is sent once
       self.engine.update()
     self.assertEqual(sent(), 1)
@@ -334,7 +335,8 @@ class TestRouteEngine(unittest.TestCase):
     with patch('requests.get') as get:
       self.engine.recompute_route(gps_ok=False)  # but not while the GPS drifts in a tunnel
       get.assert_not_called()
-    with patch('requests.get', return_value=self.response) as get, patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
+    with (patch('requests.get', return_value=self.response) as get,
+          patch('openpilot.system.asius.navigation_api.NavigationApi.get_token', return_value='test-token')):
       self.engine.recompute_route(gps_ok=True)
       self.engine.reroute_counter = REROUTE_COUNTER_MIN  # still off route, but an immediate second recompute is held back
       self.engine.recompute_route(gps_ok=True)
@@ -365,7 +367,7 @@ class TestRouteEngine(unittest.TestCase):
     fixes["deviceState"] = SimpleNamespace(started=True)
     self.sm.__getitem__.side_effect = fixes.get
     self.sm.logMonoTime = {'gpsLocation': 2, 'gpsLocationExternal': 1}  # replayed logs are judged by receipt time
-    with patch('requests.get', return_value=self.response), patch('openpilot.system.asius.mapbox.NavigationApi.get_token', return_value='test-token'):
+    with patch('requests.get', return_value=self.response), patch('openpilot.system.asius.navigation_api.NavigationApi.get_token', return_value='test-token'):
       self.engine.update()
       self.assertEqual((self.engine.last_position, self.engine.last_bearing), ((1, 1), 180))  # the newest fix wins
       self.sm.valid['gpsLocation'] = False

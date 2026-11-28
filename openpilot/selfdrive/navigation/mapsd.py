@@ -11,7 +11,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.navigation.helpers import latest_gps_source
 from openpilot.selfdrive.navigation.renderer import SIZE, MapRenderer
 from openpilot.selfdrive.navigation.route import RouteTracker
-from openpilot.system.asius.mapbox import navigation_archive
+from openpilot.system.asius.navigation_api import navigation_archive
 
 RETRY_SECONDS = 10
 

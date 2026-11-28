@@ -16,7 +16,7 @@ from openpilot.common.swaglog import cloudlog
 
 RUNTIME = Path('/dev/shm/asius-pairing')
 CONFIRM_SECONDS = 30.
-ENROLL_SECONDS = 30.
+PAIR_REQUEST_SECONDS = 30.
 ANNOUNCEMENTS = ('started', 'success', 'failed', 'ignition_on')
 
 
@@ -118,7 +118,7 @@ class Confirmation:
       accepted = await asyncio.wait_for(asyncio.shield(pending.result), CONFIRM_SECONDS)
       if not accepted or self.pending is not pending or not self.enabled() or self.clock() >= pending.expires:
         raise PermissionError('Pairing confirmation was canceled or expired')
-      self.approved = (device, self.clock() + ENROLL_SECONDS)
+      self.approved = (device, self.clock() + PAIR_REQUEST_SECONDS)
       cloudlog.event('asius.pairing.confirmation_accepted', device=device)
     except BaseException:
       if self.pending is pending:
@@ -192,7 +192,7 @@ class Confirmation:
     if not self.approved or self.approved[0] != device:
       return False
     self.approved = None
-    cloudlog.event('asius.pairing.enrollment_approved', device=device)
+    cloudlog.event('asius.pairing.approved', device=device)
     return True
 
   async def buttons(self, open_window: Callable[[], object]) -> None:

@@ -29,11 +29,11 @@ def identity_to_bytes(value: str) -> bytes:
   return decoded.to_bytes(IDENTITY_HASH_BYTES, "big")
 
 
-def is_dongle_id(dongle_id: str | None) -> bool:
-  if dongle_id is None:
+def is_identity(value: str | None) -> bool:
+  if value is None:
     return False
   try:
-    identity_to_bytes(dongle_id)
+    identity_to_bytes(value)
     return True
   except Exception:
     return False

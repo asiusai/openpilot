@@ -1,6 +1,6 @@
 """Asius post-quantum identities and persistent root-secret format.
 
-The root recovers permanent signing and recording-access keys. Ephemeral
+The root recovers permanent signing and storage keys. Ephemeral
 session keys and content keys always use independent operating-system randomness.
 """
 
@@ -24,7 +24,7 @@ SIGNATURE_BYTES = 3309
 IDENTITY_CONTEXT = b"asius-identity-v1\x00ML-DSA-65\x00"
 ROOT_SALT = b"asius-root-keys-v1"
 SIGNING_CONTEXT = b"identity:ML-DSA-65"
-RECORDING_CONTEXT = b"recording:X-Wing"
+STORAGE_CONTEXT = b"recording:X-Wing"
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
@@ -89,12 +89,12 @@ class RootIdentity:
   def _signing_key(self) -> mldsa.MLDSA65PrivateKey:
     return mldsa.MLDSA65PrivateKey.from_seed_bytes(self.derive(SIGNING_CONTEXT, 32))
 
-  def recording_key(self) -> xwing.PrivateKey:
-    return self._recording_key
+  def storage_key(self) -> xwing.PrivateKey:
+    return self._storage_key
 
   @cached_property
-  def _recording_key(self) -> xwing.PrivateKey:
-    return xwing.PrivateKey(self.derive(RECORDING_CONTEXT, 32))
+  def _storage_key(self) -> xwing.PrivateKey:
+    return xwing.PrivateKey(self.derive(STORAGE_CONTEXT, 32))
 
   def sign(self, message: bytes) -> bytes:
     return self.signing_key().sign(message)

@@ -14,7 +14,7 @@ def difference(old, new):
   return result
 
 
-class StateEncoder:
+class LiveStateEncoder:
   def __init__(self):
     self.stream = uuid.uuid4().hex
     self.sequence = 0

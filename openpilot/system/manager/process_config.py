@@ -81,7 +81,7 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming") and (started or offroad_camera_ready())
 
-def asius_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
+def cloud_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not PC and params.get_bool("CloudUploadEnabled")
 
 def or_(*fns):
@@ -92,7 +92,7 @@ def and_(*fns):
 
 procs = [
   DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid", enabled=False),
-  DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelayPid"),
+  DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelaydPid"),
   DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=BLUETOOTH_AVAILABLE),
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),
@@ -146,7 +146,7 @@ procs = [
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
   PythonProcess("route_summaryd", "openpilot.system.loggerd.route_summary", always_run),
-  PythonProcess("asius_uploader", "openpilot.system.loggerd.asius_uploader", asius_upload),
+  PythonProcess("cloud_uploader", "openpilot.system.loggerd.cloud_uploader", cloud_upload),
 
   # debug procs
   PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", always_run),

@@ -36,17 +36,17 @@ from openpilot.system.webrtc.in_car import gpu_status, offroad_alerts
 from openpilot.system.asius.terminal import TerminalManager
 from openpilot.system.asius.param_editor import ParameterEditor
 from openpilot.system.asius.relayd import (
-  authorize_peer,
-  load_authorized_peers,
+  authorize_app,
+  load_authorized_apps,
   pairing_url,
-  forget_peer,
+  forget_app,
   verify_pair_token,
 )
-from openpilot.system.asius.onboarding import Onboarding, setup_status
+from openpilot.system.asius.onboarding import Onboarding, onboarding_status
 from openpilot.system.asius.navigation_route import getNavigationRoute, getNavigationState
 from openpilot.system.asius.navigation import getRecentNavDestinations, setNavDestination, searchNavigation, retrieveNavigationLocation
 from openpilot.system.asius.navigation_preview import previewNavigation, getNavigationPreview
-from openpilot.system.asius.navigation_proxy import NavigationRequests, SEARCH_METHODS
+from openpilot.system.asius.navigation_proxy import NavigationRequests, BLOCKING_METHODS
 
 
 class ParamsReader(Protocol):
@@ -74,7 +74,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "SecOCKey",
   "AthenadPid",
   "BluetoothdPid",
-  "RelayPid",
+  "RelaydPid",
   "SoundVolumePreview",
 }
 LIVE_STATE_SERVICES = [
@@ -130,7 +130,7 @@ LIVE_STATE_PARAM_KEYS = [
 dispatcher = Dispatcher()
 onboarding = Onboarding()
 NETWORK_ONLY_METHODS = {"startStream"}
-BLUETOOTH_STATE_FIELDS = {
+LIVE_STATE_FIELDS = {
   "deviceState": ("started", "deviceType", "thermalStatus", "fanSpeedRpm", "networkType", "networkStrength", "cpuTempC", "gpuTempC", "memoryTempC",
                   "freeSpacePercent",
                   "memoryUsagePercent", "somPowerDrawW", "powerDrawW", "chestnutPresent", "usbState", "uptime"),
@@ -182,7 +182,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None, relay_ho
   global relay_room
   params = Params()
   owner = params.get("DongleId")
-  relay_room = RelayRoom(get_device_private_key(), load_authorized_peers,
+  relay_room = RelayRoom(get_device_private_key(), load_authorized_apps,
                          lambda admission: permits_admission(admission, owner), handle_peer_message)
   end_event = threading.Event()
 
@@ -205,7 +205,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None, relay_ho
     raise
   finally:
     for thread in threads:
-      cloudlog.debug(f"relay.joining {thread.name}")
+      cloudlog.debug(f"relayd.joining {thread.name}")
       thread.join()
     relay_room.clear()
 
@@ -315,17 +315,17 @@ def getAuthorizedPeers() -> dict[str, Any]:
     "peers": [
       {
         "publicKey": public_key,
-        "label": peer.get("label"),
-        "createdAt": peer.get("createdAt"),
+        "label": app.get("label"),
+        "createdAt": app.get("createdAt"),
       }
-      for public_key, peer in load_authorized_peers().items()
+      for public_key, app in load_authorized_apps().items()
     ],
   }
 
 
 @dispatcher.add_method(publicKey=_string)
 def removeAuthorizedPeer(publicKey: str) -> dict[str, Any]:
-  return {"removed": forget_peer(publicKey)}
+  return {"removed": forget_app(publicKey)}
 
 
 @dispatcher.add_method
@@ -446,7 +446,7 @@ def _local_ips() -> list[dict[str, str]]:
       if addr.get("family") == "inet" and addr.get("local")
     ]
   except Exception:
-    cloudlog.exception("relay.local_ips.exception")
+    cloudlog.exception("relayd.local_ips.exception")
     return []
 
 
@@ -955,12 +955,12 @@ def _live_services(sm: messaging.SubMaster) -> dict[str, Any]:
               key: vision["pose"][key] for key in ("pitch", "yaw") if key in vision.get("pose", {})
             }
     except Exception:
-      cloudlog.exception("relay.live_state.service_failed service=%s", service)
+      cloudlog.exception("relayd.live_state.service_failed service=%s", service)
 
   if "deviceState" in services:
     services["deviceState"]["uptime"] = int(time.monotonic())
 
-  for service, fields in BLUETOOTH_STATE_FIELDS.items():
+  for service, fields in LIVE_STATE_FIELDS.items():
     if service in services:
       services[service] = {key: services[service][key] for key in fields if key in services[service]}
   if "managerState" in services:
@@ -997,7 +997,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
     try:
       param_values[key] = _json_safe(params.get(key, return_default=True))
     except Exception:
-      cloudlog.exception("relay.live_state.param_failed key=%s", key)
+      cloudlog.exception("relayd.live_state.param_failed key=%s", key)
 
   return {
     "navigation": getNavigationState(),
@@ -1010,7 +1010,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
     "serial": params.get("HardwareSerial"),
     "version": {"fork": FORK, **upstream_athena.getVersion()},
     "params": param_values,
-    "onboarding": setup_status(params),
+    "onboarding": onboarding_status(params),
     "software": _software_update_state(params),
     "services": services,
     "savedCalibration": _saved_calibration(params) if "extrinsicsCalibration" not in services else None,
@@ -1057,7 +1057,7 @@ def live_state_handler(end_event: threading.Event) -> None:
       if room is not None and room.has_subscribers():
         room.publish(sampler.sample())
     except Exception:
-      cloudlog.exception("relay.live_state_handler.exception")
+      cloudlog.exception("relayd.live_state_handler.exception")
     end_event.wait(max(0., LIVE_STATE_INTERVAL_S - (time.monotonic() - started)))
 
 
@@ -1080,7 +1080,7 @@ def handle_rpc(sender: str, body: dict, connection: str, sid: str) -> None:
   room = relay_room
   if room is None:
     return
-  if body.get("method") not in SEARCH_METHODS and body.get("method") != "prepareLive":
+  if body.get("method") not in BLOCKING_METHODS and body.get("method") != "prepareLive":
     room.send(connection, json.loads(handle(body, dispatcher_for_peer(sender))), sid)
     return
   # Network preparation and search can block. Keep the relay receiver free.
@@ -1108,11 +1108,11 @@ def handle_peer_message(connection: str, sender: str, body: dict, sid: str) -> N
       storage_public_key = body.get("storagePublicKey")
       if not isinstance(storage_public_key, str):
         raise ValueError("Invalid recording public key")
-      authorize_peer(sender, storage_public_key, label=body.get("label") if isinstance(body.get("label"), str) else None)
+      authorize_app(sender, storage_public_key, label=body.get("label") if isinstance(body.get("label"), str) else None)
       room.send(connection, {"type": "pair-response", "publicKey": dongle_id,
                             "device-type": HARDWARE.get_device_type(), "name": getDeviceName()}, sid)
       return
-    if sender not in load_authorized_peers():
+    if sender not in load_authorized_apps():
       return
     if body.get("type") == "event":
       if body.get("name") == "terminal":
@@ -1120,7 +1120,7 @@ def handle_peer_message(connection: str, sender: str, body: dict, sid: str) -> N
     elif body.get("method"):
       handle_rpc(sender, body, connection, sid)
   except Exception:
-    cloudlog.exception("relay.websocket.handle_peer_message_failed")
+    cloudlog.exception("relayd.websocket.handle_peer_message_failed")
 
 
 def ws_recv(ws: WebSocket, end_event: threading.Event) -> None:

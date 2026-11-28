@@ -121,7 +121,7 @@ class TerminalManager:
       self.sessions[peer] = session
     session.timeout.start()
     self._send(peer, session_id, "opened")
-    threading.Thread(target=self._read, args=(peer, session), name=f"athena_terminal_{session_id}", daemon=True).start()
+    threading.Thread(target=self._read, args=(peer, session), name=f"relayd_terminal_{session_id}", daemon=True).start()
 
   def handle(self, peer: str, payload: Any) -> None:
     if not isinstance(payload, dict):

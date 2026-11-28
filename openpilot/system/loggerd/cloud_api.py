@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from openpilot.system.loggerd.upload_progress import ProgressReader
 from openpilot.system.asius.relayd import wall_time
 from openpilot.system.asius.session import b64 as b64url, canonical, unb64_lenient
-from openpilot.system.asius.recording_keys import decode_public, get_recording_key, public_text
+from openpilot.system.asius.storage_keys import decode_storage_public_key, get_storage_key, storage_public_key_text
 
 PROTOCOL_VERSION = 2
 GRANT_ALGORITHM = "XWING-HKDF-SHA384-A256GCM"
@@ -25,14 +25,14 @@ ENCRYPTION_MAGIC = b"ASIUSDATA2\n"
 def can_wrap_for(reader: dict[str, str]) -> bool:
   try:
     # Parsing X25519 bytes alone does not reject low-order public keys.
-    decode_public(reader['storagePublicKey']).encapsulate()
+    decode_storage_public_key(reader['storagePublicKey']).encapsulate()
     return True
   except (KeyError, TypeError, ValueError):
     return False
 
 
 def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_key: bytes) -> dict[str, Any]:
-  shared, ciphertext = decode_public(recipient['storagePublicKey']).encapsulate()
+  shared, ciphertext = decode_storage_public_key(recipient['storagePublicKey']).encapsulate()
   iv = os.urandom(12)
   aad = {"v": PROTOCOL_VERSION, "alg": GRANT_ALGORITHM, "from": owner, "to": recipient['publicKey'], "owner": owner,
          "keyId": key_id, "kem": b64url(ciphertext), "iv": b64url(iv)}
@@ -44,7 +44,7 @@ def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_k
 
 def access_document(private_key: RootIdentity, state: dict[str, Any], readers: list[dict[str, str]]) -> dict[str, Any]:
   owner = private_key.identity()
-  device = {"publicKey": owner, "storagePublicKey": public_text(get_recording_key(private_key))}
+  device = {"publicKey": owner, "storagePublicKey": storage_public_key_text(get_storage_key(private_key))}
   recipients = list({reader["publicKey"]: reader for reader in [*readers, device]}.values())
   keys = []
   for entry in state["keys"]:
@@ -80,7 +80,7 @@ def recover_state(private_key: RootIdentity, document: dict[str, Any], readers: 
     grant = next(grant for grant in entry["grants"] if grant["to"] == owner)
     if grant.get('v') != PROTOCOL_VERSION or grant.get('alg') != GRANT_ALGORITHM or grant.get('from') != owner or grant.get('keyId') != entry['id']:
       raise ValueError('Invalid recording grant')
-    shared = get_recording_key(private_key).decapsulate(unb64_lenient(grant['kem']))
+    shared = get_storage_key(private_key).decapsulate(unb64_lenient(grant['kem']))
     wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-xwing-v1:{owner}:{entry['id']}".encode(),
                     info=f"{owner}:{owner}".encode()).derive(shared)
     aad = {key: value for key, value in grant.items() if key != 'ciphertext'} | {'owner': owner}

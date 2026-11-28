@@ -6,7 +6,7 @@ import numpy as np
 import requests
 
 import openpilot.cereal.messaging as messaging
-from openpilot.system.asius.mapbox import NAVIGATION_API
+from openpilot.system.asius.navigation_api import NAVIGATION_API
 from openpilot.system.asius.navigation_route import RouteStore
 from openpilot.system.asius.navigation_proxy import request_json
 from openpilot.common.params import Params

@@ -6,7 +6,7 @@ import time
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from openpilot.system.asius.live_state import StateEncoder
+from openpilot.system.asius.live_state import LiveStateEncoder
 from openpilot.system.asius.session import b64, canonical, message_nonce
 
 
@@ -22,7 +22,7 @@ class StatusStream:
     self.created = now()
     self.counter = self.bytes_used = 0
     self.revision = -1
-    self.encoder = StateEncoder()
+    self.encoder = LiveStateEncoder()
 
   def expired(self, size=0):
     return self.now() - self.created >= 86400 or self.counter >= (1 << 20) - 1 or self.bytes_used + size > 1 << 30
