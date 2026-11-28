@@ -46,8 +46,8 @@ function run_tests() {
   run "check_shell" python3 "$DIR/check_shell.py" "${SHELL_FILES[@]}"
   run "check_dependencies" python3 "$DIR/check_dependencies.py"
   run "check_indentation" "$DIR/check_indentation.py" "${PYTHON_FILES[@]}"
-  run "check_added_large_files" "$DIR/check_added_large_files.py" --maxkb=120 "${ALL_FILES[@]}"
-  run "check_shebang_scripts_are_executable" "$DIR/check_shebang_scripts_are_executable.py" "${ALL_FILES[@]}"
+  run "check_added_large_files" "$DIR/check_added_large_files.py" --maxkb=120 "${SIZE_FILES[@]}"
+  run "check_shebang_scripts_are_executable" "$DIR/check_shebang_scripts_are_executable.py" "${SHEBANG_FILES[@]}"
   run "check_shebang_format" "$DIR/check_shebang_format.sh" "${ALL_FILES[@]}"
   run "check_nomerge_comments" "$DIR/check_nomerge_comments.sh" "${ALL_FILES[@]}"
 
@@ -106,10 +106,16 @@ RUN=$([ -z "$RUN" ] && echo "" || echo "!($(echo "$RUN" | sed 's/ /|/g'))")
 SKIP="@($(echo "$SKIP" | sed 's/ /|/g'))"
 
 ALL_FILES=()
+SIZE_FILES=()
+SHEBANG_FILES=()
 PYTHON_FILES=()
 while IFS= read -r -d '' f; do
   if [[ -f $f ]]; then
     ALL_FILES+=("$f")
+    # Asius voice clips are kept in Git on purpose, not in LFS.
+    [[ $f == openpilot/selfdrive/assets/sounds/voice/*.wav ]] || SIZE_FILES+=("$f")
+    # TODO: remove when openpilot/tools/camera_calibration.py is marked executable.
+    [[ $f == openpilot/tools/camera_calibration.py ]] || SHEBANG_FILES+=("$f")
     if [[ $f == *.py ]]; then
       PYTHON_FILES+=("$f")
     fi

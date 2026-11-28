@@ -53,7 +53,8 @@ def listdir_by_creation(d: str) -> list[str]:
     return []
 
   try:
-    paths = [f for f in os.listdir(d) if os.path.isdir(os.path.join(d, f))]
+    # Hidden directories hold local state such as route summaries, not recordings.
+    paths = [f for f in os.listdir(d) if not f.startswith('.') and os.path.isdir(os.path.join(d, f))]
     paths = sorted(paths, key=get_directory_sort)
     return paths
   except OSError:
@@ -72,6 +73,9 @@ def clear_locks(root: str) -> None:
 
 
 class Uploader:
+  upload_attr_name = UPLOAD_ATTR_NAME
+  max_file_size: int | None = None
+
   def __init__(self, dongle_id: str, root: str):
     self.dongle_id = dongle_id
     self.api = Api(dongle_id)
@@ -105,7 +109,7 @@ class Uploader:
         # skip files already uploaded
         try:
           ctime = os.path.getctime(fn)
-          is_uploaded = getxattr(fn, UPLOAD_ATTR_NAME) == UPLOAD_ATTR_VALUE
+          is_uploaded = getxattr(fn, self.upload_attr_name) == UPLOAD_ATTR_VALUE
         except OSError:
           cloudlog.event("uploader_getxattr_failed", key=key, fn=fn)
           # deleter could have deleted, so skip
@@ -172,7 +176,7 @@ class Uploader:
     if sz == 0:
       # tag files of 0 size as uploaded
       success = True
-    elif name in MAX_UPLOAD_SIZES and sz > MAX_UPLOAD_SIZES[name]:
+    elif (self.max_file_size is not None and sz > self.max_file_size) or (name in MAX_UPLOAD_SIZES and sz > MAX_UPLOAD_SIZES[name]):
       cloudlog.event("uploader_too_large", key=key, fn=fn, sz=sz)
       success = True
     else:
@@ -185,7 +189,7 @@ class Uploader:
       except Exception as e:
         last_exc = (e, traceback.format_exc())
 
-      if stat is not None and stat.status_code in (200, 201, 401, 403, 412):
+      if stat is not None and stat.status_code in (200, 201, 204, 401, 403, 412):
         self.last_filename = fn
         dt = time.monotonic() - start_time
         if stat.status_code == 412:
@@ -203,7 +207,7 @@ class Uploader:
     if success:
       # tag file as uploaded
       try:
-        setxattr(fn, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE)
+        setxattr(fn, self.upload_attr_name, UPLOAD_ATTR_VALUE)
       except OSError:
         cloudlog.event("uploader_setxattr_failed", exc=last_exc, key=key, fn=fn, sz=sz)
 

@@ -50,17 +50,28 @@ struct EncoderSettings {
   int bitrate;
   int gop_size;
   int b_frames = 0; // we don't use b frames
+  bool constant_bitrate = false;
 
   static EncoderSettings MainEncoderSettings(int in_width) {
+    // Venus VBR records 25% above the target. Constant bitrate holds the comma file size.
+    const bool cbr = Hardware::get_device_type() == cereal::InitData::DeviceType::V0;
     if (in_width <= 1344) {
-      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 5'000'000, .gop_size = 20};
+      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 5'000'000, .gop_size = 20, .constant_bitrate = cbr};
     } else {
-      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 10'000'000, .gop_size = 30};
+      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 10'000'000, .gop_size = 30, .constant_bitrate = cbr};
     }
   }
 
   static EncoderSettings QcamEncoderSettings() {
+    if (Hardware::get_device_type() == cereal::InitData::DeviceType::V0) {
+      return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::FULL_H_E_V_C, .bitrate = 256'000, .gop_size = 40, .constant_bitrate = true};
+    }
+#ifdef __COMMA_HARDWARE__
+    // Comma devices record H.265 qcamera files too. Bitrate and keyframe interval stay stock.
+    return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::FULL_H_E_V_C, .bitrate = 256'000, .gop_size = 15};
+#else
     return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::QCAMERA_H264, .bitrate = 256'000, .gop_size = 15};
+#endif
   }
 
   static EncoderSettings StreamEncoderSettings() {
@@ -98,21 +109,21 @@ public:
 const EncoderInfo main_road_encoder_info = {
   .publish_name = "narrowRoadEncodeData",
   .thumbnail_name = "thumbnail",
-  .filename = "fcamera.hevc",
+  .filename = "fcamera.mp4",
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(NarrowRoadEncode),
 };
 
 const EncoderInfo main_wide_road_encoder_info = {
   .publish_name = "wideRoadEncodeData",
-  .filename = "ecamera.hevc",
+  .filename = "ecamera.mp4",
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(WideRoadEncode),
 };
 
 const EncoderInfo main_cabin_encoder_info = {
   .publish_name = "cabinEncodeData",
-  .filename = "dcamera.hevc",
+  .filename = "dcamera.mp4",
   .record = Params().getBool("RecordFront"),
   .get_settings = [](int in_width){return EncoderSettings::MainEncoderSettings(in_width);},
   INIT_ENCODE_FUNCTIONS(CabinEncode),
@@ -151,10 +162,10 @@ const EncoderInfo stream_cabin_encoder_info = {
 
 const EncoderInfo qcam_encoder_info = {
   .publish_name = "qNarrowRoadEncodeData",
-  .filename = "qcamera.ts",
+  .filename = "qcamera.mp4",
   .include_audio = Params().getBool("RecordAudio"),
-  .frame_width = 526,
-  .frame_height = 330,
+  .frame_width = Hardware::get_device_type() == cereal::InitData::DeviceType::V0 ? 672 : 526,
+  .frame_height = Hardware::get_device_type() == cereal::InitData::DeviceType::V0 ? 380 : 330,
   .get_settings = [](int){return EncoderSettings::QcamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(QNarrowRoadEncode),
 };

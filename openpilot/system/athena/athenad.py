@@ -223,7 +223,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
 
 
 def jsonrpc_handler(end_event: threading.Event) -> None:
-  dispatcher.add_method(partial(startLocalProxy, end_event), name="startLocalProxy",
+  dispatcher.add_method(partial(startLocalProxy, end_event), method_name="startLocalProxy",
                         remote_ws_uri=regex(r'wss://ssh\.comma\.ai(:(443|8443))?/[0-9a-f]{16}'), local_port=one_of(8022, *LOCAL_PORT_WHITELIST))
   while not end_event.is_set():
     try:
@@ -426,7 +426,7 @@ class VideoClips:
     self.lock = threading.Condition()
     self.clips: dict[str, VideoClips.Clip] = {}
     self.transcode_proc: tuple[str, subprocess.Popen] | None = None
-    threading.Thread(target=self._worker, name="video_clip", daemon=True).start()
+    self.worker_started = False
 
   def _encode(self, clip: Clip, inputs: Iterable[str], output_path: str, start_time: float, duration: float) -> None:
     inputs = list(inputs)
@@ -573,6 +573,9 @@ class VideoClips:
     assert camera == os.path.basename(camera) and camera.endswith("camera.hevc"), "invalid camera filename"
     assert filename == os.path.basename(filename), "invalid filename"
     with self.lock:
+      if not self.worker_started:
+        threading.Thread(target=self._worker, name="video_clip", daemon=True).start()
+        self.worker_started = True
       self.clips[filename] = self.Clip(route_name, camera, source_start_time, source_end_time, clip["bitrate"], clip["speedup"],
                                         filename, datetime.now().timestamp())
       self.lock.notify()

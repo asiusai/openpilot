@@ -1,0 +1,10 @@
+
+from openpilot.system.athena.manage_athenad import manage
+
+
+def main() -> None:
+  manage("openpilot.system.asius.bluetoothd", "bluetoothd", "BluetoothdPid")
+
+
+if __name__ == "__main__":
+  main()

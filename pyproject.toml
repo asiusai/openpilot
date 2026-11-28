@@ -28,7 +28,7 @@ dependencies = [
   # vendored native dependencies
   "comma-deps-capnproto",
   "comma-deps-acados",
-  "Cython",  # acados solver python bindings
+  "Cython==3.3.1",  # acados solver python bindings
   "comma-deps-ffmpeg",
   "comma-deps-zstd",
   "comma-deps-json11",
@@ -36,7 +36,9 @@ dependencies = [
 
   # athena
   "PyJWT[crypto]",
+  "cryptography==50.0.2",  # Asius ML-DSA and ML-KEM provider
   "websocket_client",
+  "dbus-fast==5.0.22",  # Asius Bluetooth transport
 
   # joystickd
   "inputs",
@@ -79,7 +81,7 @@ submodules = [
   "pandacan",
   "rednose",
   "teleoprtc",
-  "tinygrad",
+  "tinygrad[mesa]",
 ]
 
 [project.urls]
@@ -107,9 +109,9 @@ allow-direct-references = true
 [tool.codespell]
 quiet-level = 3
 # if you've got a short variable name that's getting flagged, add it here
-ignore-words-list = "bu,ro,te,ue,alo,hda,ois,nam,nams,ned,som,parm,setts,inout,warmup,bumb,nd,sie,preints,whit,indexIn,ws,uint,grey,deque,stdio,amin,BA,LITE,atEnd,UIs,errorString,arange,FocusIn,od,tim,relA,hist,copyable,jupyter,thead,TGE,abl,lite,ser"
+ignore-words-list = "bu,ro,te,ue,alo,hda,ois,nam,nams,ned,som,parm,setts,inout,warmup,bumb,nd,sie,preints,whit,indexIn,ws,uint,grey,deque,stdio,amin,BA,LITE,atEnd,UIs,errorString,arange,FocusIn,od,tim,relA,hist,copyable,jupyter,thead,TGE,abl,lite,ser,trun"
 builtin = "clear,rare,informal,code,names,en-GB_to_en-US"
-skip = "*.po, uv.lock, *.onnx, *.pem, */c_generated_code/*, docs/assets/*, openpilot/tools/plotjuggler/layouts/*, openpilot/selfdrive/assets/offroad/mici_fcc.html"
+skip = "*.po, uv.lock, *.onnx, *.pem, */c_generated_code/*, docs/assets/*, openpilot/tools/plotjuggler/layouts/*, openpilot/selfdrive/assets/offroad/mici_fcc.html, openpilot/tools/camera_calibration.py"
 
 # https://docs.astral.sh/ruff/configuration/#using-pyprojecttoml
 [tool.ruff]
@@ -153,8 +155,13 @@ quote-style = "preserve"
 unresolved-import = "ignore"  # Cython-compiled modules (.pyx)
 unresolved-attribute = "ignore"  # many from capnp and Cython modules
 
+# TODO: remove when openpilot/tools/camera_calibration.py passes ty
+[tool.ty.src]
+exclude = ["openpilot/tools/camera_calibration.py"]
+
 [tool.uv]
 python-preference = "only-managed"
+constraint-dependencies = ["pillow==13.0.0"]
 default-groups = ["standalone"]
 override-dependencies = [
   "opendbc",  # panda pins opendbc from git for standalone use; always use our submodule

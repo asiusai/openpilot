@@ -24,9 +24,9 @@ def main() -> int:
   """
   failed = False
   for name, value, limit in (
-    ("Direct dependencies (all extras)", direct, 37),
+    ("Direct dependencies (all extras)", direct, 38),  # Asius adds cryptography and dbus-fast
     ("Total dependencies", len(packages), 65),
-    ("Venv size (MiB)", size / 1024**2, 550),
+    ("Venv size (MiB)", size / 1024**2, 680),  # Asius adds tinymesa, about 127 MiB
   ):
     print(f"{name}: {value:g} (limit: {limit})")
     failed |= value > limit

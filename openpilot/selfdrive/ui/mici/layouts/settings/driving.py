@@ -25,6 +25,7 @@ class DrivingLayoutMici(NavScroller):
                                  description="Warn when you drift across a detected lane line.\n" +
                                              "Only above 31 mph (50 km/h), with no turn signal.")
     always_on_dm_toggle = BigParamControl("always-on driver monitor", "AlwaysOnDM", description="Monitor the driver even when openpilot is not engaged.")
+    share_driving_data = BigParamControl("share driving data with asius", "ShareDrivingData")
     enable_openpilot = BigParamControl("enable openpilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback,
                                        description="Enable to use openpilot driver assistance.\n" +
                                                    "Disable to use your car's stock driver assistance.")
@@ -34,6 +35,7 @@ class DrivingLayoutMici(NavScroller):
       self._initial_cruise_speed,
       always_on_dm_toggle,
       ldw_toggle,
+      share_driving_data,
       enable_openpilot,
     ])
 
@@ -41,6 +43,7 @@ class DrivingLayoutMici(NavScroller):
     self._refresh_toggles = (
       ("IsLdwEnabled", ldw_toggle),
       ("AlwaysOnDM", always_on_dm_toggle),
+      ("ShareDrivingData", share_driving_data),
       ("OpenpilotEnabledToggle", enable_openpilot),
     )
 

@@ -15,9 +15,11 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
+from openpilot.common.gps import get_gps_location_services, latest_gps_source
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, PC
+from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, ASIUS_HARDWARE, PC
+from openpilot.system.asius.device_name import sync_device_hostname
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.git import get_short_branch
 from openpilot.common.hardware.usb import CHESTNUT_FW_VERSION, CHESTNUT_USB_PRODUCT, get_usb_state, get_usb_topology, is_chestnut_usb_id, set_usb_state
@@ -38,6 +40,11 @@ TEMP_TAU = 5.   # 5s time constant
 DISCONNECT_TIMEOUT = 5.  # wait 5 seconds before going offroad after disconnect so you get an alert
 PANDA_STATES_TIMEOUT = round(1000 / SERVICE_LIST['pandaStates'].frequency * 1.5)  # 1.5x the expected pandaState frequency
 ONROAD_CYCLE_TIME = 1  # seconds to wait offroad after requesting an onroad cycle
+
+
+def should_power_save(ignition: bool, screen_brightness: float, driver_view: bool, live_stream: bool) -> bool:
+  return not (ignition or driver_view or live_stream) and screen_brightness < 1e-3
+
 
 class Chestnut:
   # flash before going onroad, modeld ignores chestnut until the product string matches
@@ -167,6 +174,11 @@ def hw_state_thread(end_event, hw_queue):
     # these are expensive calls. update every 10s or when USB devices change
     if (count % int(10. / DT_HW)) == 0 or usb_changed:
       prev_usb_topology = usb_topology
+      if ASIUS_HARDWARE:
+        try:
+          sync_device_hostname(Params().get("DeviceName") or "Asius v0")
+        except Exception:
+          cloudlog.exception("Error updating device hostname")
       try:
         network_type = HARDWARE.get_network_type()
         modem_temps = HARDWARE.get_modem_temperatures()
@@ -201,7 +213,8 @@ def hw_state_thread(end_event, hw_queue):
 def hardware_thread(end_event, hw_queue) -> None:
   system_stats = LinuxSystemStats() if sys.platform == "linux" else None
   pm = messaging.PubMaster(['deviceState'])
-  sm = messaging.SubMaster(["peripheralState", "gpsLocationExternal", "selfdriveState", "pandaStates", "chestnutState"], poll="pandaStates")
+  gps_services = get_gps_location_services(Params())
+  sm = messaging.SubMaster(["peripheralState", "selfdriveState", "pandaStates", "chestnutState"] + gps_services, poll="pandaStates")
 
   count = 0
 
@@ -255,6 +268,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   while not end_event.is_set():
     sm.update(PANDA_STATES_TIMEOUT)
+    gps_service = latest_gps_source(sm, gps_services)
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
@@ -402,7 +416,8 @@ def hardware_thread(end_event, hw_queue) -> None:
       except Exception:
         pass
 
-    should_pwrsave = not onroad_conditions["ignition"] and msg.deviceState.screenBrightnessPercent < 1e-3
+    should_pwrsave = should_power_save(onroad_conditions["ignition"], msg.deviceState.screenBrightnessPercent,
+                                      not startup_conditions["not_driver_view"], params.get_bool("IsLiveStreaming"))
     if should_pwrsave != pwrsave or (count == 0):
       HARDWARE.set_power_save(should_pwrsave)
     pwrsave = should_pwrsave
@@ -461,7 +476,7 @@ def hardware_thread(end_event, hw_queue) -> None:
         'count': count,
         'pandaStates': [strip_deprecated_keys(p.to_dict()) for p in pandaStates],
         'peripheralState': strip_deprecated_keys(peripheralState.to_dict()),
-        'location': (strip_deprecated_keys(sm["gpsLocationExternal"].to_dict()) if sm.alive["gpsLocationExternal"] else None),
+        'location': (strip_deprecated_keys(sm[gps_service].to_dict()) if gps_service is not None else None),
         'deviceState': strip_deprecated_keys(msg.to_dict())
       }
       cloudlog.event("STATUS_PACKET", **dat)
@@ -504,6 +519,8 @@ def main():
 
   if COMMA_HARDWARE:
     threads.append(threading.Thread(target=touch_thread, args=(end_event,)))
+
+  if not PC:
     threads.append(threading.Thread(target=chestnut_state_thread, args=(end_event,)))
 
   for t in threads:

@@ -200,7 +200,7 @@ class TestLoggerd(OpenpilotTestCase):
   def test_rotation(self):
     Params().put("RecordFront", True, block=True)
 
-    expected_files = {"rlog.zst", "qlog.zst", "qcamera.ts", "fcamera.hevc", "dcamera.hevc", "ecamera.hevc"}
+    expected_files = {"rlog.zst", "qlog.zst", "qcamera.mp4", "fcamera.mp4", "dcamera.mp4", "ecamera.mp4"}
 
     num_segs = random.randint(2, 3)
     length = random.randint(4, 5) # H264 encoder uses 40 lookahead frames and does B-frame reordering, so minimum 3 seconds before qcam output
@@ -324,7 +324,7 @@ class TestLoggerd(OpenpilotTestCase):
 
     self._publish_camera_and_audio_messages()
 
-    cabin_hevc_exists = os.path.exists(os.path.join(self._get_latest_log_dir(), 'dcamera.hevc'))
+    cabin_hevc_exists = os.path.exists(os.path.join(self._get_latest_log_dir(), 'dcamera.mp4'))
     assert cabin_hevc_exists == record_front
 
   @parameterized.expand([True, False])
@@ -334,7 +334,7 @@ class TestLoggerd(OpenpilotTestCase):
 
     self._publish_camera_and_audio_messages()
 
-    qcamera_ts_path = os.path.join(self._get_latest_log_dir(), 'qcamera.ts')
+    qcamera_ts_path = os.path.join(self._get_latest_log_dir(), 'qcamera.mp4')
     ffprobe_cmd = f"ffprobe -i {qcamera_ts_path} -show_streams -select_streams a -loglevel error"
     has_audio_stream = subprocess.run(ffprobe_cmd, shell=True, capture_output=True).stdout.strip() != b''
     assert has_audio_stream == record_audio

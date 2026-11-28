@@ -1,15 +1,12 @@
 from enum import IntEnum
 import os
-import requests
 import threading
 import time
 
-from openpilot.common.api import api_get
 from openpilot.common.params import Params
 from openpilot.common.realtime import drop_realtime
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
-from openpilot.selfdrive.ui.lib.api_helpers import get_token
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 
 
@@ -29,14 +26,12 @@ class Provider(str):
   APPLE = "apple"
 
 class PrimeState:
-  FETCH_INTERVAL = 5.0  # seconds between API calls
-  API_TIMEOUT = 10.0  # seconds for API requests
+  FETCH_INTERVAL = 5.0  # seconds between pairing state checks
   SLEEP_INTERVAL = 0.5  # seconds to sleep between checks in the worker thread
 
   def __init__(self):
     self._params = Params()
     self._lock = threading.Lock()
-    self._session = requests.Session()  # reuse session to reduce SSL handshake overhead
     self.prime_type: PrimeType = self._load_initial_state()
     self._prime_trial_available = False
     pairing_provider = os.getenv("PAIRING_PROVIDER") or self._params.get("PairingProvider")
@@ -59,47 +54,14 @@ class PrimeState:
     return PrimeType.UNKNOWN
 
   def _fetch_prime_status(self) -> None:
+    # The Asius app replaces comma connect. A device is paired when an app key is authorized.
     dongle_id = self._params.get("DongleId")
     if not dongle_id or dongle_id == UNREGISTERED_DONGLE_ID:
       return
 
-    try:
-      identity_token = get_token(dongle_id)
-      response = api_get(f"v1.1/devices/{dongle_id}", timeout=self.API_TIMEOUT, access_token=identity_token, session=self._session)
-      if response.status_code == 200:
-        data = response.json()
-        set_offroad_alert("Offroad_UploadsIgnored", bool(data.get("ignore_uploads")))
-
-        is_paired = data.get("is_paired", False)
-        prime_type = data.get("prime_type", 0)
-        self.set_type(PrimeType(prime_type) if is_paired else PrimeType.UNPAIRED)
-        if not is_paired:
-          self.set_provider(None, None)
-
-        prime_trial_available = data.get("trial_claimed") is False and data.get("eligible_features", {}).get("prime", False)
-        self.set_prime_trial_available(prime_trial_available)
-
-        commacare = data.get("commacare", False)
-        self.set_commacare(commacare)
-    except Exception as e:
-      cloudlog.error(f"Failed to fetch prime status: {e}")
-
-  def _fetch_pairing_provider(self) -> None:
-    dongle_id = self._params.get("DongleId")
-    if not dongle_id or dongle_id == UNREGISTERED_DONGLE_ID:
-      return
-
-    try:
-      identity_token = get_token(dongle_id)
-      response = api_get(f"v1/devices/{dongle_id}/owner", timeout=self.API_TIMEOUT, access_token=identity_token, session=self._session)
-      if response.status_code == 200:
-        data = response.json()
-        user_id = data.get("user_id", "")
-        provider = Provider(user_id.partition("_")[0])
-        email = data.get("email")
-        self.set_provider(provider, email)
-    except Exception as e:
-      cloudlog.error(f"Failed to fetch pairing provider: {e}")
+    paired = bool(self._params.get("AppAuthorizedKeys"))
+    self.set_type(PrimeType.NONE if paired else PrimeType.UNPAIRED)
+    self.set_provider(None, None)
 
   def set_type(self, prime_type: PrimeType) -> None:
     with self._lock:
@@ -150,7 +112,6 @@ class PrimeState:
     while self._running:
       if not ui_state.started and device._awake:
         self._fetch_prime_status()
-        self._fetch_pairing_provider()
 
       for _ in range(int(self.FETCH_INTERVAL / self.SLEEP_INTERVAL)):
         if not self._running:
