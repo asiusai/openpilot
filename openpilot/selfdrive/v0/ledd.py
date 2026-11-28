@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from openpilot.selfdrive.v0.buttond import ButtonAction, DeviceButtons
 from openpilot.system.asius.pairing_confirmation import read_confirmation
-from openpilot.system.asius.live_lighting import read_state as live_lighting_state
+from openpilot.system.asius.live_lighting import MAX_LED, read_state as live_lighting_state
 
 from openpilot.selfdrive.v0.led_patterns import (BOOT_BRIGHTNESS, MIN_AUTO_BRIGHTNESS, MAX_AUTO_BRIGHTNESS, ORANGE_RGB,
                                                 STARTUP_PERIOD, calibration_channels, camera_channels, startup_channels)
@@ -17,8 +17,8 @@ STARTUP_GRACE = 30.
 OFFROAD_SLEEP_TIMEOUT = 30.
 RUNTIME_HZ = 60.
 STARTED_AT = time.monotonic()
-CAM_LED_STATUS_CAMERAS = (2, 3)
 CAM_LED_RETRY_INTERVAL = 5.
+LED_FULL_SCALE_MA = 18.52
 CAM_LED_SYSFS_ROOT = Path("/sys/class/leds")
 # Read all faults, including those hidden by a higher-priority screen alert.
 SYSTEM_FAULT_EVENTS = {
@@ -90,6 +90,15 @@ def interp(value: float, x0: float, x1: float, y0: float, y1: float) -> float:
   return y0 + (clamp((value - x0) / (x1 - x0), 0., 1.) * (y1 - y0))
 
 
+def led_brightness_limit(sm) -> int:
+  # RGB LED derating curve: 30 mA at 25 C, falling to 6 mA at 80 C.
+  # Full scale is 18.52 mA. The hottest device sensor stands in for LED ambient.
+  temp = 80.
+  if sm.seen['deviceState'] and sm.alive['deviceState'] and sm.valid['deviceState'] and math.isfinite(sm['deviceState'].maxTempC):
+    temp = sm['deviceState'].maxTempC
+  return math.floor(min(interp(temp, 25., 80., 30., 6.), LED_FULL_SCALE_MA) * 255 / LED_FULL_SCALE_MA + 1e-6)
+
+
 def max_brightness(state: LedState, brightness: int = 255) -> LedState:
   peak = max(state.red, state.green, state.blue)
   if peak <= 0:
@@ -150,8 +159,8 @@ class CameraLedBoard:
 
 class CameraLeds:
   def __init__(self) -> None:
+    # CAM1 has the same controls in VamOS. Openpilot leaves them untouched.
     self.boards = [
-      CameraLedBoard("driver", camera_num=1),
       CameraLedBoard("road", camera_num=2),
       CameraLedBoard("wide", camera_num=3),
     ]
@@ -173,7 +182,7 @@ class CameraLeds:
         board.next_retry = now + CAM_LED_RETRY_INTERVAL
         continue
       try:
-        board.set(state if board.camera_num in CAM_LED_STATUS_CAMERAS else OFF)
+        board.set(state)
         board.next_retry = 0.
         any_success = True
       except Exception:
@@ -462,7 +471,7 @@ def automatic_led_channels(sm, brightness: int, now: float, setup_complete: bool
   return None
 
 
-def live_led_channels(sm, request: dict) -> dict[int, list[float]] | None:
+def live_led_channels(sm, request: dict, limit: int = MAX_LED) -> dict[int, list[float]] | None:
   if not request or not sm.seen['pandaStates'] or not sm.alive['pandaStates'] or not sm.valid['pandaStates']:
     return None
   pandas = [p for p in sm['pandaStates'] if p.pandaType != log.PandaState.PandaType.unknown]
@@ -476,8 +485,9 @@ def live_led_channels(sm, request: dict) -> dict[int, list[float]] | None:
   try:
     brightness = led['brightness']
     color = led['color']
-    if type(brightness) is not int or not 0 <= brightness <= MAX_AUTO_BRIGHTNESS or len(color) != 7 or color[0] != '#':
+    if type(brightness) is not int or not 0 <= brightness <= MAX_LED or len(color) != 7 or color[0] != '#':
       return None
+    brightness = min(brightness, limit)
     rgb = [round(int(color[i:i+2], 16) * brightness / 255) for i in (1, 3, 5)]
     return camera_channels([rgb] * 8)
   except (KeyError, TypeError, ValueError):
@@ -532,13 +542,14 @@ def main() -> None:
     if time.monotonic() >= next_live_read:
       live_request = live_lighting_state()
       next_live_read = time.monotonic() + .1
-    brightness = BOOT_BRIGHTNESS if time.monotonic() - STARTED_AT < STARTUP_PERIOD else camera_led_brightness(sm)
+    limit = led_brightness_limit(sm)
+    brightness = min(limit, BOOT_BRIGHTNESS if time.monotonic() - STARTED_AT < STARTUP_PERIOD else camera_led_brightness(sm))
     pairing_channels = pairing_led_channels(brightness)
     if pairing_channels is not None:
       led.set_channels(pairing_channels)
     else:
       now = time.monotonic()
-      manual_channels = live_led_channels(sm, live_request)
+      manual_channels = live_led_channels(sm, live_request, limit)
       if manual_channels is not None:
         led.set_channels(manual_channels)
         rk.keep_time()

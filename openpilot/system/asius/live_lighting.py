@@ -13,8 +13,9 @@ from openpilot.system.asius.access_policy import ignition_state, require_ignitio
 STATE = Path('/dev/shm/asius-live-lighting.json')
 LEDS = Path('/sys/class/leds')
 LEASE_SECONDS = 5.
-MAX_LED = 127
-MAX_IR_MA = 150
+# Controller limits with RSET 4.32 kohm: 18.52 mA per RGB die and 185 mA for the IR emitter.
+MAX_LED = 255
+MAX_IR_MA = 185
 
 
 def read_state() -> dict:
