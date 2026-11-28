@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 
 from openpilot.system.athena.manage_athenad import manage
 

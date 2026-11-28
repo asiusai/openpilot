@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import asyncio
@@ -374,7 +373,7 @@ class PairingAgent(ServiceInterface):
     try:
       await self.confirmation.request(device, passkey)
     except (PermissionError, TimeoutError):
-      raise DBusError("org.bluez.Error.Rejected", "Physical confirmation was cancelled or expired") from None
+      raise DBusError("org.bluez.Error.Rejected", "Physical confirmation was canceled or expired") from None
 
   @dbus_method()
   def RequestAuthorization(self, device: DBusObjectPath):
@@ -495,11 +494,14 @@ class BlePeerEngine:
         cloudlog.event("asius.bluetooth.enrollment_missing_comparison")
         confirm = ("Match the six digits, then hold the device button for three seconds." if ASIUS_HARDWARE
                    else "Match the six digits and confirm on both screens.")
-        raise PermissionError("Bluetooth is connected, but this app needs a new pairing. "
-                              "Forget this device in your phone's Bluetooth settings and pair again in Asius. "
-                              + confirm)
+        raise PermissionError("Bluetooth is connected, but this app needs a new pairing. " +
+                              "Forget this device in your phone's Bluetooth settings and pair again in Asius. " +
+                              confirm)
       try:
-        authorize_peer(sender, body.get("storagePublicKey"), label)
+        storage_public_key = body.get("storagePublicKey")
+        if not isinstance(storage_public_key, str):
+          raise ValueError("Invalid recording public key")
+        authorize_peer(sender, storage_public_key, label)
       except Exception:
         self.approvals.failed(device)
         raise
@@ -802,7 +804,7 @@ async def watch_bluez(bus: MessageBus, adapter: str, lost: asyncio.Event, engine
       lost.set()
     elif (message.message_type == MessageType.SIGNAL and message.interface == DBUS_PROPERTIES and
           message.member == 'PropertiesChanged' and len(message.body) == 3 and message.body[0] == DEVICE and
-          variant_value(message.body[1].get('Connected')) is False):
+          variant_value(message.body[1].get('Connected')) is False and message.path is not None):
       engine.disconnect(message.path)
     elif (message.message_type == MessageType.SIGNAL and message.interface == DBUS_OBJECT_MANAGER and
           message.member == 'InterfacesRemoved' and len(message.body) == 2 and DEVICE in message.body[1]):

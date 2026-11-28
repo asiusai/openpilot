@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from __future__ import annotations
 
 import base64
@@ -12,6 +11,7 @@ from urllib.parse import quote
 import threading
 import time
 from collections.abc import Iterator
+from typing import Any
 
 import requests
 
@@ -164,9 +164,9 @@ class AsiusUploader(Uploader):
     return automatic
 
   def sync_access(self) -> dict:
-    readers = []
+    readers: list[dict[str, Any]] = []
     for key, peer in sorted(load_authorized_peers().items()):
-      reader = {"publicKey": key, "storagePublicKey": peer.get("storagePublicKey")}
+      reader: dict[str, Any] = {"publicKey": key, "storagePublicKey": peer.get("storagePublicKey")}
       if not is_dongle_id(key) or not can_wrap_for(reader):
         raise ValueError("Authorized app has no valid recording public key")
       readers.append(reader)

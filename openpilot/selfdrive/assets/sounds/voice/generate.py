@@ -53,11 +53,12 @@ def check(messages):
 
 
 async def generate(messages):
-  import edge_tts
+  import edge_tts  # ty: ignore[unresolved-import]  # installed by uv from the script header, not by the project
 
   semaphore = asyncio.Semaphore(3)
   previous = json.loads((ROOT / "generated.json").read_text())["clips"] if (ROOT / "generated.json").exists() else {}
-  metadata = {"voice": VOICE, "source_hash": signature(messages), "filter": FILTER, "digit_filter": DIGIT_FILTER, "clips": {}}
+  clips: dict[str, dict[str, float | str]] = {}
+  metadata = {"voice": VOICE, "source_hash": signature(messages), "filter": FILTER, "digit_filter": DIGIT_FILTER, "clips": clips}
   with tempfile.TemporaryDirectory(prefix="openpilot-voice-") as tmp:
     async def clip(key, item):
       async with semaphore:
@@ -82,7 +83,7 @@ async def generate(messages):
           seconds = audio.getnframes() / audio.getframerate()
         if not 0 < seconds <= 8:
           raise ValueError(f"Speech must be shorter than eight seconds: {key}")
-        metadata["clips"][key] = {"seconds": round(seconds, 3), "sha256": hashlib.sha256(wav.read_bytes()).hexdigest()}
+        clips[key] = {"seconds": round(seconds, 3), "sha256": hashlib.sha256(wav.read_bytes()).hexdigest()}
         wav.replace(ROOT / wav.name)
         print(f"{key}: {seconds:.2f}s", flush=True)
 

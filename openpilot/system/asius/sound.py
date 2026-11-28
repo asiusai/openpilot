@@ -2,13 +2,14 @@
 import math
 import time
 import uuid
+from typing import TypeGuard
 
 DEFAULT_VOLUME = 80
 MIN_VOLUME = 10
 MAX_VOLUME = 100
 
 
-def valid_volume(value):
+def valid_volume(value) -> TypeGuard[int]:
   return type(value) is int and MIN_VOLUME <= value <= MAX_VOLUME
 
 

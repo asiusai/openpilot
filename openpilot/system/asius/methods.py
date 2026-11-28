@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """RPC methods shared by the Asius app transports."""
 
 from __future__ import annotations
@@ -809,7 +808,7 @@ def connectNetwork(ssid: str, password: str = "", hidden: bool = False) -> dict[
 
 @dispatcher.add_method(ssid=_string)
 def disconnectNetwork(ssid: str = "") -> dict[str, int | str]:
-  active_ssid = _nmcli_wifi_state()["ssid"] or ""
+  active_ssid = str(_nmcli_wifi_state()["ssid"] or "")
   if ssid and active_ssid != ssid:
     return {"success": 0, "error": f"{ssid} is not connected"}
   if not active_ssid:
@@ -1153,7 +1152,10 @@ def handle_peer_message(connection: str, sender: str, body: dict, sid: str) -> N
     if body.get("type") == "pair-request":
       if body.get("publicKey") != sender or not verify_pair_token(body.get("pairToken"), dongle_id):
         raise ValueError("Invalid pairing invitation")
-      authorize_peer(sender, body.get("storagePublicKey"), label=body.get("label") if isinstance(body.get("label"), str) else None)
+      storage_public_key = body.get("storagePublicKey")
+      if not isinstance(storage_public_key, str):
+        raise ValueError("Invalid recording public key")
+      authorize_peer(sender, storage_public_key, label=body.get("label") if isinstance(body.get("label"), str) else None)
       room.send(connection, {"type": "pair-response", "publicKey": dongle_id,
                             "device-type": HARDWARE.get_device_type(), "name": getDeviceName()}, sid)
       return

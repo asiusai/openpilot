@@ -83,7 +83,7 @@ class Pending:
 
 class Confirmation:
   def __init__(self, enabled: Callable[[], bool], root: Path = RUNTIME, clock: Callable[[], float] = time.monotonic, allow_ui: bool = False,
-               on_reject: Callable[[str], None] | None = None):
+               on_reject: Callable[[str], object] | None = None):
     self.enabled, self.root, self.clock = enabled, root, clock
     self.allow_ui = allow_ui
     self.on_reject = on_reject
@@ -117,7 +117,7 @@ class Confirmation:
     try:
       accepted = await asyncio.wait_for(asyncio.shield(pending.result), CONFIRM_SECONDS)
       if not accepted or self.pending is not pending or not self.enabled() or self.clock() >= pending.expires:
-        raise PermissionError('Pairing confirmation was cancelled or expired')
+        raise PermissionError('Pairing confirmation was canceled or expired')
       self.approved = (device, self.clock() + ENROLL_SECONDS)
       cloudlog.event('asius.pairing.confirmation_accepted', device=device)
     except BaseException:

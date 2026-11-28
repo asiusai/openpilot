@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from openpilot.common.params import Params
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import AGNOS, PC

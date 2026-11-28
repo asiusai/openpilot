@@ -38,7 +38,7 @@ def startup_channels(elapsed: float, brightness: int = BOOT_BRIGHTNESS) -> dict[
 def calibration_channels(percent: float, brightness: int) -> dict[int, list[float]]:
   brightness = max(0, min(MAX_AUTO_BRIGHTNESS, brightness))
   percent = max(0., min(100., percent)) if math.isfinite(percent) else 0.
-  colors = [[0, 0, 0] for _ in range(8)]
+  colors: list[list[float]] = [[0, 0, 0] for _ in range(8)]
   for step, index in enumerate(range(8)):
     level = max(0., min(1., percent / 12.5 - step))
     # The first orange light identifies calibration even before it progresses.

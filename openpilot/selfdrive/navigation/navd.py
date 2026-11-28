@@ -192,6 +192,7 @@ class RouteEngine:
     geometry = [np.array(step['geometry']['coordinates'], dtype=np.float64).reshape((-1, 2)) for step in steps]
     if not steps or any(len(path) < 2 or not np.isfinite(path).all() for path in geometry):
       raise ValueError("Invalid route geometry")
+    assert self.last_position is not None
     origin = {'longitude': self.last_position[0], 'latitude': self.last_position[1]}
     if self.store.publish(request, route=route, origin=origin, last_known=self.last_known):
       self.route = steps

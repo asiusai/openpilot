@@ -113,6 +113,7 @@ class VoiceAlerts:
         return alert
       if not self.playing:
         return alert
+      assert self.current is not None
       count = min(len(alert), len(self.current) - self.frame)
       # Speech peaks are <= 0.85. Reserve the remaining headroom for existing chimes.
       result = alert.copy()

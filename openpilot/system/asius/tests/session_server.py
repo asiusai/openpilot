@@ -11,7 +11,7 @@ from openpilot.system.asius.session import SecureSession
 class Handler(BaseHTTPRequestHandler):
   sessions = {}
 
-  def log_message(self, *_):
+  def log_message(self, format: str, *args: object) -> None:  # noqa: A002  # stdlib override
     pass
 
   def do_POST(self):

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import math
 import signal
 import time
@@ -488,7 +487,7 @@ def live_led_channels(sm, request: dict, limit: int = MAX_LED) -> dict[int, list
     if type(brightness) is not int or not 0 <= brightness <= MAX_LED or len(color) != 7 or color[0] != '#':
       return None
     brightness = min(brightness, limit)
-    rgb = [round(int(color[i:i+2], 16) * brightness / 255) for i in (1, 3, 5)]
+    rgb: list[float] = [round(int(color[i:i+2], 16) * brightness / 255) for i in (1, 3, 5)]
     return camera_channels([rgb] * 8)
   except (KeyError, TypeError, ValueError):
     return None

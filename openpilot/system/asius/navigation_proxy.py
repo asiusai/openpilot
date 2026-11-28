@@ -149,6 +149,7 @@ def request_json(path, query, *, params=None, destination=None, max_bytes=MAX_RO
   if REQUEST_PATH.fullmatch(path) is None:
     raise ValueError("Unsupported navigation request")
   url = requests.Request('GET', NAVIGATION_API + path, params=query).prepare().url
+  assert url is not None
   parsed = urlsplit(url)
   forwarded = parsed.path + ('?' + parsed.query if parsed.query else '')
   if len(forwarded) > 4096:

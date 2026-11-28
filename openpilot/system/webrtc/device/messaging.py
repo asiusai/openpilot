@@ -65,7 +65,7 @@ class CerealOutgoingMessageProxy:
       return
 
     if self.can_sock is not None:
-      # Acknowledgements bound the queue even when the browser stops rendering.
+      # Acknowledgments bound the queue even when the browser stops rendering.
       # libdatachannel-py buffered_amount() crashes on the pinned native binding.
       for _ in range(256):
         if self.can_pending_bytes > 1024 * 1024:

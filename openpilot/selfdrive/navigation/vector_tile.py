@@ -138,6 +138,6 @@ def decode_roads(data: bytes) -> list[Road]:
                       'is_tunnel': properties.get('structure') == 'tunnel', 'is_bridge': properties.get('structure') == 'bridge'}
       kind = properties.get('kind', '')
       if kind in ('highway', 'major_road', 'minor_road', 'other'):
-        roads.extend(Road(points / extent, kind, properties.get('kind_detail', ''), properties.get('is_tunnel') is True,
+        roads.extend(Road(points / extent, kind, str(properties.get('kind_detail', '')), properties.get('is_tunnel') is True,
                           properties.get('is_bridge') is True) for points in decode_lines(geometry))
   return roads

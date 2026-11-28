@@ -135,7 +135,7 @@ def segment_summary(path):
         video_origin = index.timestampEof / 1e9 - index.segmentId / 20
         video_priority = priority
     elif kind == 'carState':
-      if speed_t is not None and math.isfinite(speed) and 0 <= timestamp - speed_t <= 2:
+      if speed is not None and speed_t is not None and math.isfinite(speed) and 0 <= timestamp - speed_t <= 2:
         meters += max(0, speed) * (timestamp - speed_t)
         have_speed = True
       speed, speed_t = event.carState.vEgo, timestamp
@@ -261,15 +261,16 @@ class SummaryCollector:
         ends = [segment * 60 + part['durationSeconds'] for segment, part in parts if part['durationSeconds'] is not None]
         summary['durationSeconds'] = round(max(ends), 3) if ends else None
         summary['coords'] = [[round(t + segment * 60, 3), lat, lon] for segment, part in parts for t, lat, lon in part.get('coords', [])]
-        summary['events'] = []
+        events: list[dict] = []
+        summary['events'] = events
         for segment, part in parts:
           for event in part.get('events', []):
             item = {**event, 'start': round(event['start'] + segment * 60, 3), 'end': round(event['end'] + segment * 60, 3)}
-            previous = summary['events'][-1] if summary['events'] else None
+            previous = events[-1] if events else None
             if previous and 0 <= item['start'] - previous['end'] < 0.05 and all(previous.get(k) == item.get(k) for k in ('state', 'alert', 'severity')):
               previous['end'] = item['end']
             else:
-              summary['events'].append(item)
+              events.append(item)
         summary['startLocation'] = next((p['startLocation'] for p in values if p['startLocation']), None)
         summary['endLocation'] = next((p['endLocation'] for p in reversed(values) if p['endLocation']), None)
         path = summary_path(self.root, route)

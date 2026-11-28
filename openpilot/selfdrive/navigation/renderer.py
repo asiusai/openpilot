@@ -184,8 +184,9 @@ class MapRenderer:
     """The map image at a position and bearing, and whether every tile was present with a road near the ego."""
     image = np.full((SIZE, SIZE), BACKGROUND, dtype=np.uint8)
     tiles_in_view = self.view_tiles(longitude, latitude)
-    if hasattr(self.archive, "prefetch_view"):
-      self.archive.prefetch_view(self.zoom, tiles_in_view)
+    prefetch_view = getattr(self.archive, "prefetch_view", None)
+    if prefetch_view is not None:
+      prefetch_view(self.zoom, tiles_in_view)
     loaded = [self.roads(x, y) for x, y in tiles_in_view]
     tiles = [tile for tile in loaded if tile is not None]
     # The training renderer's latitude-dependent style zoom: the web mercator zoom with one meter per pixel

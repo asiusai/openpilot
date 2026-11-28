@@ -93,7 +93,10 @@ class Publisher:
         return
       self.last_epoch = pvt.i_tow
       self.last_sample = time.monotonic()
-      _, msg = self.parser.parse_frame(frame)
+      result = self.parser.parse_frame(frame)
+      if result is None:
+        return
+      _, msg = result
       gps = msg.gpsLocationExternal
       gps.hasFix = bool(pvt.flags & 1) and pvt.fix_type == 3 and not pvt.flags3 & 1
       msg.valid = pvt.valid & 7 == 7 and gps.unixTimestampMillis > 0
