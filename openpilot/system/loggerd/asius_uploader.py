@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import hashlib
 import os
@@ -23,6 +22,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import get_upload_stream
 from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
 from openpilot.system.asius.relayd import load_authorized_peers
+from openpilot.system.asius.session import unb64_lenient
 from openpilot.system.loggerd.cloud_api import (
   CloudApiClient,
   access_document,
@@ -255,7 +255,7 @@ class AsiusUploader(Uploader):
 
     if os.path.basename(object_path) in CENC_FILES:
       active = next(entry for entry in state["keys"] if entry["id"] == state["activeKey"])
-      folder_key = base64.urlsafe_b64decode(active["key"] + "=" * (-len(active["key"]) % 4))
+      folder_key = unb64_lenient(active["key"])
       content_key, kid = derive_cenc_key(folder_key, self.owner, active["id"], object_path)
       temporary_name = ""
       try:

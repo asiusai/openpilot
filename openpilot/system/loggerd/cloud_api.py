@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import io
 import hashlib
 import json
@@ -15,16 +14,12 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from openpilot.system.loggerd.upload_progress import ProgressReader
 from openpilot.system.asius.relayd import wall_time
-from openpilot.system.asius.session import b64 as b64url, canonical
+from openpilot.system.asius.session import b64 as b64url, canonical, unb64_lenient
 from openpilot.system.asius.recording_keys import decode_public, get_recording_key, public_text
 
 PROTOCOL_VERSION = 2
 GRANT_ALGORITHM = "XWING-HKDF-SHA384-A256GCM"
 ENCRYPTION_MAGIC = b"ASIUSDATA2\n"
-
-
-def canonical_json(value: Any) -> str:
-  return canonical(value).decode()
 
 
 def can_wrap_for(reader: dict[str, str]) -> bool:
@@ -43,7 +38,7 @@ def wrap_folder_key(owner: str, key_id: str, recipient: dict[str, str], folder_k
          "keyId": key_id, "kem": b64url(ciphertext), "iv": b64url(iv)}
   wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-xwing-v1:{owner}:{key_id}".encode(),
                   info=f"{owner}:{recipient['publicKey']}".encode()).derive(shared)
-  ciphertext = AESGCM(wrap_key).encrypt(iv, folder_key, canonical_json(aad).encode())
+  ciphertext = AESGCM(wrap_key).encrypt(iv, folder_key, canonical(aad))
   return {key: value for key, value in aad.items() if key != "owner"} | {"ciphertext": b64url(ciphertext)}
 
 
@@ -53,7 +48,7 @@ def access_document(private_key: RootIdentity, state: dict[str, Any], readers: l
   recipients = list({reader["publicKey"]: reader for reader in [*readers, device]}.values())
   keys = []
   for entry in state["keys"]:
-    raw_key = base64.urlsafe_b64decode(entry["key"] + "=" * (-len(entry["key"]) % 4))
+    raw_key = unb64_lenient(entry["key"])
     keys.append({
       "id": entry["id"],
       "createdAt": entry["createdAt"],
@@ -69,7 +64,7 @@ def access_document(private_key: RootIdentity, state: dict[str, Any], readers: l
     "authorizedApps": state.get("authorizedApps", []),
     "keys": keys,
   }
-  return unsigned | {"signature": b64url(private_key.sign(canonical_json(unsigned).encode()))}
+  return unsigned | {"signature": b64url(private_key.sign(canonical(unsigned)))}
 
 
 def recover_state(private_key: RootIdentity, document: dict[str, Any], readers: list[dict[str, str]],
@@ -79,19 +74,19 @@ def recover_state(private_key: RootIdentity, document: dict[str, Any], readers: 
       or document.get("signingKey") != b64url(private_key.public_key().public_bytes_raw())):
     raise ValueError("access document owner mismatch")
   unsigned = {key: value for key, value in document.items() if key != "signature"}
-  private_key.public_key().verify(base64.urlsafe_b64decode(document["signature"] + "=" * (-len(document["signature"]) % 4)), canonical_json(unsigned).encode())
+  private_key.public_key().verify(unb64_lenient(document["signature"]), canonical(unsigned))
   recovered = []
   for entry in document["keys"]:
     grant = next(grant for grant in entry["grants"] if grant["to"] == owner)
     if grant.get('v') != PROTOCOL_VERSION or grant.get('alg') != GRANT_ALGORITHM or grant.get('from') != owner or grant.get('keyId') != entry['id']:
       raise ValueError('Invalid recording grant')
-    shared = get_recording_key(private_key).decapsulate(base64.urlsafe_b64decode(grant['kem'] + '=' * (-len(grant['kem']) % 4)))
+    shared = get_recording_key(private_key).decapsulate(unb64_lenient(grant['kem']))
     wrap_key = HKDF(algorithm=hashes.SHA384(), length=32, salt=f"asius-data-access-xwing-v1:{owner}:{entry['id']}".encode(),
                     info=f"{owner}:{owner}".encode()).derive(shared)
     aad = {key: value for key, value in grant.items() if key != 'ciphertext'} | {'owner': owner}
-    iv = base64.urlsafe_b64decode(grant["iv"] + "=" * (-len(grant["iv"]) % 4))
-    ciphertext = base64.urlsafe_b64decode(grant["ciphertext"] + "=" * (-len(grant["ciphertext"]) % 4))
-    folder_key = AESGCM(wrap_key).decrypt(iv, ciphertext, canonical_json(aad).encode())
+    iv = unb64_lenient(grant["iv"])
+    ciphertext = unb64_lenient(grant["ciphertext"])
+    folder_key = AESGCM(wrap_key).decrypt(iv, ciphertext, canonical(aad))
     recovered.append({"id": entry["id"], "createdAt": entry["createdAt"], "key": b64url(folder_key)})
   return {"version": document["version"] + 1, "grantAlgorithm": GRANT_ALGORITHM, "activeKey": document["activeKey"], "readers": readers,
           "authorizedApps": sorted(set(authorized_apps or [])), "keys": recovered}
@@ -129,12 +124,12 @@ def update_state(state: dict[str, Any], readers: list[dict[str, str]], authorize
 
 def encrypt_object(owner: str, path: str, plaintext: bytes, state: dict[str, Any]) -> bytes:
   active = next(entry for entry in state["keys"] if entry["id"] == state["activeKey"])
-  folder_key = base64.urlsafe_b64decode(active["key"] + "=" * (-len(active["key"]) % 4))
+  folder_key = unb64_lenient(active["key"])
   iv = os.urandom(12)
   header = {"v": PROTOCOL_VERSION, "alg": "HKDF-SHA256-A256GCM", "owner": owner, "path": path,
             "keyId": active["id"], "iv": b64url(iv), "plaintextLength": len(plaintext)}
   object_key = HKDF(algorithm=hashes.SHA256(), length=32, salt=f"asius-data-object-v1:{owner}:{active['id']}".encode(), info=path.encode()).derive(folder_key)
-  ciphertext = AESGCM(object_key).encrypt(iv, plaintext, canonical_json(header).encode())
+  ciphertext = AESGCM(object_key).encrypt(iv, plaintext, canonical(header))
   encoded_header = json.dumps(header, separators=(",", ":")).encode()
   return ENCRYPTION_MAGIC + len(encoded_header).to_bytes(4, "big") + encoded_header + ciphertext
 
@@ -148,7 +143,7 @@ class CloudApiClient:
     self._config: dict[str, Any] | None = None
 
   def authorization(self, method: str, path: str, body: Any = None, *, timestamp: int | None = None) -> tuple[bytes, str]:
-    encoded = b"" if body is None else canonical_json(body).encode()
+    encoded = b"" if body is None else canonical(body)
     now = int(wall_time()) if timestamp is None else timestamp
     claims = {
       "v": PROTOCOL_VERSION,
@@ -160,8 +155,8 @@ class CloudApiClient:
       "scope": "asius-storage-request-pq-v1",
       "timestamp": now,
     }
-    signature = b64url(self.private_key.sign(canonical_json(claims).encode()))
-    token = b64url(canonical_json(claims | {"signature": signature}).encode())
+    signature = b64url(self.private_key.sign(canonical(claims)))
+    token = b64url(canonical(claims | {"signature": signature}))
     return encoded, f"Data {token}"
 
   def request(self, method: str, path: str, body: Any = None) -> requests.Response:

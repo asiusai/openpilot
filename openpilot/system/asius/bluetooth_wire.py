@@ -2,7 +2,8 @@
 import json
 import struct
 
-from openpilot.system.asius.identity import base58_encode, identity_to_bytes
+from openpilot.system.asius.identity import identity_to_bytes
+from openpilot.system.asius.pqc import base58_encode
 from openpilot.system.asius.session import b64, unb64
 
 MAGIC = 0xa7

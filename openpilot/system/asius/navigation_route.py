@@ -4,12 +4,11 @@ import gzip
 import hashlib
 import json
 import math
-import os
-import tempfile
 import time
 from pathlib import Path
 
 from openpilot.common.params import Params
+from openpilot.common.utils import atomic_write
 
 CHUNK_BYTES = 3072
 MAX_ROUTE_BYTES = 8 * 1024 * 1024
@@ -30,16 +29,10 @@ def route_chunk(revision, offset, data):
           "nextOffset": offset + len(part), "done": offset + len(part) == len(data)}
 
 
-def atomic_write(path, data):
+def write_bytes(path, data):
   path.parent.mkdir(parents=True, exist_ok=True)
-  with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as f:
-    try:
-      f.write(data)
-      f.close()
-      os.replace(f.name, path)
-    finally:
-      if os.path.exists(f.name):
-        os.unlink(f.name)
+  with atomic_write(str(path), 'wb', overwrite=True) as f:
+    f.write(data)
 
 
 class RouteStore:
@@ -81,9 +74,9 @@ class RouteStore:
       if len(packed) > MAX_ROUTE_BYTES:
         raise ValueError("Route is too large")
       revision = hashlib.sha256(packed).hexdigest()
-      atomic_write(self.root / f"{revision}.gz", packed)
+      write_bytes(self.root / f"{revision}.gz", packed)
       state.update(revision=revision, bytes=len(packed))
-    atomic_write(self.root / "state.json", json.dumps(state, separators=(",", ":")).encode())
+    write_bytes(self.root / "state.json", json.dumps(state, separators=(",", ":")).encode())
     # Readers request a revision on every chunk and retry after a route change.
     for path in self.root.glob("*.gz"):
       if path.stem != state.get("revision"):
@@ -99,7 +92,7 @@ class RouteStore:
     return route_chunk(revision, offset, data)
 
   def save_position(self, position):
-    atomic_write(self.root / "position.json", json.dumps(position).encode())
+    write_bytes(self.root / "position.json", json.dumps(position).encode())
 
   def position(self):
     try:

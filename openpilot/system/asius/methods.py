@@ -27,13 +27,12 @@ from openpilot.system.asius.relay_room import RelayRoom
 from openpilot.system.asius.pairing_invitation import permits_admission
 from openpilot.system.asius.device_name import device_hostname
 from openpilot.common.params import Params, ParamKeyType
-from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.version import get_build_metadata, terms_version, training_version
+from openpilot.common.version import terms_version, training_version
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, boolean, dict_of, either, handle, integer, list_of, number, one_of, regex
-from openpilot.system.webrtc.in_car import gpu_status
+from openpilot.system.webrtc.in_car import gpu_status, offroad_alerts
 from openpilot.system.asius.terminal import TerminalManager
 from openpilot.system.asius.param_editor import ParameterEditor
 from openpilot.system.asius.relayd import (
@@ -131,8 +130,6 @@ LIVE_STATE_PARAM_KEYS = [
 dispatcher = Dispatcher()
 onboarding = Onboarding()
 NETWORK_ONLY_METHODS = {"startStream"}
-# Use the same active Params alerts as the device UI, including their extra text.
-OFFROAD_ALERT_KEYS = tuple(json.loads((Path(BASEDIR) / "openpilot/selfdrive/selfdrived/alerts_offroad.json").read_text()))
 BLUETOOTH_STATE_FIELDS = {
   "deviceState": ("started", "deviceType", "thermalStatus", "fanSpeedRpm", "networkType", "networkStrength", "cpuTempC", "gpuTempC", "memoryTempC",
                   "freeSpacePercent",
@@ -994,7 +991,6 @@ def _saved_calibration(params: Params) -> dict[str, Any] | None:
 
 
 def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, Any]:
-  build_metadata = get_build_metadata()
   services = _live_services(sm)
   param_values = {}
   for key in LIVE_STATE_PARAM_KEYS:
@@ -1002,13 +998,6 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
       param_values[key] = _json_safe(params.get(key, return_default=True))
     except Exception:
       cloudlog.exception("relay.live_state.param_failed key=%s", key)
-
-  offroad_alerts = []
-  for key in OFFROAD_ALERT_KEYS:
-    alert = params.get(key)
-    if isinstance(alert, dict) and alert.get("text"):
-      offroad_alerts.append({"key": key, "text": alert["text"].replace("%1", str(alert.get("extra", ""))),
-                             "severity": alert.get("severity", 0)})
 
   return {
     "navigation": getNavigationState(),
@@ -1019,20 +1008,14 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
     "dongleId": params.get("DongleId"),
     "deviceName": getDeviceName(),
     "serial": params.get("HardwareSerial"),
-    "version": {
-      "fork": FORK,
-      "version": build_metadata.openpilot.version,
-      "remote": build_metadata.openpilot.git_normalized_origin,
-      "branch": build_metadata.channel,
-      "commit": build_metadata.openpilot.git_commit,
-    },
+    "version": {"fork": FORK, **upstream_athena.getVersion()},
     "params": param_values,
     "onboarding": setup_status(params),
     "software": _software_update_state(params),
     "services": services,
     "savedCalibration": _saved_calibration(params) if "extrinsicsCalibration" not in services else None,
     "gpu": gpu_status(sm, params),
-    "offroadAlerts": offroad_alerts,
+    "offroadAlerts": offroad_alerts(params),
   }
 
 

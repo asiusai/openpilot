@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from openpilot.common.params import Params
-from openpilot.system.asius.navigation_route import MAX_ROUTE_BYTES, RouteStore, atomic_write, route_chunk, validate_chunk_request
+from openpilot.system.asius.navigation_route import MAX_ROUTE_BYTES, RouteStore, route_chunk, validate_chunk_request, write_bytes
 
 PREVIEW_SECONDS = 300
 MAX_PREVIEWS = 4
@@ -53,8 +53,8 @@ class PreviewStore:
     revision = hashlib.sha256(packed).hexdigest()
     meta = {"destination": place, "origin": origin, "created": time.monotonic(), "boot": self.boot}
     with self.lock():
-      atomic_write(self.root / f"{revision}.gz", packed)
-      atomic_write(self.root / f"{revision}.json", json.dumps(meta).encode())
+      write_bytes(self.root / f"{revision}.gz", packed)
+      write_bytes(self.root / f"{revision}.json", json.dumps(meta).encode())
       others = sorted((p for p in self.root.glob("*.gz") if p.stem != revision), key=lambda p: p.stat().st_mtime, reverse=True)
       for path in others[MAX_PREVIEWS - 1:]:
         path.unlink(missing_ok=True)
@@ -85,7 +85,7 @@ class PreviewStore:
       moved = current is None or math.hypot((current[0] - origin[0]) * math.cos(math.radians(origin[1])), current[1] - origin[1]) * 111320 > 100
       if current is None or (moved and along_path(np.asarray(route["geometry"]["coordinates"]), current)[1] > 25):
         raise ValueError("Device position changed. Refresh the routes.")
-      atomic_write(self.routes.root / "selected.json", json.dumps({"request": request, "route": route}).encode())
+      write_bytes(self.routes.root / "selected.json", json.dumps({"request": request, "route": route}).encode())
       return route, {"longitude": origin[0], "latitude": origin[1]}
 
   def take_selected(self, request):

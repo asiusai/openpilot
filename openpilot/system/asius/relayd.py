@@ -1,4 +1,3 @@
-import base64
 import fcntl
 from contextlib import contextmanager
 import json
@@ -18,15 +17,11 @@ from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.athenad import backoff
 from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
-from openpilot.system.asius.session import b64
+from openpilot.system.asius.session import b64, unb64_lenient
 
 
 APP_AUTHORIZED_KEYS_PARAM = "AppAuthorizedKeys"
 PAIR_TOKEN_SECONDS = 300
-
-def base64url_decode(data: str) -> bytes:
-  return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
-
 
 def wall_time() -> float:
   return time.time()  # noqa: TID251
@@ -122,11 +117,11 @@ def verify_pair_token(token: str | None, recipient: str) -> bool:
     if len(token) > 16384:
       return False
     header, payload, signature = token.split('.')
-    algorithm = json.loads(base64url_decode(header))
+    algorithm = json.loads(unb64_lenient(header))
     if algorithm.get('alg') != 'ML-DSA-65':
       return False
-    verify_signature(recipient, base64url_decode(algorithm['key']), base64url_decode(signature), f"{header}.{payload}".encode())
-    verified = json.loads(base64url_decode(payload))
+    verify_signature(recipient, unb64_lenient(algorithm['key']), unb64_lenient(signature), f"{header}.{payload}".encode())
+    verified = json.loads(unb64_lenient(payload))
     return (verified.get("type") == "pair" and verified.get("to") == recipient and
             pairing_invitation.consume(verified.get("jti"), recipient))
   except Exception:

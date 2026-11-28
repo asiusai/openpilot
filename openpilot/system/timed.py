@@ -8,8 +8,9 @@ import openpilot.cereal.messaging as messaging
 from openpilot.common.time_helpers import min_date, MAX_DATE, system_time_valid
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
-from openpilot.common.gps import get_gps_location_services, latest_gps_source
+from openpilot.common.gps import get_gps_location_service
 from openpilot.common.hardware import ASIUS_HARDWARE
+from openpilot.selfdrive.navigation.helpers import latest_gps_source
 
 
 def set_time(new_time, sample_mono=None):
@@ -43,10 +44,10 @@ def main() -> NoReturn:
   """
 
   params = Params()
-  gps_services = get_gps_location_services(params)
+  gps_location_service = get_gps_location_service(params)
 
   pm = messaging.PubMaster(['clocks'])
-  sm = messaging.SubMaster(gps_services)
+  sm = messaging.SubMaster([gps_location_service])
   while True:
     sm.update(1000)
 
@@ -55,8 +56,7 @@ def main() -> NoReturn:
     msg.clocks.wallTimeNanos = time.time_ns()
     pm.send('clocks', msg)
 
-    gps_location_service = latest_gps_source(sm, gps_services)
-    if gps_location_service is None:
+    if latest_gps_source(sm, [gps_location_service]) is None:
       continue
     gps = sm[gps_location_service]
     sample_mono = sm.logMonoTime[gps_location_service] / 1e9

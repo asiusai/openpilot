@@ -14,7 +14,7 @@ from msgq.visionipc import VisionIpcClient
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper, DT_CTRL
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.gps import get_gps_location_services
+from openpilot.common.gps import get_gps_location_service
 
 from openpilot.selfdrive.car.car_events import CarEvents
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -74,7 +74,8 @@ class SelfdriveD:
     # Setup sockets
     self.pm = messaging.PubMaster(['selfdriveState', 'onroadEvents'])
 
-    self.gps_packets = get_gps_location_services(self.params)
+    self.gps_location_service = get_gps_location_service(self.params)
+    self.gps_packets = [self.gps_location_service]
     self.sensor_packets = ["accelerometer", "gyroscope"]
     self.camera_packets = ["narrowRoadCameraState", "cabinCameraState", "wideRoadCameraState"]
 
@@ -449,8 +450,9 @@ class SelfdriveD:
       self.events.add(EventName.fcw)
 
     # GPS checks
-    gps_ok = any(self.sm.recv_frame[s] > 0 and (self.sm.frame - self.sm.recv_frame[s]) * DT_CTRL < 2.0 and
-                 (not ASIUS_HARDWARE or (self.sm.valid[s] and self.sm[s].hasFix)) for s in self.gps_packets)
+    gps_ok = self.sm.recv_frame[self.gps_location_service] > 0 and (self.sm.frame - self.sm.recv_frame[self.gps_location_service]) * DT_CTRL < 2.0
+    if ASIUS_HARDWARE:
+      gps_ok = gps_ok and self.sm.valid[self.gps_location_service] and self.sm[self.gps_location_service].hasFix
     if not gps_ok and self.sm['deviceMotion'].inputsOK and (self.distance_traveled > 1500):
       self.events.add(EventName.noGps)
     if gps_ok:

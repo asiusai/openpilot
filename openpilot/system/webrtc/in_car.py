@@ -11,6 +11,16 @@ from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
 CHESTNUT_ALERTS = tuple(k for k, a in OFFROAD_ALERTS.items() if k.startswith('Offroad_Chestnut') and a['severity'] >= 0)
 
 
+def offroad_alerts(params) -> list[dict]:
+  """The active offroad alerts as the device UI shows them, with their extra text filled in."""
+  alerts = []
+  for key, definition in OFFROAD_ALERTS.items():
+    alert = params.get(key)
+    if isinstance(alert, dict) and isinstance(alert.get('text'), str) and alert['text']:
+      alerts.append({'key': key, 'text': alert['text'].replace('%1', str(alert.get('extra', ''))), 'severity': definition.get('severity', 0)})
+  return alerts
+
+
 def gpu_status(sm, params) -> str:
   now = time.monotonic()
   if not sm.seen['deviceState'] or not sm.valid['deviceState'] or now - sm.logMonoTime['deviceState'] / 1e9 >= 5:
@@ -111,11 +121,7 @@ class InCarTelemetry:
     if now - self.alerts_updated > 1:
       self.alerts = []
       if not started:
-        for key, definition in OFFROAD_ALERTS.items():
-          value = self.params.get(key)
-          if isinstance(value, dict) and isinstance(value.get('text'), str):
-            self.alerts.append({'key': key, 'text': value['text'].replace('%1', str(value.get('extra', '')))[:1024],
-                                'severity': definition.get('severity', 0)})
+        self.alerts = [{**alert, 'text': alert['text'][:1024]} for alert in offroad_alerts(self.params)]
         self.alerts.sort(key=lambda alert: -alert['severity'])
       self.alerts_updated = now
     car = services.get('carState', {})

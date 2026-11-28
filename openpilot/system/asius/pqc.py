@@ -28,17 +28,23 @@ RECORDING_CONTEXT = b"recording:X-Wing"
 BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
+def base58_encode(value: int) -> str:
+  if value == 0:
+    return BASE58[0]
+
+  out = []
+  while value:
+    value, rem = divmod(value, 58)
+    out.append(BASE58[rem])
+  return "".join(reversed(out))
+
+
 def identity_from_public(public: bytes) -> str:
   if len(public) != SIGNING_PUBLIC_BYTES:
     raise ValueError("Invalid ML-DSA-65 public key length")
   # Parse through the maintained provider before accepting an identity key.
   mldsa.MLDSA65PublicKey.from_public_bytes(public)
-  value = int.from_bytes(hashlib.sha256(IDENTITY_CONTEXT + public).digest(), "big")
-  result = ""
-  while value:
-    value, digit = divmod(value, 58)
-    result = BASE58[digit] + result
-  return result.rjust(44, BASE58[0])
+  return base58_encode(int.from_bytes(hashlib.sha256(IDENTITY_CONTEXT + public).digest(), "big")).rjust(44, BASE58[0])
 
 
 def verify_signature(identity: str, public: bytes, signature: bytes, message: bytes) -> None:

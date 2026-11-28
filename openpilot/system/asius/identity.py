@@ -11,17 +11,6 @@ DONGLE_ID_LEN = 44
 PRIVATE_KEY_PATH = Path("/persist/asius/identity.seed")
 
 
-def base58_encode(value: int) -> str:
-  if value == 0:
-    return BASE58[0]
-
-  out = []
-  while value:
-    value, rem = divmod(value, 58)
-    out.append(BASE58[rem])
-  return "".join(reversed(out))
-
-
 def base58_decode(value: str) -> int:
   decoded = 0
   for char in value:

@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from openpilot.system.asius.session import b64 as b64url
+from openpilot.system.asius.session import b64 as b64url, canonical
 
 
 COMMON_PSSH_SYSTEM_ID = bytes.fromhex("1077efecc0b24d02ace33c1e52e2fb4b")
@@ -548,8 +548,7 @@ def embed_index(filename: str, media: dict[str, Any], owner: str, path: str, key
   indexed = media | {"owner": owner, "path": path, "keyId": key_id, "signingKey": b64url(private_key.public_key().public_bytes_raw()),
                      "encryptedLength": len(payload) + INDEX_BYTES,
                      "fragments": [fragment | {"offset": fragment["offset"] + INDEX_BYTES} for fragment in media["fragments"]]}
-  canonical = json.dumps(indexed, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-  indexed["signature"] = b64url(private_key.sign(canonical))
+  indexed["signature"] = b64url(private_key.sign(canonical(indexed)))
   encoded = json.dumps(indexed, separators=(",", ":")).encode()
   if len(encoded) > INDEX_BYTES - 28:
     raise ValueError("MP4 index exceeds reserved space")

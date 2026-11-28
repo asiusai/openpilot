@@ -5,9 +5,9 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
 import time
 
+from openpilot.common.utils import atomic_write
 from openpilot.system.asius.access_policy import ignition_state, require_ignition_off
 
 STATE = Path('/dev/shm/asius-live-lighting.json')
@@ -71,13 +71,8 @@ def set_state(owner: str, lease: str, led: dict | None = None, irMa: int | None 
     if (led is not None and not supported['leds']) or (irMa is not None and not supported['ir']):
       raise ValueError('These camera lights are not available on this device')
     state = {'owner': owner, 'lease': lease, 'expires': time.monotonic() + LEASE_SECONDS, 'led': led, 'irMa': irMa}
-    fd, path = tempfile.mkstemp(dir=STATE.parent, prefix='.live-lighting-')
-    try:
-      with os.fdopen(fd, 'w') as out:
-        json.dump(state, out)
-      os.replace(path, STATE)
-    finally:
-      Path(path).unlink(missing_ok=True)
+    with atomic_write(str(STATE), overwrite=True) as out:
+      json.dump(state, out)
   return {'expiresIn': LEASE_SECONDS}
 
 

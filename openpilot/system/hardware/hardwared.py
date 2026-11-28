@@ -15,8 +15,9 @@ from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
-from openpilot.common.gps import get_gps_location_services, latest_gps_source
+from openpilot.common.gps import get_gps_location_service
 from openpilot.common.realtime import DT_HW
+from openpilot.selfdrive.navigation.helpers import latest_gps_source
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.common.hardware import HARDWARE, COMMA_HARDWARE, ASIUS_HARDWARE, PC
 from openpilot.system.asius.device_name import sync_device_hostname
@@ -213,8 +214,8 @@ def hw_state_thread(end_event, hw_queue):
 def hardware_thread(end_event, hw_queue) -> None:
   system_stats = LinuxSystemStats() if sys.platform == "linux" else None
   pm = messaging.PubMaster(['deviceState'])
-  gps_services = get_gps_location_services(Params())
-  sm = messaging.SubMaster(["peripheralState", "selfdriveState", "pandaStates", "chestnutState"] + gps_services, poll="pandaStates")
+  gps_location_service = get_gps_location_service(Params())
+  sm = messaging.SubMaster(["peripheralState", gps_location_service, "selfdriveState", "pandaStates", "chestnutState"], poll="pandaStates")
 
   count = 0
 
@@ -268,7 +269,7 @@ def hardware_thread(end_event, hw_queue) -> None:
 
   while not end_event.is_set():
     sm.update(PANDA_STATES_TIMEOUT)
-    gps_service = latest_gps_source(sm, gps_services)
+    gps_service = latest_gps_source(sm, [gps_location_service])
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
