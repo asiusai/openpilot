@@ -49,7 +49,7 @@ class ProgressReader:
 
   def read(self, size=-1):
     data = self.stream.read(size)
-    # Reserve completion until the cloud has confirmed the uploaded object.
+    # Reserve completion until the storage has confirmed the uploaded object.
     self.publish(min(self.stream.tell(), max(0, self.total - 1)))
     return data
 

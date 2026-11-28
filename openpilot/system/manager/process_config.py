@@ -81,8 +81,8 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming") and (started or offroad_camera_ready())
 
-def cloud_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return not PC and params.get_bool("CloudUploadEnabled")
+def storage_upload(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return not PC and params.get_bool("StorageUploadEnabled")
 
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
@@ -146,7 +146,7 @@ procs = [
   PythonProcess("updated", "openpilot.system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "openpilot.system.loggerd.uploader", always_run, enabled=False),
   PythonProcess("route_summaryd", "openpilot.system.loggerd.route_summary", always_run),
-  PythonProcess("cloud_uploader", "openpilot.system.loggerd.cloud_uploader", cloud_upload),
+  PythonProcess("storage_uploader", "openpilot.system.loggerd.storage_uploader", storage_upload),
 
   # debug procs
   PythonProcess("webrtcd", "openpilot.system.webrtc.webrtcd", always_run),

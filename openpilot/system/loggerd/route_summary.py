@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.realtime import Ratekeeper, set_core_affinity
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.loggerd.cloud_upload_queue import ROUTE_SEGMENT_RE, clear_stale_locks
+from openpilot.system.loggerd.storage_upload_queue import ROUTE_SEGMENT_RE, clear_stale_locks
 from openpilot.tools.lib.logreader import LogReader
 
 ROUTE = re.compile(r"^([0-9a-f]{8}--[0-9a-f]{10})--(\d+)$")
@@ -35,7 +35,7 @@ def summary_path(root, route):
   return Path(root) / '.summaries' / f'{route}.json'
 
 
-def cloud_path(route):
+def storage_path(route):
   return f'summaries/{0xFFFFFFFF - int(route[:8], 16):08x}.json'
 
 

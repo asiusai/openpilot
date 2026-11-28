@@ -23,8 +23,8 @@ from openpilot.common.utils import get_upload_stream
 from openpilot.system.asius.identity import get_device_private_key, is_identity
 from openpilot.system.asius.relayd import load_authorized_apps
 from openpilot.system.asius.session import unb64_lenient
-from openpilot.system.loggerd.cloud_api import (
-  CloudApiClient,
+from openpilot.system.loggerd.storage_api import (
+  StorageApiClient,
   access_document,
   b64url,
   can_wrap_for,
@@ -33,24 +33,24 @@ from openpilot.system.loggerd.cloud_api import (
   recover_state,
   update_state,
 )
-from openpilot.system.loggerd.cloud_media import derive_cenc_key, package_cenc_mp4, embed_index
-from openpilot.system.loggerd.cloud_upload_queue import (
+from openpilot.system.loggerd.storage_media import derive_cenc_key, package_cenc_mp4, embed_index
+from openpilot.system.loggerd.storage_upload_queue import (
   AUTO_UPLOAD_FILES, MAX_FILE_BYTES, REQUEST_ATTR_NAME, ROUTE_FILES, ROUTE_SEGMENT_RE, UPLOAD_ATTR_NAME, attribute_set,
   clear_failure, clear_stale_locks, record_failure, upload_failure,
 )
-from openpilot.system.loggerd.route_summary import summary_path, cloud_path, save_json, recover_counters
+from openpilot.system.loggerd.route_summary import summary_path, storage_path, save_json, recover_counters
 from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep, force_wifi
 from openpilot.system.loggerd.upload_progress import publish_error
 
-STATE_PARAM = "CloudUploadState"
+STATE_PARAM = "StorageUploadState"
 CENC_FILES = {"qcamera.mp4", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 
-class CloudUploader(Uploader):
+class StorageUploader(Uploader):
   upload_attr_name = UPLOAD_ATTR_NAME
   max_file_size = MAX_FILE_BYTES
 
-  def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: CloudApiClient | None = None):
+  def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: StorageApiClient | None = None):
     self.private_key = get_device_private_key()
     self.owner = self.private_key.identity()
     if dongle_id != self.owner:
@@ -60,21 +60,21 @@ class CloudUploader(Uploader):
     self.immediate_folders = []
     self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.mp4": 1}
     self.params = params or self.params
-    self.client = client or CloudApiClient(self.params.get("CloudHost", return_default=True), self.private_key)
+    self.client = client or StorageApiClient(self.params.get("StorageHost", return_default=True), self.private_key)
     self.retry_after: dict[str, float] = {}
     self.counter_conflict = None
     self.policy_retry_after = 0.0
 
-  def defer_cloud_policy(self, error: Exception, path: str = "") -> bool:
+  def defer_storage_policy(self, error: Exception, path: str = "") -> bool:
     if not isinstance(error, requests.HTTPError) or error.response is None or error.response.status_code not in (403, 507):
       return False
     # Keep requests queued. Recheck after a bounded delay so support approval or
     # deleting recordings resumes uploads without marking any file as complete.
     self.policy_retry_after = time.monotonic() + 60
     try:
-      message = str(error.response.json().get("error", "Cloud uploads are paused"))
+      message = str(error.response.json().get("error", "Storage uploads are paused"))
     except (ValueError, AttributeError):
-      message = "Cloud uploads are paused"
+      message = "Storage uploads are paused"
     publish_error(path, message)
     return True
 
@@ -107,7 +107,7 @@ class CloudUploader(Uploader):
     if saved.get('fingerprint') == fingerprint:
       return
     state = self.sync_access()
-    encrypted = encrypt_object(self.owner, cloud_path(route_id), content, state)
+    encrypted = encrypt_object(self.owner, storage_path(route_id), content, state)
     body = {'encrypted': b64url(encrypted), **({'etag': saved['etag']} if saved.get('etag') else {})}
     for attempt in range(2):
       try:
@@ -175,7 +175,7 @@ class CloudUploader(Uploader):
       config = self.client.get_config()
       reader = {"publicKey": config.get("sharingPublicKey"), "storagePublicKey": config.get("sharingStoragePublicKey")}
       if not is_identity(reader['publicKey']) or not can_wrap_for(reader):
-        raise ValueError("Cloud API returned an invalid sharing public key")
+        raise ValueError("Storage API returned an invalid sharing public key")
       readers.append(reader)
     readers = sorted({reader['publicKey']: reader for reader in readers}.values(), key=lambda reader: reader['publicKey'])
     state = self.params.get(STATE_PARAM)
@@ -204,7 +204,7 @@ class CloudUploader(Uploader):
     except Exception as error:
       folder, name = key.split("/", 1)
       route, segment = folder.rsplit("--", 1)
-      self.defer_cloud_policy(error, f"routes/{route}/{segment}/{name}")
+      self.defer_storage_policy(error, f"routes/{route}/{segment}/{name}")
       if isinstance(error, requests.HTTPError) and error.response is not None and error.response.status_code == 410:
         route_id = key.split("/", 1)[0].rsplit("--", 1)[0]
         summary_path(self.root, route_id).with_suffix(".deleted").touch()
@@ -245,7 +245,7 @@ class CloudUploader(Uploader):
   def _upload_recording(self, key: str, fn: str, *, replace_checksum: str | None = None) -> requests.Response:
     first_component = key.split("/", 1)[0]
     if not ROUTE_SEGMENT_RE.fullmatch(first_component):
-      raise ValueError("cloud uploader only accepts route segments")
+      raise ValueError("storage uploader only accepts route segments")
     route_id, segment_text = first_component.rsplit("--", 1)
     self.sync_summary(route_id)
     if summary_path(self.root, route_id).with_suffix(".deleted").exists():
@@ -274,7 +274,7 @@ class CloudUploader(Uploader):
           source_checksum=b64url(hashlib.sha256(Path(fn).read_bytes()).digest()),
           **({"replace_checksum": replace_checksum} if replace_checksum else {}),
         )
-        cloudlog.event("cloud_upload_cenc", key=key, path=object_path, encrypted_size=media["encryptedLength"], fragments=len(media["fragments"]))
+        cloudlog.event("storage_upload_cenc", key=key, path=object_path, encrypted_size=media["encryptedLength"], fragments=len(media["fragments"]))
         return response
       finally:
         if temporary_name:
@@ -297,7 +297,7 @@ class CloudUploader(Uploader):
       source_checksum=b64url(hashlib.sha256(plaintext).digest()),
       **({"replace_checksum": replace_checksum} if replace_checksum else {}),
     )
-    cloudlog.event("cloud_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
+    cloudlog.event("storage_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
     return response
 
 
@@ -311,20 +311,20 @@ def main(exit_event: threading.Event | None = None) -> None:
   params = Params()
   dongle_id = params.get("DongleId")
   if dongle_id is None:
-    raise RuntimeError("cloud uploader cannot start without DongleId")
+    raise RuntimeError("storage uploader cannot start without DongleId")
 
   sm = messaging.SubMaster(["deviceState"])
   sm.update(1000)
-  uploader = CloudUploader(dongle_id, Paths.log_root(), params=params)
+  uploader = StorageUploader(dongle_id, Paths.log_root(), params=params)
   locks_cleared = False
   backoff = 0.1
   while not exit_event.is_set():
-    host = params.get("CloudHost", return_default=True)
-    if not params.get("CloudUploadEnabled", return_default=True):
+    host = params.get("StorageHost", return_default=True)
+    if not params.get("StorageUploadEnabled", return_default=True):
       exit_event.wait(1)
       continue
     if host.rstrip("/") != uploader.client.base_url:
-      uploader = CloudUploader(dongle_id, Paths.log_root(), params=params)
+      uploader = StorageUploader(dongle_id, Paths.log_root(), params=params)
     sm.update(0)
     if sm["deviceState"].started:
       locks_cleared = False
@@ -348,8 +348,8 @@ def main(exit_event: threading.Event | None = None) -> None:
         exit_event.wait(2)
         continue
     except Exception as error:
-      uploader.defer_cloud_policy(error)
-      cloudlog.exception("cloud access sync failed")
+      uploader.defer_storage_policy(error)
+      cloudlog.exception("storage access sync failed")
       if allow_sleep:
         exit_event.wait(backoff + random.uniform(0, backoff))
       backoff = min(backoff * 2, 120)
@@ -361,7 +361,7 @@ def main(exit_event: threading.Event | None = None) -> None:
     elif success:
       backoff = 0.1
     else:
-      cloudlog.info("cloud upload backoff %r", backoff)
+      cloudlog.info("storage upload backoff %r", backoff)
       backoff = min(backoff * 2, 120)
     if allow_sleep:
       exit_event.wait(backoff + random.uniform(0, backoff))

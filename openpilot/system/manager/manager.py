@@ -111,7 +111,7 @@ def manager_thread() -> None:
 
   ignore: list[str] = []
   if params.get("DongleId") in (None, UNREGISTERED_DONGLE_ID):
-    ignore += ["manage_athenad", "uploader", "manage_relayd", "manage_bluetoothd", "cloud_uploader"]
+    ignore += ["manage_athenad", "uploader", "manage_relayd", "manage_bluetoothd", "storage_uploader"]
   if os.getenv("NOBOARD") is not None:
     ignore.append("pandad")
   ignore += [x for x in os.getenv("BLOCK", "").split(",") if len(x) > 0]

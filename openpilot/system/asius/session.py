@@ -32,7 +32,7 @@ def unb64(value):
 
 def unb64_lenient(value):
   # Unlike unb64, this also accepts extra padding and data after the padding.
-  # Pair tokens and cloud access documents have always been decoded this way.
+  # Pair tokens and storage access documents have always been decoded this way.
   return base64.urlsafe_b64decode(value + '=' * (-len(value) % 4))
 
 

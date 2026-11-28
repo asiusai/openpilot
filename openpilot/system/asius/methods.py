@@ -65,7 +65,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "BluetoothPairingUntil",
   "AthenadUploadQueue",
   "DongleId",
-  "CloudUploadState",
+  "StorageUploadState",
   "GithubSshKeys",
   "GithubUsername",
   "HardwareSerial",
@@ -96,8 +96,8 @@ LIVE_STATE_PARAM_KEYS = [
   "DongleId",
   "NavigationEnabled",
   "NavDestination",
-  "CloudHost",
-  "CloudUploadEnabled",
+  "StorageHost",
+  "StorageUploadEnabled",
   "ShareDrivingData",
   "HardwareSerial",
   "LastAthenaPingTime",
@@ -898,9 +898,9 @@ def getRouteUploadProgress() -> dict | None:
 @dispatcher.add_method(paths=list_of(_string))
 def requestRouteUpload(paths: list[str]) -> dict:
   from openpilot.common.hardware.hw import Paths
-  from openpilot.system.loggerd.cloud_upload_queue import request_uploads
-  if not Params().get_bool("CloudUploadEnabled"):
-    raise ValueError("Device cloud uploads are disabled")
+  from openpilot.system.loggerd.storage_upload_queue import request_uploads
+  if not Params().get_bool("StorageUploadEnabled"):
+    raise ValueError("Device storage uploads are disabled")
   return request_uploads(Paths.log_root(), paths)
 
 
@@ -1181,10 +1181,10 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
       end_event.set()
 
 
-@dispatcher.add_method(relay=_string, cloud=_string)
-def setServiceHosts(relay: str, cloud: str) -> dict:
+@dispatcher.add_method(relay=_string, storage=_string)
+def setServiceHosts(relay: str, storage: str) -> dict:
   from openpilot.system.asius.service_registration import set_service_hosts
-  return set_service_hosts(relay, cloud)
+  return set_service_hosts(relay, storage)
 
 
 @dispatcher.add_method(challenge=_string, terms=_string)
