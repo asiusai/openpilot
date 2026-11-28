@@ -5,18 +5,30 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
-import threading
+import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from openpilot.common.hardware.hw import Paths
+from openpilot.common.realtime import Ratekeeper, set_core_affinity
 from openpilot.common.swaglog import cloudlog
+from openpilot.system.loggerd.cloud_upload_queue import ROUTE_SEGMENT_RE, clear_stale_locks
 from openpilot.tools.lib.logreader import LogReader
 
 ROUTE = re.compile(r"^([0-9a-f]{8}--[0-9a-f]{10})--(\d+)$")
+# Increase this when segment_summary changes its result. All logs are then parsed again.
+PARSER_VERSION = 1
+# A directory change in the same clock tick as a listing leaves the directory time unchanged.
+# Trust a listing only when the directory time stayed the same for this long.
+SETTLE_SECONDS = 3
+# Look at every directory again after this many passes. This finds a change in a closed segment,
+# and a change with no new directory time.
+RECHECK_PASSES = 30
 
 
 def summary_path(root, route):
@@ -189,59 +201,192 @@ def segment_summary(path):
   }
 
 
+def segment_folders(root):
+  """List the log root. Return the segments of each route, and the other folders that can hold recording locks."""
+  routes: dict[str, list[tuple[int, str]]] = {}
+  others = []
+  with os.scandir(root) as entries:
+    for entry in entries:
+      match = ROUTE.fullmatch(entry.name)
+      if not (match or ROUTE_SEGMENT_RE.fullmatch(entry.name)) or not entry.is_dir(follow_symlinks=False):
+        continue
+      if match:
+        routes.setdefault(match[1], []).append((int(match[2]), entry.path))
+      else:
+        others.append(entry.path)
+  return {route: sorted(segments) for route, segments in routes.items()}, others
+
+
+def segment_state(folder):
+  """Return if a segment is still being written, and the name, size and time of its finished log."""
+  try:
+    names = os.listdir(folder)
+  except OSError:
+    names = []
+  if any(name.endswith('.lock') for name in names):
+    return True, None
+  for name in ('qlog.zst', 'qlog', 'rlog.zst'):
+    if name in names:
+      try:
+        status = os.stat(os.path.join(folder, name))
+      except OSError:
+        continue
+      if stat.S_ISREG(status.st_mode) and status.st_size > 0:
+        return False, (name, status.st_size, status.st_mtime_ns)
+  return False, None
+
+
+def summary_files(directory):
+  """Return the file name endings present for each route in the summary directory."""
+  files: dict[str, set[str]] = {}
+  try:
+    names = os.listdir(directory)
+  except OSError:
+    names = []
+  for name in names:
+    route, _, ending = name.rpartition('.')
+    files.setdefault(route, set()).add(ending)
+  return files
+
+
+def load_parsed(path):
+  """Read which logs are already parsed into the saved segments. A missing or bad file means none."""
+  try:
+    value = json.loads(path.read_text())
+    return value['segments'] if value['version'] == PARSER_VERSION and isinstance(value['segments'], dict) else {}
+  except Exception:
+    return {}
+
+
+def process_name(pid):
+  try:
+    with open(f'/proc/{pid}/comm', 'rb') as stream:
+      return stream.read()
+  except OSError:
+    return None
+
+
 class SummaryCollector:
   def __init__(self, root):
     self.root = Path(root)
-    self.cache = {}
+    self.passes = 0
+    self.logger_pid = None
+    # Directory path -> (directory time, first time seen with it, value read from the directory or None).
+    self.directories = {}
+    # Route -> what the last full pass saw, if its status ignores the logger, and the logger state then.
+    self.routes = {}
+    # Route -> logs parsed in this run and not saved yet. A failed save must not parse them again.
+    self.unsaved = {}
+
+  def cached(self, path, read, recheck=False):
+    """Return read(path). Read again only when the directory time changed, or for a recheck."""
+    try:
+      changed = os.stat(path).st_mtime_ns
+    except OSError:
+      changed = None
+    now = time.monotonic()
+    known = self.directories.get(path)
+    if known is None or known[0] != changed:
+      known = self.directories[path] = (changed, now, None)
+    elif known[2] is not None and not recheck:
+      return known[2]
+    value = read(path)
+    self.directories[path] = (changed, known[1], value if now - known[1] >= SETTLE_SECONDS else None)
+    return value
+
+  def folder_state(self, folder, recheck=False):
+    """Return segment_state(folder). A closed segment with a finished log is looked at again only for a recheck."""
+    known = self.directories.get(folder)
+    if known is not None and known[2] is not None and known[2][1] is not None and not recheck:
+      return known[2]
+    return self.cached(folder, segment_state, recheck)
+
+  def logger_running(self, search):
+    """Tell if a process named loggerd exists. A search gives the answer of `pgrep -x loggerd` without a new process."""
+    if sys.platform != 'linux':
+      return search and subprocess.run(['pgrep', '-x', 'loggerd'], stdout=subprocess.DEVNULL, check=False).returncode != 1
+    # Look at the last known process first. Search all processes only when it is gone.
+    if self.logger_pid is None or process_name(self.logger_pid) != b'loggerd\n':
+      names = os.listdir('/proc') if search else []
+      self.logger_pid = next((pid for pid in names if pid.isdigit() and process_name(pid) == b'loggerd\n'), None)
+    return self.logger_pid is not None
 
   def update(self):
-    routes = {}
-    for folder in self.root.iterdir():
-      match = ROUTE.fullmatch(folder.name)
-      if not match or folder.is_symlink() or not folder.is_dir():
-        continue
-      routes.setdefault(match[1], []).append((int(match[2]), folder))
-    for state in (self.root / '.summaries').glob('*.segments'):
-      if ROUTE.fullmatch(state.stem + '--0'):
-        routes.setdefault(state.stem, [])
+    recheck = self.passes % RECHECK_PASSES == 0
+    self.passes += 1
+    root, summaries = str(self.root), str(self.root / '.summaries')
+    routes, others = self.cached(root, segment_folders, recheck)
+    files = self.cached(summaries, summary_files, recheck)
+    folders = [folder for segments in routes.values() for _, folder in segments] + others
+    # Routes with no folder left still have a summary to keep.
+    routes = {**routes, **{route: [] for route, endings in files.items()
+                           if 'segments' in endings and route not in routes and ROUTE.fullmatch(route + '--0')}}
     with recording_lock(self.root, shared=True) as available:
       if not available:
         return
-      idle = subprocess.run(['pgrep', '-x', 'loggerd'], stdout=subprocess.DEVNULL, check=False).returncode == 1
-      if idle:
-        from openpilot.system.loggerd.cloud_upload_queue import clear_stale_locks
-
+      states = {folder: self.folder_state(folder, recheck) for folder in folders}
+      locked = any(active for active, _ in states.values())
+      # A running logger keeps a lock file in its segment. Search for the logger only then, and in each recheck.
+      idle = not self.logger_running(locked or recheck)
+      if idle and locked:
         clear_stale_locks(self.root)
-      for route, folders in routes.items():
-        if summary_path(self.root, route).with_suffix('.deleted').exists():
+        states = {folder: self.folder_state(folder) for folder in folders}
+      for route in self.routes.keys() - routes.keys():
+        del self.routes[route]
+      if recheck:
+        for path in self.directories.keys() - states.keys() - {root, summaries}:
+          del self.directories[path]
+      for route, segments in routes.items():
+        endings = files.get(route, set())
+        if 'deleted' in endings:
+          continue
+        # Do the work below only when the route changed, or when the logger state changes its status.
+        seen = (segments, [states[folder] for _, folder in segments], endings)
+        last = self.routes.pop(route, None)
+        if last is not None and last[0] == seen and (last[1] or last[2] == idle):
+          self.routes[route] = last
           continue
         state_path = summary_path(self.root, route).with_suffix('.segments')
         saved = json.loads(state_path.read_text()) if state_path.exists() else {}
-        previous_saved = json.dumps(saved, sort_keys=True)
+        previous_saved = None
+        cache_path = state_path.with_suffix('.parsed')
+        parsed = load_parsed(cache_path)
+        previous_parsed = dict(parsed)
+        unsaved = self.unsaved.setdefault(route, {})
         parts = []
-        active = False
-        for segment, folder in sorted(folders):
-          if any(folder.glob('*.lock')):
+        active = failed = False
+        for segment, folder in segments:
+          writing, fingerprint = states[folder]
+          if writing:
             active = True
             continue
-          source = next((folder / name for name in ('qlog.zst', 'qlog', 'rlog.zst')
-                         if (folder / name).is_file() and (folder / name).stat().st_size > 0), None)
-          if source is None:
+          if fingerprint is None:
             continue
-          stat = source.stat()
-          fingerprint = (stat.st_size, stat.st_mtime_ns)
-          if self.cache.get(source, (None,))[0] != fingerprint:
+          key = str(segment)
+          if key in saved and parsed.get(key) == list(fingerprint):
+            continue
+          if unsaved.get(key, (None,))[0] != fingerprint:
             try:
-              self.cache[source] = (fingerprint, segment_summary(source))
+              unsaved[key] = (fingerprint, segment_summary(os.path.join(folder, fingerprint[0])))
             except Exception:
               cloudlog.exception('route summary log parse failed')
+              failed = True
               continue
-          part = self.cache[source][1]
-          saved[str(segment)] = {**part, 'info': {**saved.get(str(segment), {}).get('info', {}), **part['info']}}
-        if json.dumps(saved, sort_keys=True) != previous_saved:
+          part = unsaved[key][1]
+          previous_saved = previous_saved or json.dumps(saved, sort_keys=True)
+          saved[key] = {**part, 'info': {**saved.get(key, {}).get('info', {}), **part['info']}}
+          parsed[key] = list(fingerprint)
+        if previous_saved is not None and json.dumps(saved, sort_keys=True) != previous_saved:
           save_json(state_path, saved)
+        if parsed != previous_parsed:
+          save_json(cache_path, {'version': PARSER_VERSION, 'segments': parsed})
+        del self.unsaved[route]
         parts = sorted((int(segment), value) for segment, value in saved.items())
+        # A failed log is tried again in the next pass.
+        done = None if failed else (seen, active or not parts or parts[-1][1]['ended'], idle)
         if not parts:
+          if done is not None:
+            self.routes[route] = done
           continue
         values = [part for _, part in parts]
         timed = next((part for part in values if part['startTime'] is not None and not part.get('timeEstimated', True)), values[0])
@@ -277,6 +422,8 @@ class SummaryCollector:
         old = json.loads(path.read_text()) if path.exists() else None
         if old != summary:
           save_json(path, summary)
+        if done is not None:
+          self.routes[route] = done
 
 
 def recover_counters(root, params, conflict_route, highest):
@@ -305,9 +452,10 @@ def recover_counters(root, params, conflict_route, highest):
         value['routeId'] = new
         save_json(summary_path(root, new), value)
         source.unlink()
-      state = source.with_suffix('.segments')
-      if state.exists():
-        state.rename(summary_path(root, new).with_suffix('.segments'))
+      for suffix in ('.segments', '.parsed'):
+        state = source.with_suffix(suffix)
+        if state.exists():
+          state.rename(summary_path(root, new).with_suffix(suffix))
     if plan:
       params.put('RouteCount', max(int(params.get('RouteCount') or 0), max(int(v[:8], 16) for v in plan.values()) + 1), block=True)
     journal.unlink(missing_ok=True)
@@ -315,14 +463,21 @@ def recover_counters(root, params, conflict_route, highest):
 
 
 def main():
+  # Summaries can wait. Do not take processor time from driving processes.
+  os.nice(19)
+  try:
+    set_core_affinity([0, 1, 2, 3])
+  except Exception:
+    cloudlog.exception('failed to set core affinity')
+
   collector = SummaryCollector(Paths.log_root())
-  stop = threading.Event()
-  while not stop.is_set():
+  rk = Ratekeeper(0.5, print_delay_threshold=None)
+  while True:
     try:
       collector.update()
     except Exception:
       cloudlog.exception('route summary failed')
-    stop.wait(2)
+    rk.keep_time()
 
 
 if __name__ == '__main__':
