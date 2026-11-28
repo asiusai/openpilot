@@ -28,7 +28,7 @@ CAMERAS = [
   ("fcamera.mp4", 20, hevc_size, "narrowRoadEncodeIdx"),
   ("dcamera.mp4", 20, hevc_size, "cabinEncodeIdx"),
   ("ecamera.mp4", 20, hevc_size, "wideRoadEncodeIdx"),
-  ("qcamera.mp4", 20, lambda x: 384000 * SEGMENT_LENGTH // 8 if ASIUS_HARDWARE else 130000, None),
+  ("qcamera.mp4", 20, lambda x: 256000 * SEGMENT_LENGTH // 8 if ASIUS_HARDWARE else 130000, None),
 ]
 WARMUP_SEGMENTS = 1 if ASIUS_HARDWARE else 0
 

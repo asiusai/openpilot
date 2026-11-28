@@ -244,8 +244,8 @@ bool VenusEncoder::initialize() {
                    V4L2_MPEG_VIDEO_HEADER_MODE_JOINED_WITH_1ST_FRAME)) {
     return false;
   }
-  set_control(V4L2_CID_MPEG_VIDEO_BITRATE_PEAK, settings.bitrate * 3 / 2,
-              false);
+  // Without a peak the driver allows twice the target. Hold the average at the target, as on comma devices.
+  set_control(V4L2_CID_MPEG_VIDEO_BITRATE_PEAK, settings.bitrate, false);
   if (hevc) {
     if (!set_control(V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
                      V4L2_MPEG_VIDEO_HEVC_PROFILE_MAIN) ||
@@ -617,7 +617,7 @@ void VenusEncoder::set_bitrate(int bitrate) {
          bitrate);
     return;
   }
-  set_control(V4L2_CID_MPEG_VIDEO_BITRATE_PEAK, bitrate * 3 / 2, false);
+  set_control(V4L2_CID_MPEG_VIDEO_BITRATE_PEAK, bitrate, false);
   current_bitrate = bitrate;
 }
 

@@ -61,13 +61,10 @@ struct EncoderSettings {
   }
 
   static EncoderSettings QcamEncoderSettings() {
-    const bool v0 = Hardware::get_device_type() == cereal::InitData::DeviceType::V0;
-    return EncoderSettings{
-      .encode_type = v0 ? cereal::EncodeIndex::Type::FULL_H_E_V_C : cereal::EncodeIndex::Type::QCAMERA_H264,
-      .bitrate = v0 ? 384'000 : 256'000,
-      .gop_size = v0 ? 40 : 15,
-      .constant_bitrate = v0,
-    };
+    if (Hardware::get_device_type() == cereal::InitData::DeviceType::V0) {
+      return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::FULL_H_E_V_C, .bitrate = 256'000, .gop_size = 40, .constant_bitrate = true};
+    }
+    return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::QCAMERA_H264, .bitrate = 256'000, .gop_size = 15};
   }
 
   static EncoderSettings StreamEncoderSettings() {
@@ -160,13 +157,8 @@ const EncoderInfo qcam_encoder_info = {
   .publish_name = "qNarrowRoadEncodeData",
   .filename = "qcamera.mp4",
   .include_audio = Params().getBool("RecordAudio"),
-#ifdef __ASIUS_HARDWARE__
-  .frame_width = 672,
-  .frame_height = 380,
-#else
-  .frame_width = 526,
-  .frame_height = 330,
-#endif
+  .frame_width = Hardware::get_device_type() == cereal::InitData::DeviceType::V0 ? 672 : 526,
+  .frame_height = Hardware::get_device_type() == cereal::InitData::DeviceType::V0 ? 380 : 330,
   .get_settings = [](int){return EncoderSettings::QcamEncoderSettings();},
   INIT_ENCODE_FUNCTIONS(QNarrowRoadEncode),
 };
