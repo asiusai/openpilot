@@ -32,9 +32,9 @@ from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.version import get_build_metadata, terms_version, training_version
-from openpilot.system.hardware.chestnut.app_status import gpu_status
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, boolean, dict_of, either, handle, integer, list_of, number, one_of, regex
+from openpilot.system.webrtc.in_car import gpu_status
 from openpilot.system.asius.terminal import TerminalManager
 from openpilot.system.asius.param_editor import ParameterEditor
 from openpilot.system.asius.relayd import (
