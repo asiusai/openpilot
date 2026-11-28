@@ -53,10 +53,12 @@ struct EncoderSettings {
   bool constant_bitrate = false;
 
   static EncoderSettings MainEncoderSettings(int in_width) {
+    // Venus VBR records 25% above the target. Constant bitrate holds the comma file size.
+    const bool cbr = Hardware::get_device_type() == cereal::InitData::DeviceType::V0;
     if (in_width <= 1344) {
-      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 5'000'000, .gop_size = 20};
+      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 5'000'000, .gop_size = 20, .constant_bitrate = cbr};
     } else {
-      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 10'000'000, .gop_size = 30};
+      return EncoderSettings{.encode_type = MAIN_ENCODE_TYPE, .bitrate = 10'000'000, .gop_size = 30, .constant_bitrate = cbr};
     }
   }
 
