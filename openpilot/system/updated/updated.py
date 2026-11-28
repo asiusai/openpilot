@@ -7,6 +7,7 @@ import shutil
 import signal
 import fcntl
 import time
+import threading
 import queue
 from collections import defaultdict
 from pathlib import Path
@@ -31,6 +32,19 @@ FINALIZED = os.path.join(STAGING_ROOT, "finalized")
 
 OVERLAY_INIT = Path(os.path.join(BASEDIR, ".overlay_init"))
 
+# do not allow to engage after this many hours onroad and this many routes
+HOURS_NO_CONNECTIVITY_MAX = 27
+ROUTES_NO_CONNECTIVITY_MAX = 84
+# send an offroad prompt after this many hours onroad and this many routes
+HOURS_NO_CONNECTIVITY_PROMPT = 23
+ROUTES_NO_CONNECTIVITY_PROMPT = 80
+
+# Asius: updates are manual on all devices. The updater checks or downloads only
+# on request, and the launcher installs only after an install request (install.py).
+MANUAL_UPDATES = True
+NO_INTERNET = "No internet connection. Connect the device to the internet and retry."
+
+
 class UserRequest:
   NONE = 0
   CHECK = 1
@@ -38,21 +52,29 @@ class UserRequest:
 
 class WaitTimeHelper:
   def __init__(self):
-    self.requests: queue.SimpleQueue[int] = queue.SimpleQueue()
+    self.ready_event = threading.Event()
+    self.user_request = UserRequest.NONE
+    self.requests: queue.SimpleQueue[int] = queue.SimpleQueue()  # Asius: manual requests, served in order
     signal.signal(signal.SIGHUP, self.update_now)
     signal.signal(signal.SIGUSR1, self.check_now)
 
   def update_now(self, signum: int, frame) -> None:
     cloudlog.info("caught SIGHUP, attempting to downloading update")
+    self.user_request = UserRequest.FETCH
     self.requests.put(UserRequest.FETCH)
+    self.ready_event.set()
 
   def check_now(self, signum: int, frame) -> None:
     cloudlog.info("caught SIGUSR1, checking for updates")
+    self.user_request = UserRequest.CHECK
     self.requests.put(UserRequest.CHECK)
+    self.ready_event.set()
+
+  def sleep(self, t: float) -> None:
+    self.ready_event.wait(timeout=t)
 
   def wait_for_request(self) -> int:
     return self.requests.get()
-
 
 def write_time_to_param(params, param) -> None:
   t = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
@@ -210,6 +232,7 @@ def finalize_update(vamos_update_pending: bool = False) -> None:
   except subprocess.CalledProcessError:
     cloudlog.exception(f"Failed git cleanup, took {time.monotonic() - t:.3f} s")
 
+  # Asius: a new download never carries an old install request
   for marker in (".install_requested", ".vamos_update_pending"):
     Path(FINALIZED, marker).unlink(missing_ok=True)
   if vamos_update_pending:
@@ -342,11 +365,23 @@ class Updater:
     for alert in ("Offroad_UpdateFailed", "Offroad_ConnectivityNeeded", "Offroad_ConnectivityNeededPrompt"):
       set_offroad_alert(alert, False)
 
+    dt_uptime_onroad = (self.params.get("UptimeOnroad", return_default=True) - last_uptime_onroad) / (60*60)
+    dt_route_count = self.params.get("RouteCount", return_default=True) - last_route_count
+    if failed_count > 15 and exception is not None and self.has_internet:
+      set_offroad_alert("Offroad_UpdateFailed", True)
+    elif failed_count > 0 and not MANUAL_UPDATES:
+      if dt_uptime_onroad > HOURS_NO_CONNECTIVITY_MAX and dt_route_count > ROUTES_NO_CONNECTIVITY_MAX:
+        set_offroad_alert("Offroad_ConnectivityNeeded", True)
+      elif dt_uptime_onroad > HOURS_NO_CONNECTIVITY_PROMPT and dt_route_count > ROUTES_NO_CONNECTIVITY_PROMPT:
+        remaining = max(round(HOURS_NO_CONNECTIVITY_MAX - dt_uptime_onroad), 1)
+        set_offroad_alert("Offroad_ConnectivityNeededPrompt", True, extra_text=f"{remaining} hour{'' if remaining == 1 else 's'}")
+
   def check_for_update(self) -> bool:
     cloudlog.info("checking for updates")
 
     excluded_branches = ('release2', 'release2-staging')
 
+    # Asius: one bounded request. Returns False when there is no internet connection.
     self._has_internet = False
     if HARDWARE.get_network_type() == NetworkType.none:
       return False
@@ -417,7 +452,7 @@ class Updater:
       lfs = os.path.join(OVERLAY_MERGED, "tools/lfs.sh")
       run([lfs, "pull"] if os.path.isfile(lfs) else ["git", "lfs", "pull"], OVERLAY_MERGED)
 
-    # TODO: show OS download progress
+    # TODO: show agnos download progress
     vamos_update_pending = False
     if AGNOS:
       handle_agnos_update()
@@ -434,7 +469,55 @@ class Updater:
     cloudlog.info("finalize success!")
 
 
-NO_INTERNET = "No internet connection. Connect the device to the internet and retry."
+def manual_update_loop(params: Params, updater: Updater, wait_helper: WaitTimeHelper) -> None:
+  # Asius: serve check and download requests one at a time. Nothing runs without a request.
+  # A finalized update stays valid when the updater restarts. The launcher installs it only
+  # after an install request, so it is not invalidated here.
+  update_failed_count = params.get("UpdateFailedCount") or 0
+
+  # set initial state, keep the last failure visible after an updater restart
+  params.put("UpdaterState", "idle", block=True)
+  updater.set_params(False, update_failed_count, params.get("LastUpdateException"))
+
+  while True:
+    request = wait_helper.wait_for_request()
+
+    exception = None
+    try:
+      if not system_time_valid():
+        raise RuntimeError("Waiting for device time synchronization. Connect to the internet or the app and retry.")
+
+      # check for update
+      params.put("UpdaterState", "checking...", block=True)
+      init_overlay()
+      if not updater.check_for_update():
+        exception = NO_INTERNET
+      else:
+        # download update
+        if request == UserRequest.FETCH and updater.update_available:
+          updater.fetch_update()
+          write_time_to_param(params, "UpdaterLastFetchTime")
+        update_failed_count = 0
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+      OVERLAY_INIT.unlink(missing_ok=True)
+      if network_unavailable(e):
+        updater._has_internet = False
+        exception = NO_INTERNET
+      else:
+        update_failed_count += 1
+        cloudlog.event("update process failed", cmd=e.cmd, output=e.output, returncode=getattr(e, "returncode", None))
+        exception = f"command failed: {e.cmd}\n{e.output}"
+    except Exception as e:
+      update_failed_count += 1
+      cloudlog.exception("manual update failed")
+      exception = str(e)
+      OVERLAY_INIT.unlink(missing_ok=True)
+
+    try:
+      params.put("UpdaterState", "idle", block=True)
+      updater.set_params(exception is None, update_failed_count, exception)
+    except Exception:
+      cloudlog.exception("uncaught updated exception while setting params, shouldn't happen")
 
 
 def main() -> None:
@@ -459,45 +542,81 @@ def main() -> None:
       params.put("InstallDate", t, block=True)
 
     updater = Updater()
-    update_failed_count = params.get("UpdateFailedCount") or 0
+    update_failed_count = 0 # TODO: Load from param?
     wait_helper = WaitTimeHelper()
-    params.put("UpdaterState", "idle", block=True)
-    updater.set_params(False, update_failed_count, params.get("LastUpdateException"))
 
+    if MANUAL_UPDATES:
+      # Asius: serve requests only. The periodic loop below is upstream code and never runs.
+      manual_update_loop(params, updater, wait_helper)
+      return
+
+    # invalidate old finalized update
+    set_consistent_flag(False)
+
+    # set initial state
+    params.put("UpdaterState", "idle", block=True)
+
+    # Run the update loop
+    first_run = True
     while True:
-      request = wait_helper.wait_for_request()
-      if request not in (UserRequest.CHECK, UserRequest.FETCH):
-        continue
+      wait_helper.ready_event.clear()
+
+      # Attempt an update
       exception = None
       try:
-        if not system_time_valid():
-          raise RuntimeError("Waiting for device time synchronization. Connect to the internet or the app and retry.")
-        params.put("UpdaterState", "checking...", block=True)
+        # TODO: reuse overlay from previous updated instance if it looks clean
         init_overlay()
-        if not updater.check_for_update():
-          exception = NO_INTERNET
-        else:
-          if request == UserRequest.FETCH and updater.update_available:
-            updater.fetch_update()
-            write_time_to_param(params, "UpdaterLastFetchTime")
-          update_failed_count = 0
-      except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        OVERLAY_INIT.unlink(missing_ok=True)
-        if network_unavailable(error):
-          updater._has_internet = False
-          exception = NO_INTERNET
-        else:
-          update_failed_count += 1
-          cloudlog.event("update process failed", cmd=error.cmd, output=error.output,
-                         returncode=getattr(error, "returncode", None))
-          exception = f"command failed: {error.cmd}\n{error.output}"
-      except Exception as error:
+
+        # ensure we have some params written soon after startup
+        updater.set_params(False, update_failed_count, exception)
+
+        if not system_time_valid() or first_run:
+          first_run = False
+          wait_helper.sleep(60)
+          continue
+
         update_failed_count += 1
-        cloudlog.exception("manual update failed")
-        exception = str(error)
+
+        # check for update
+        params.put("UpdaterState", "checking...", block=True)
+        updater.check_for_update()
+
+        # download update
+        last_fetch = params.get("UpdaterLastFetchTime")
+        timed_out = last_fetch is None or (datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - last_fetch > datetime.timedelta(days=3))
+        user_requested_fetch = wait_helper.user_request == UserRequest.FETCH
+        if params.get_bool("NetworkMetered") and not timed_out and not user_requested_fetch:
+          cloudlog.info("skipping fetch, connection metered")
+        elif wait_helper.user_request == UserRequest.CHECK:
+          cloudlog.info("skipping fetch, only checking")
+        else:
+          updater.fetch_update()
+          write_time_to_param(params, "UpdaterLastFetchTime")
+        update_failed_count = 0
+      except subprocess.CalledProcessError as e:
+        cloudlog.event(
+          "update process failed",
+          cmd=e.cmd,
+          output=e.output,
+          returncode=e.returncode
+        )
+        exception = f"command failed: {e.cmd}\n{e.output}"
         OVERLAY_INIT.unlink(missing_ok=True)
-      params.put("UpdaterState", "idle", block=True)
-      updater.set_params(exception is None, update_failed_count, exception)
+      except Exception as e:
+        cloudlog.exception("uncaught updated exception, shouldn't happen")
+        exception = str(e)
+        OVERLAY_INIT.unlink(missing_ok=True)
+
+      try:
+        params.put("UpdaterState", "idle", block=True)
+        update_successful = (update_failed_count == 0)
+        updater.set_params(update_successful, update_failed_count, exception)
+      except Exception:
+        cloudlog.exception("uncaught updated exception while setting params, shouldn't happen")
+
+      # infrequent attempts if we successfully updated recently
+      wait_helper.user_request = UserRequest.NONE
+      wait_helper.sleep(5*60 if update_failed_count > 0 else 1.5*60*60)
 
 
 if __name__ == "__main__":
