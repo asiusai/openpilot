@@ -139,7 +139,7 @@ def encrypt_object(owner: str, path: str, plaintext: bytes, state: dict[str, Any
   return ENCRYPTION_MAGIC + len(encoded_header).to_bytes(4, "big") + encoded_header + ciphertext
 
 
-class DataApiClient:
+class CloudApiClient:
   def __init__(self, base_url: str, private_key: RootIdentity, session: requests.Session | None = None):
     self.base_url = base_url.rstrip("/")
     self.private_key = private_key

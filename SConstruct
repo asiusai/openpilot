@@ -5,7 +5,6 @@ import sysconfig
 import platform
 import shlex
 import importlib
-from pathlib import Path
 import numpy as np
 import nanobind
 import eigen
@@ -261,22 +260,7 @@ common = [_common, 'json11']
 Export('common')
 
 # Build messaging (cereal + msgq + socketmaster + their dependencies)
-from openpilot.system.asius.apply_patches import patched_msgq_source
-
-msgq_visionbuf = patched_msgq_source(Path(Dir('#').abspath))
-
-env_msgq = env.Clone()
-# Redirect only this compilation unit to its patched build copy.
-def msgq_objects(_env, target=None, source=None, **kwargs):
-  original = File('#msgq_repo/msgq/visionipc/visionbuf.cc').abspath
-  def redirect(sources):
-    return [str(msgq_visionbuf) if _env.File(s).abspath == original else s for s in _env.Flatten(sources)]
-  if source is None:
-    return _env['BUILDERS']['SharedObject'](_env, None, redirect(target), **kwargs)
-  return _env['BUILDERS']['SharedObject'](_env, target, redirect(source), **kwargs)
-
-env_msgq.AddMethod(msgq_objects, 'SharedObject')
-SConscript(['msgq_repo/SConscript'], exports={'env': env_msgq})
+SConscript(['msgq_repo/SConscript'])
 
 SConscript(['openpilot/cereal/SConscript'])
 

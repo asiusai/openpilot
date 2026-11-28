@@ -1,5 +1,6 @@
 import ctypes
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -74,7 +75,12 @@ def provision_agnos_identity() -> bool:
   directory = PRIVATE_KEY_PATH.parent
   if PRIVATE_KEY_PATH.exists() or PRIVATE_KEY_PATH.is_symlink():
     return False
-  if not os.path.ismount("/persist") or directory.is_symlink() or not directory.is_dir():
+  if not os.path.ismount("/persist"):
+    raise RuntimeError("/persist is not mounted")
+  if not directory.exists() and not directory.is_symlink():
+    # /persist belongs to root on AGNOS. Create a private directory for this user.
+    subprocess.run(["sudo", "-n", "install", "-d", "-o", str(os.getuid()), "-g", str(os.getgid()), "-m", "0700", str(directory)], check=False)
+  if directory.is_symlink() or not directory.is_dir():
     raise RuntimeError("/persist/asius is not available")
   data = RootIdentity(_secure_random(ROOT_BYTES)).file_bytes()
   fd, temporary = tempfile.mkstemp(prefix=".identity.", dir=directory)

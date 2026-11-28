@@ -209,7 +209,7 @@ class SummaryCollector:
         return
       idle = subprocess.run(['pgrep', '-x', 'loggerd'], stdout=subprocess.DEVNULL, check=False).returncode == 1
       if idle:
-        from openpilot.system.loggerd.data_upload_queue import clear_stale_locks
+        from openpilot.system.loggerd.cloud_upload_queue import clear_stale_locks
 
         clear_stale_locks(self.root)
       for route, folders in routes.items():

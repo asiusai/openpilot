@@ -9,9 +9,6 @@ function agnos_init {
   sudo rm -f /data/etc/NetworkManager/system-connections/*.nmmeta
   rm -f /data/scons_cache/config.lock
 
-  # AGNOS has no Asius identity service. openpilot creates the identity in this directory once.
-  sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 /persist/asius
-
   # set success flag for current boot slot
   sudo abctl --set_success
 

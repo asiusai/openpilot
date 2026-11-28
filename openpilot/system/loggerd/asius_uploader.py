@@ -23,8 +23,8 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.utils import get_upload_stream
 from openpilot.system.asius.identity import get_device_private_key, is_dongle_id
 from openpilot.system.asius.relayd import load_authorized_peers
-from openpilot.system.loggerd.data_api import (
-  DataApiClient,
+from openpilot.system.loggerd.cloud_api import (
+  CloudApiClient,
   access_document,
   b64url,
   can_wrap_for,
@@ -33,8 +33,8 @@ from openpilot.system.loggerd.data_api import (
   recover_state,
   update_state,
 )
-from openpilot.system.loggerd.data_media import derive_cenc_key, package_cenc_mp4, embed_index
-from openpilot.system.loggerd.data_upload_queue import (
+from openpilot.system.loggerd.cloud_media import derive_cenc_key, package_cenc_mp4, embed_index
+from openpilot.system.loggerd.cloud_upload_queue import (
   AUTO_UPLOAD_FILES, MAX_FILE_BYTES, REQUEST_ATTR_NAME, ROUTE_FILES, ROUTE_SEGMENT_RE, UPLOAD_ATTR_NAME, attribute_set,
   clear_failure, clear_stale_locks, record_failure, upload_failure,
 )
@@ -50,7 +50,7 @@ class AsiusUploader(Uploader):
   upload_attr_name = UPLOAD_ATTR_NAME
   max_file_size = MAX_FILE_BYTES
 
-  def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: DataApiClient | None = None):
+  def __init__(self, dongle_id: str, root: str, params: Params | None = None, client: CloudApiClient | None = None):
     self.private_key = get_device_private_key()
     self.owner = self.private_key.identity()
     if dongle_id != self.owner:
@@ -60,7 +60,7 @@ class AsiusUploader(Uploader):
     self.immediate_folders = []
     self.immediate_priority = {"qlog": 0, "qlog.zst": 0, "qcamera.mp4": 1}
     self.params = params or self.params
-    self.client = client or DataApiClient(self.params.get("CloudHost", return_default=True), self.private_key)
+    self.client = client or CloudApiClient(self.params.get("CloudHost", return_default=True), self.private_key)
     self.retry_after: dict[str, float] = {}
     self.counter_conflict = None
     self.policy_retry_after = 0.0
@@ -175,7 +175,7 @@ class AsiusUploader(Uploader):
       config = self.client.get_config()
       reader = {"publicKey": config.get("sharingPublicKey"), "storagePublicKey": config.get("sharingStoragePublicKey")}
       if not is_dongle_id(reader['publicKey']) or not can_wrap_for(reader):
-        raise ValueError("Data API returned an invalid sharing public key")
+        raise ValueError("Cloud API returned an invalid sharing public key")
       readers.append(reader)
     readers = sorted({reader['publicKey']: reader for reader in readers}.values(), key=lambda reader: reader['publicKey'])
     state = self.params.get(STATE_PARAM)

@@ -916,7 +916,7 @@ def getRouteUploadProgress() -> dict | None:
 @dispatcher.add_method(paths=list_of(_string))
 def requestRouteUpload(paths: list[str]) -> dict:
   from openpilot.common.hardware.hw import Paths
-  from openpilot.system.loggerd.data_upload_queue import request_uploads
+  from openpilot.system.loggerd.cloud_upload_queue import request_uploads
   if not Params().get_bool("CloudUploadEnabled"):
     raise ValueError("Device cloud uploads are disabled")
   return request_uploads(Paths.log_root(), paths)
