@@ -452,7 +452,7 @@ def recover_counters(root, params, conflict_route, highest):
         value['routeId'] = new
         save_json(summary_path(root, new), value)
         source.unlink()
-      for suffix in ('.segments', '.parsed'):
+      for suffix in ('.segments', '.parsed', '.encryption'):
         state = source.with_suffix(suffix)
         if state.exists():
           state.rename(summary_path(root, new).with_suffix(suffix))

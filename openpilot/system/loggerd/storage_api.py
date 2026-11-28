@@ -20,6 +20,8 @@ from openpilot.system.asius.storage_keys import decode_storage_public_key, get_s
 PROTOCOL_VERSION = 2
 GRANT_ALGORITHM = "XWING-HKDF-SHA384-A256GCM"
 ENCRYPTION_MAGIC = b"ASIUSDATA2\n"
+# Readable request value and object metadata for routes uploaded without client-side encryption.
+NO_ENCRYPTION = "none"
 
 
 def can_wrap_for(reader: dict[str, str]) -> bool:
@@ -180,7 +182,8 @@ class StorageApiClient:
     return self._config
 
   def register_upload(self, path: str, *, content_type: str, content_length: int, plaintext_length: int,
-                      checksum: str, source_checksum: str | None = None, replace_checksum: str | None = None) -> dict[str, Any]:
+                      checksum: str, source_checksum: str | None = None, replace_checksum: str | None = None,
+                      encryption: bool = True) -> dict[str, Any]:
     request_path = f"/v1/{self.owner}/uploads"
     body = {
       "path": path,
@@ -190,6 +193,7 @@ class StorageApiClient:
       **({"sourceSha256": source_checksum} if source_checksum else {}),
       "checksumSha256": checksum,
       **({"replaceChecksumSha256": replace_checksum} if replace_checksum else {}),
+      **({} if encryption else {"encryption": NO_ENCRYPTION}),
     }
     return self.request("POST", request_path, body).json()
 
@@ -197,10 +201,12 @@ class StorageApiClient:
     return self.request("POST", f"/v1/{self.owner}/uploads/complete", {"path": path, "checksumSha256": checksum})
 
   def upload(self, path: str, encrypted: bytes, *, plaintext_length: int, source_checksum: str | None = None,
-             replace_checksum: str | None = None) -> requests.Response:
+             replace_checksum: str | None = None, encryption: bool = True) -> requests.Response:
+    """Upload object bytes. With encryption off, the bytes are the plain device file."""
     checksum = b64url(hashlib.sha256(encrypted).digest())
     signed = self.register_upload(path, content_type="application/octet-stream", content_length=len(encrypted),
-                                  plaintext_length=plaintext_length, checksum=checksum, source_checksum=source_checksum, replace_checksum=replace_checksum)
+                                  plaintext_length=plaintext_length, checksum=checksum, source_checksum=source_checksum, replace_checksum=replace_checksum,
+                                  encryption=encryption)
     if signed.get("uploaded"):
       response = requests.Response()
       response.status_code = 200
@@ -213,11 +219,13 @@ class StorageApiClient:
     return response
 
   def upload_file(self, path: str, filename: str, *, content_type: str, plaintext_length: int,
-                  checksum: str, source_checksum: str | None = None, replace_checksum: str | None = None) -> requests.Response:
+                  checksum: str, source_checksum: str | None = None, replace_checksum: str | None = None,
+                  encryption: bool = True) -> requests.Response:
     content_length = os.path.getsize(filename)
     signed = self.register_upload(path, content_type=content_type, content_length=content_length,
                                   plaintext_length=plaintext_length,
-                                  checksum=checksum, source_checksum=source_checksum, replace_checksum=replace_checksum)
+                                  checksum=checksum, source_checksum=source_checksum, replace_checksum=replace_checksum,
+                                  encryption=encryption)
     if signed.get("uploaded"):
       response = requests.Response()
       response.status_code = 200

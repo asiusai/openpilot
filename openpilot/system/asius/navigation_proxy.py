@@ -19,7 +19,8 @@ import requests
 
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
-from openpilot.system.asius.navigation_api import NAVIGATION_API, NavigationApi
+from openpilot.system.asius.navigation_api import NavigationApi
+from openpilot.system.asius.service_hosts import api_origin
 from openpilot.system.asius.navigation_route import CHUNK_BYTES, MAX_ROUTE_BYTES
 
 PROXY_METHODS = {"claimNavigationRequest", "writeNavigationResponse", "releaseNavigationRequest"}
@@ -148,7 +149,7 @@ class NavigationRequests:
 def request_json(path, query, *, params=None, destination=None, max_bytes=MAX_ROUTE_BYTES):
   if REQUEST_PATH.fullmatch(path) is None:
     raise ValueError("Unsupported navigation request")
-  url = requests.Request('GET', NAVIGATION_API + path, params=query).prepare().url
+  url = requests.Request('GET', api_origin(params) + '/v1/nav' + path, params=query).prepare().url
   assert url is not None
   parsed = urlsplit(url)
   forwarded = parsed.path + ('?' + parsed.query if parsed.query else '')

@@ -470,6 +470,15 @@ def recording_start_offset(data, moov):
 def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, kid: bytes) -> dict[str, Any]:
   if len(key) != 32 or len(kid) != 16:
     raise ValueError("CENC key must be 256 bits and KID must be 128 bits")
+  return package_mp4(source, destination, (key, kid))
+
+
+def package_plain_mp4(source: str | Path, destination: str | Path) -> dict[str, Any]:
+  """Keep the fragment layout and seek index without CENC. Samples stay unchanged."""
+  return package_mp4(source, destination, None)
+
+
+def package_mp4(source: str | Path, destination: str | Path, cenc: tuple[bytes, bytes] | None) -> dict[str, Any]:
   source_path = Path(source)
   clear = bytearray(source_path.read_bytes())
   top_level = recording_boxes(clear)
@@ -487,15 +496,15 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     raise ValueError("MP4 has no supported video track")
 
   auxiliary = {
-    box.start: fragment_auxiliary_info(clear, box, tracks, key)
+    box.start: fragment_auxiliary_info(clear, box, tracks, cenc[0])
     for box in top_level
-    if box.type == b"moof"
+    if box.type == b"moof" and cenc is not None
   }
   output = bytearray()
   for box in top_level:
-    if box.type == b"moov":
-      output += transform_moov_box(clear, box, kid)
-    elif box.type == b"moof":
+    if box.type == b"moov" and cenc is not None:
+      output += transform_moov_box(clear, box, cenc[1])
+    elif box.type == b"moof" and cenc is not None:
       output += transform_moof(clear, box, auxiliary[box.start])
     elif box.type != b"mfra":
       output += clear[box.start:box.end]
@@ -523,8 +532,7 @@ def package_cenc_mp4(source: str | Path, destination: str | Path, key: bytes, ki
     fragment["durationMs"] = max(1, round(duration * 1000))
   return {
     "v": 2,
-    "alg": "CENC-A256CTR",
-    "kid": b64url(kid),
+    **({"alg": "CENC-A256CTR", "kid": b64url(cenc[1])} if cenc is not None else {"alg": "none"}),
     "codec": primary.codec,
     "startOffsetMs": recording_start_offset(clear, moov),
     "contentType": f'video/mp4; codecs="{primary.codec}"',
@@ -542,10 +550,14 @@ INDEX_BYTES = 65536
 INDEX_UUID = b"ASIUS-INDEX-V001"
 
 
-def embed_index(filename: str, media: dict[str, Any], owner: str, path: str, key_id: str, private_key) -> dict[str, Any]:
+def embed_index(filename: str, media: dict[str, Any], owner: str, path: str, key_id: str | None, private_key) -> dict[str, Any]:
+  """Sign the seek index. Plain recordings (alg none) have no key ID."""
   import json
+  if (media["alg"] == "none") != (key_id is None):
+    raise ValueError("MP4 index key ID does not match its encryption")
   payload = Path(filename).read_bytes()
-  indexed = media | {"owner": owner, "path": path, "keyId": key_id, "signingKey": b64url(private_key.public_key().public_bytes_raw()),
+  indexed = media | {"owner": owner, "path": path, **({"keyId": key_id} if key_id is not None else {}),
+                     "signingKey": b64url(private_key.public_key().public_bytes_raw()),
                      "encryptedLength": len(payload) + INDEX_BYTES,
                      "fragments": [fragment | {"offset": fragment["offset"] + INDEX_BYTES} for fragment in media["fragments"]]}
   indexed["signature"] = b64url(private_key.sign(canonical(indexed)))

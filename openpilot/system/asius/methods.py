@@ -96,8 +96,10 @@ LIVE_STATE_PARAM_KEYS = [
   "DongleId",
   "NavigationEnabled",
   "NavDestination",
+  "ApiHost",
   "StorageHost",
   "StorageUploadEnabled",
+  "StorageEncryption",
   "ShareDrivingData",
   "HardwareSerial",
   "LastAthenaPingTime",
@@ -179,6 +181,7 @@ relay_room = None
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None, relay_host: str) -> None:
+  from openpilot.system.asius import storage_home
   global relay_room
   params = Params()
   owner = params.get("DongleId")
@@ -187,6 +190,7 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None, relay_ho
   end_event = threading.Event()
 
   threads = [
+    threading.Thread(target=storage_home.run, args=(end_event, params), name='storage_home'),
     threading.Thread(target=upstream_athena.ws_manage, args=(ws, end_event), name='ws_manage'),
     threading.Thread(target=ws_recv, args=(ws, end_event), name='ws_recv'),
     threading.Thread(target=ws_send, args=(ws, end_event), name='ws_send'),
@@ -197,8 +201,8 @@ def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None, relay_ho
     thread.start()
   try:
     while not end_event.wait(0.1):
-      if ((exit_event is not None and exit_event.is_set()) or not params.get("RelayEnabled", return_default=True)
-          or params.get("RelayHost", return_default=True) != relay_host):
+      if ((exit_event is not None and exit_event.is_set()) or not params.get("ApiEnabled", return_default=True)
+          or params.get("ApiHost", return_default=True) != relay_host):
         end_event.set()
   except (KeyboardInterrupt, SystemExit):
     end_event.set()
@@ -1181,10 +1185,10 @@ def ws_send(ws: WebSocket, end_event: threading.Event) -> None:
       end_event.set()
 
 
-@dispatcher.add_method(relay=_string, storage=_string)
-def setServiceHosts(relay: str, storage: str) -> dict:
+@dispatcher.add_method(api=_string, storage=_string)
+def setServiceHosts(api: str, storage: str) -> dict:
   from openpilot.system.asius.service_registration import set_service_hosts
-  return set_service_hosts(relay, storage)
+  return set_service_hosts(api, storage)
 
 
 @dispatcher.add_method(challenge=_string, terms=_string)

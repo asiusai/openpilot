@@ -7,9 +7,9 @@ import requests
 
 from openpilot.system.asius.identity import get_device_identity
 from openpilot.system.asius.relayd import sign_jwt
+from openpilot.system.asius.service_hosts import api_origin
 
 TURN_PATH = '/v1/turn/credentials'
-TURN_URL = 'https://api.asius.ai' + TURN_PATH
 
 
 def prepare_live(phone_online: bool = True) -> dict:
@@ -21,7 +21,7 @@ def prepare_live(phone_online: bool = True) -> dict:
   token = sign_jwt({'type': 'turn', 'aud': 'asius-turn', 'identity': get_device_identity(),
                     'method': 'POST', 'path': TURN_PATH}, expiry_seconds=60)
   try:
-    with requests.post(TURN_URL, headers={'Authorization': f'Bearer {token}'}, timeout=(3, 6),
+    with requests.post(api_origin() + TURN_PATH, headers={'Authorization': f'Bearer {token}'}, timeout=(3, 6),
                        allow_redirects=False, stream=True) as response:
       if response.status_code != 200:
         error = {
@@ -52,6 +52,8 @@ def prepare_live(phone_online: bool = True) -> dict:
           if not all(isinstance(server.get(key), str) and server[key] for key in ('username', 'credential')):
             raise ValueError('Missing TURN credentials')
       return {'mode': 'internet', 'iceServers': servers, 'expiresAt': expires}
+  except RuntimeError as error:
+    return {'mode': 'unavailable', 'error': str(error)}
   except requests.exceptions.SSLError:
     return {'mode': 'unavailable', 'error': 'Cannot verify the video service. Check the device clock.'}
   except (requests.ConnectionError, requests.Timeout):

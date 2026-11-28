@@ -35,16 +35,16 @@ def service_host(value: str, scheme: str) -> str:
   return text.rstrip('/')
 
 
-def set_service_hosts(relay: str, storage: str, params=None) -> dict:
+def set_service_hosts(api: str, storage: str, params=None) -> dict:
   params = params if params is not None else Params()
   if not params.get_bool('IsOffroad'):
     raise PermissionError('Turn ignition off before changing services')
-  relay, storage = service_host(relay, 'wss'), service_host(storage, 'https')
+  api, storage = service_host(api, 'https'), service_host(storage, 'https')
   # Empty URL parameters resolve to defaults. Disable services before changing their hosts.
-  params.put_bool('RelayEnabled', False, block=True)
+  params.put_bool('ApiEnabled', False, block=True)
   params.put_bool('StorageUploadEnabled', False, block=True)
-  params.put('RelayHost', relay, block=True)
+  params.put('ApiHost', api, block=True)
   params.put('StorageHost', storage, block=True)
-  params.put_bool('RelayEnabled', bool(relay), block=True)
+  params.put_bool('ApiEnabled', bool(api), block=True)
   params.put_bool('StorageUploadEnabled', bool(storage), block=True)
-  return {'relay': relay, 'storage': storage}
+  return {'api': api, 'storage': storage}

@@ -6,7 +6,6 @@ import numpy as np
 import requests
 
 import openpilot.cereal.messaging as messaging
-from openpilot.system.asius.navigation_api import NAVIGATION_API
 from openpilot.system.asius.navigation_route import RouteStore
 from openpilot.system.asius.navigation_proxy import request_json
 from openpilot.common.params import Params
@@ -62,7 +61,8 @@ class RouteEngine:
     self.reroute_counter = 0
 
     self.mapbox_token = os.environ.get("MAPBOX_TOKEN")
-    self.mapbox_host = "https://api.mapbox.com" if self.mapbox_token is not None else NAVIGATION_API
+    # Without a token, request_json sends the relative path through the selected Asius API.
+    self.mapbox_host = "https://api.mapbox.com" if self.mapbox_token is not None else ""
 
   def update_position(self):
     self.started = bool(self.sm.valid["deviceState"] and self.sm.alive["deviceState"] and self.sm["deviceState"].started)
@@ -166,7 +166,7 @@ class RouteEngine:
       params.pop('annotations')
     try:
       if self.mapbox_token is None:
-        r = request_json(url[len(NAVIGATION_API):], params, params=self.params, destination=request)
+        r = request_json(url, params, params=self.params, destination=request)
       else:
         resp = requests.get(url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()

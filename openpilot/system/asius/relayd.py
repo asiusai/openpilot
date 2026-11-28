@@ -17,6 +17,7 @@ from openpilot.common.realtime import set_core_affinity
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.athena.athenad import backoff
 from openpilot.system.asius.identity import get_device_private_key, is_identity
+from openpilot.system.asius.service_hosts import relay_url
 from openpilot.system.asius.session import b64, unb64_lenient
 
 
@@ -144,8 +145,8 @@ def main(exit_event: threading.Event | None = None):
   conn_start = None
   conn_retries = 0
   while exit_event is None or not exit_event.is_set():
-    relay_host = params.get("RelayHost", return_default=True)
-    if not params.get("RelayEnabled", return_default=True):
+    relay_host = params.get("ApiHost", return_default=True)
+    if not params.get("ApiEnabled", return_default=True):
       if exit_event is not None:
         exit_event.wait(1)
       else:
@@ -156,7 +157,7 @@ def main(exit_event: threading.Event | None = None):
       if conn_start is None:
         conn_start = time.monotonic()
 
-      ws_uri = relay_host + "/room/v1/" + dongle_id + "/" + dongle_id
+      ws_uri = relay_url(relay_host) + "/room/v1/" + dongle_id + "/" + dongle_id
       cloudlog.event("relayd.main.connecting_ws", ws_uri=ws_uri, retries=conn_retries)
       tls = ssl.create_default_context()
       ws = create_connection(ws_uri,
@@ -171,12 +172,11 @@ def main(exit_event: threading.Event | None = None):
       ws.send(json.dumps({"type": "authenticate", "signature": signature, "key": b64(get_device_private_key().public_key().public_bytes_raw())}))
       if json.loads(ws.recv()).get("type") != "ready":
         raise ValueError("relay authentication failed")
-      cloudlog.event("relayd.main.connected_ws", ws_uri=relay_host + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,
+      cloudlog.event("relayd.main.connected_ws", ws_uri=relay_url(relay_host) + "/room/v1/" + dongle_id + "/" + dongle_id, retries=conn_retries,
                      duration=time.monotonic() - conn_start)
       conn_start = None
 
       conn_retries = 0
-
       methods.handle_long_poll(ws, exit_event, relay_host)
     except (KeyboardInterrupt, SystemExit):
       break

@@ -33,7 +33,7 @@ from openpilot.system.loggerd.storage_api import (
   recover_state,
   update_state,
 )
-from openpilot.system.loggerd.storage_media import derive_cenc_key, package_cenc_mp4, embed_index
+from openpilot.system.loggerd.storage_media import derive_cenc_key, package_cenc_mp4, package_plain_mp4, embed_index
 from openpilot.system.loggerd.storage_upload_queue import (
   AUTO_UPLOAD_FILES, MAX_FILE_BYTES, REQUEST_ATTR_NAME, ROUTE_FILES, ROUTE_SEGMENT_RE, UPLOAD_ATTR_NAME, attribute_set,
   clear_failure, clear_stale_locks, record_failure, upload_failure,
@@ -43,6 +43,7 @@ from openpilot.system.loggerd.uploader import NetworkType, Uploader, allow_sleep
 from openpilot.system.loggerd.upload_progress import publish_error
 
 STATE_PARAM = "StorageUploadState"
+ENCRYPTION_PARAM = "StorageEncryption"
 CENC_FILES = {"qcamera.mp4", "fcamera.mp4", "ecamera.mp4", "dcamera.mp4"}
 
 
@@ -96,6 +97,19 @@ class StorageUploader(Uploader):
       except FileNotFoundError:
         continue
 
+  def route_encrypted(self, route_id: str) -> bool:
+    """Return the route encryption mode. The first summary upload fixes it with the local route state."""
+    path = summary_path(self.root, route_id).with_suffix('.encryption')
+    if path.exists():
+      encrypted = json.loads(path.read_text()).get('encrypted')
+      if not isinstance(encrypted, bool):
+        raise ValueError("Invalid route encryption state")
+      return encrypted
+    # A route uploaded before this state existed is encrypted.
+    encrypted = path.with_suffix('.uploaded').exists() or self.params.get(ENCRYPTION_PARAM, return_default=True) is not False
+    save_json(path, {'encrypted': encrypted})
+    return encrypted
+
   def sync_summary(self, route_id):
     path = summary_path(self.root, route_id)
     if not path.exists():
@@ -106,9 +120,12 @@ class StorageUploader(Uploader):
     saved = json.loads(marker.read_text()) if marker.exists() else {}
     if saved.get('fingerprint') == fingerprint:
       return
+    etag = {'etag': saved['etag']} if saved.get('etag') else {}
     state = self.sync_access()
-    encrypted = encrypt_object(self.owner, storage_path(route_id), content, state)
-    body = {'encrypted': b64url(encrypted), **({'etag': saved['etag']} if saved.get('etag') else {})}
+    if self.route_encrypted(route_id):
+      body = {'encrypted': b64url(encrypt_object(self.owner, storage_path(route_id), content, state)), **etag}
+    else:
+      body = {'summary': json.loads(content), **etag}
     for attempt in range(2):
       try:
         response = self.client.request('PUT', f'/v1/{self.owner}/routes/{route_id}', body)
@@ -120,6 +137,11 @@ class StorageUploader(Uploader):
         detail = error.response.json()
         if error.response.status_code == 409 and 'maxCounter' in detail:
           self.counter_conflict = (route_id, detail['maxCounter'])
+        elif error.response.status_code == 409 and detail.get('encrypted') is True and 'summary' in body and attempt == 0:
+          # Storage already has this route encrypted. Keep encryption; never downgrade a stored route.
+          save_json(path.with_suffix('.encryption'), {'encrypted': True})
+          body = {'encrypted': b64url(encrypt_object(self.owner, storage_path(route_id), content, self.sync_access())), **etag}
+          continue
         elif error.response.status_code == 412 and detail.get('etag'):
           save_json(marker, {'etag': detail['etag']})
           if attempt == 0:
@@ -252,6 +274,8 @@ class StorageUploader(Uploader):
       raise RuntimeError("Route is deleted")
     state = self.sync_access()
     object_path = f"routes/{route_id}/{segment_text}/{os.path.basename(key)}"
+    if not self.route_encrypted(route_id):
+      return self._upload_plain(key, fn, object_path, replace_checksum)
 
     if os.path.basename(object_path) in CENC_FILES:
       active = next(entry for entry in state["keys"] if entry["id"] == state["activeKey"])
@@ -298,6 +322,46 @@ class StorageUploader(Uploader):
       **({"replace_checksum": replace_checksum} if replace_checksum else {}),
     )
     cloudlog.event("storage_upload_encrypted", key=key, path=object_path, encrypted_size=len(encrypted))
+    return response
+
+  def _upload_plain(self, key: str, fn: str, object_path: str, replace_checksum: str | None) -> requests.Response:
+    """Upload without client-side encryption. Storage access checks stay the same."""
+    replace = {"replace_checksum": replace_checksum} if replace_checksum else {}
+    if os.path.basename(object_path) in CENC_FILES:
+      temporary_name = ""
+      try:
+        with tempfile.NamedTemporaryFile(prefix=".asius-mp4-", suffix=".mp4", dir=os.path.dirname(os.path.abspath(self.root)), delete=False) as temporary:
+          temporary_name = temporary.name
+        # Keep the signed seek index and fragment hashes. Samples stay unencrypted.
+        media = package_plain_mp4(fn, temporary_name)
+        embed_index(temporary_name, media, self.owner, object_path, None, self.private_key)
+        response = self.client.upload_file(
+          object_path,
+          temporary_name,
+          content_type="video/mp4",
+          plaintext_length=os.path.getsize(fn),
+          checksum=b64url(hashlib.sha256(Path(temporary_name).read_bytes()).digest()),
+          source_checksum=b64url(hashlib.sha256(Path(fn).read_bytes()).digest()),
+          encryption=False,
+          **replace,
+        )
+        cloudlog.event("storage_upload_plain", key=key, path=object_path, size=os.path.getsize(temporary_name), fragments=len(media["fragments"]))
+        return response
+      finally:
+        if temporary_name:
+          try:
+            os.unlink(temporary_name)
+          except FileNotFoundError:
+            pass
+
+    stream, _ = get_upload_stream(fn, key.endswith(".zst") and not fn.endswith(".zst"))
+    try:
+      plaintext = stream.read()
+    finally:
+      stream.close()
+    checksum = b64url(hashlib.sha256(plaintext).digest())
+    response = self.client.upload(object_path, plaintext, plaintext_length=len(plaintext), source_checksum=checksum, encryption=False, **replace)
+    cloudlog.event("storage_upload_plain", key=key, path=object_path, size=len(plaintext))
     return response
 
 

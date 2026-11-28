@@ -6,9 +6,7 @@ import requests
 
 from openpilot.system.asius.identity import get_device_identity
 from openpilot.system.asius.relayd import sign_jwt
-
-
-NAVIGATION_API = 'https://api.asius.ai/v1/nav'
+from openpilot.system.asius.service_hosts import api_origin
 
 
 class NavigationApi:
@@ -31,7 +29,7 @@ class MapboxTiles:
     z, x, y = key
     try:
       path = f'/v1/nav/maps/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf'
-      response = requests.get(NAVIGATION_API.removesuffix('/v1/nav') + path,
+      response = requests.get(api_origin() + path,
                               headers={'Authorization': f'Bearer {self.api.get_token(path)}'}, timeout=10)
       response.raise_for_status()
       if len(response.content) > 4 * 1024 * 1024:
