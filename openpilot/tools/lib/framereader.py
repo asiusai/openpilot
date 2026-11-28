@@ -1,7 +1,9 @@
+import hashlib
 import os
 import subprocess
 import json
 import logging
+import tempfile
 from collections.abc import Iterator
 from collections import OrderedDict
 
@@ -32,6 +34,29 @@ class LRUCache:
 
   def __contains__(self, key):
     return key in self._cache
+
+def annexb_path(fn: str) -> str:
+  """Return a raw HEVC path for fn. Fragmented MP4 recordings are converted once and cached."""
+  with FileReader(fn) as f:
+    if f.read(12)[4:8] != b"ftyp":
+      return fn
+    f.seek(0)
+    dat = f.read()
+  cache_dir = os.path.join(tempfile.gettempdir(), "openpilot_hevc_cache")
+  os.makedirs(cache_dir, exist_ok=True)
+  out = os.path.join(cache_dir, hashlib.sha256(resolve_name(fn).encode() + str(len(dat)).encode()).hexdigest() + ".hevc")
+  if not os.path.isfile(out):
+    tmp = f"{out}.{os.getpid()}.tmp"
+    try:
+      subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", "pipe:0", "-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", tmp],
+                     input=dat, check=True)
+      os.replace(tmp, out)
+    except subprocess.CalledProcessError as e:
+      raise DataUnreadableError(fn) from e
+    finally:
+      if os.path.exists(tmp):
+        os.remove(tmp)
+  return out
 
 def assert_hvec(fn: str) -> None:
   with FileReader(fn) as f:
@@ -102,7 +127,7 @@ def get_video_index(fn):
 class FfmpegDecoder:
   def __init__(self, fn: str, index_data: dict|None = None,
                pix_fmt: str = "rgb24", hwaccel="auto", loglevel="quiet"):
-    self.fn = fn
+    self.fn = fn = annexb_path(fn)
     self.index, self.prefix, self.w, self.h = get_index_data(fn, index_data)
     self.frame_count = len(self.index) - 1          # sentinel row at the end
     self.iframes = np.where(self.index[:, 0] == HEVC_SLICE_I)[0]

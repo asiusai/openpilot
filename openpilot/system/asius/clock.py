@@ -5,6 +5,9 @@ import secrets
 import subprocess
 import threading
 import time
+from pathlib import Path
+
+VAMOS_CLOCK = '/usr/bin/vamos-clock'  # VamOS only; AGNOS sets its clock from the network
 
 
 class ClockChallenges:
@@ -30,6 +33,8 @@ class ClockChallenges:
       del self.pending[peer]
       if not 0 <= time.monotonic() - pending[1] <= 5:
         raise ValueError('Clock challenge expired')
-    result = subprocess.run(['sudo', '-n', '/usr/bin/vamos-clock', 'sync', '--source', 'app', '--unix-ms', str(unixTimeMs)],
+    if not Path(VAMOS_CLOCK).is_file():
+      raise RuntimeError('App clock synchronization is not available on this device.')
+    result = subprocess.run(['sudo', '-n', VAMOS_CLOCK, 'sync', '--source', 'app', '--unix-ms', str(unixTimeMs)],
                             capture_output=True, text=True, timeout=10, check=True)
     return json.loads(result.stdout)

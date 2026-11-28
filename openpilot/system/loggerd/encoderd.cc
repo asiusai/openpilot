@@ -111,10 +111,13 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
     bool lagging = false;
     bool subscribed = false;
     int frames_waited = 0;
+#ifdef __ASIUS_HARDWARE__
     uint64_t last_frame_ns = nanos_since_boot();
+#endif
     while (!do_exit) {
       VisionIpcBufExtra extra;
       VisionBuf* buf = vipc_client.recv(&extra);
+#ifdef __ASIUS_HARDWARE__
       if (buf == nullptr) {
         constexpr uint64_t reconnect_timeout_ns = 2ULL * 1000 * 1000 * 1000;
         if (!vipc_client.is_connected() || nanos_since_boot() - last_frame_ns >= reconnect_timeout_ns) {
@@ -124,6 +127,9 @@ void encoder_thread(EncoderdState *s, const LogCameraInfo &cam_info) {
         continue;
       }
       last_frame_ns = nanos_since_boot();
+#else
+      if (buf == nullptr) continue;
+#endif
 
       // detect loop around and drop the frames
       if (buf->get_frame_id() != extra.frame_id) {

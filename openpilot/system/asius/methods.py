@@ -106,6 +106,8 @@ LIVE_STATE_PARAM_KEYS = [
   "LastAthenaPingTime",
   "OpenpilotEnabledToggle",
   "DisengageOnAccelerator",
+  "AlwaysOnDM",
+  "InitialCruiseSpeedKph",
   "LongitudinalPersonality",
   "IsLdwEnabled",
   "VoiceAlertsEnabled",
@@ -376,6 +378,7 @@ def setGithubUsername(username: str) -> dict[str, str]:
 TAILSCALE_COMMAND = ["sudo", "-n", "tailscale"]
 TAILSCALE_SOCKET = Path("/var/run/tailscale/tailscaled.sock")
 TAILSCALE_ENABLED = Path("/data/tailscale/enabled")
+TAILSCALE_SERVICE = Path("/var/service/tailscaled")  # VamOS runit service; AGNOS has none
 
 
 @dispatcher.add_method
@@ -410,6 +413,8 @@ def getTailscaleState() -> dict[str, Any]:
 
 @dispatcher.add_method(disconnect=boolean)
 def configureTailscale(disconnect: bool = False) -> str | None:
+  if not TAILSCALE_SERVICE.is_dir():
+    raise RuntimeError("Tailscale is not available on this device.")
   if disconnect:
     subprocess.run([*TAILSCALE_COMMAND, "logout"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
     subprocess.run(["sudo", "-n", "rm", "-f", str(TAILSCALE_ENABLED)], check=True)

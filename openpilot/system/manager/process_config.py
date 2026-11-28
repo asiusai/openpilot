@@ -67,6 +67,8 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
+  if ASIUS_HARDWARE:
+    return started or params.get_bool("NavigationEnabled")
   return started and params.get_bool("NavigationEnabled")
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
@@ -90,7 +92,8 @@ procs = [
   DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=BLUETOOTH_AVAILABLE),
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),
-  NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], logging, restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
+  NativeProcess("encoderd", "openpilot/system/loggerd", ["./encoderd"], logging if ASIUS_HARDWARE else only_onroad,
+                restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
   NativeProcess("stream_encoderd", "openpilot/system/loggerd", ["./encoderd", "--stream"], or_(livestream, notcar),
                 restart_delay=5.0 if ASIUS_HARDWARE else 0.0),
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
@@ -104,7 +107,7 @@ procs = [
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
-  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", lambda started, params, CP: started or params.get_bool("NavigationEnabled")),
+  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navigation),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
 

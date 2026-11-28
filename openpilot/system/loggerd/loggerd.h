@@ -66,7 +66,12 @@ struct EncoderSettings {
     if (Hardware::get_device_type() == cereal::InitData::DeviceType::V0) {
       return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::FULL_H_E_V_C, .bitrate = 256'000, .gop_size = 40, .constant_bitrate = true};
     }
+#ifdef __COMMA_HARDWARE__
+    // Comma devices record H.265 qcamera files too. Bitrate and keyframe interval stay stock.
+    return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::FULL_H_E_V_C, .bitrate = 256'000, .gop_size = 15};
+#else
     return EncoderSettings{.encode_type = cereal::EncodeIndex::Type::QCAMERA_H264, .bitrate = 256'000, .gop_size = 15};
+#endif
   }
 
   static EncoderSettings StreamEncoderSettings() {

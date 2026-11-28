@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 from openpilot.common.params import Params
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
-from openpilot.common.hardware import PC
+from openpilot.common.hardware import AGNOS, PC
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.asius.identity import get_device_identity
+from openpilot.system.asius.identity import get_device_identity, provision_agnos_identity
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
 
 
 def register(show_spinner=False) -> str | None:
   params = Params()
   try:
+    if AGNOS and provision_agnos_identity():
+      cloudlog.warning("created the device identity on /persist")
     dongle_id = get_device_identity()
   except Exception:
     dongle_id = UNREGISTERED_DONGLE_ID

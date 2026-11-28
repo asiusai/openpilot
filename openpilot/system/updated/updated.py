@@ -434,6 +434,9 @@ class Updater:
     cloudlog.info("finalize success!")
 
 
+NO_INTERNET = "No internet connection. Connect the device to the internet and retry."
+
+
 def main() -> None:
   params = Params()
 
@@ -468,26 +471,26 @@ def main() -> None:
       exception = None
       try:
         if not system_time_valid():
-          raise RuntimeError("Waiting for device time synchronization. Connect the app and retry.")
+          raise RuntimeError("Waiting for device time synchronization. Connect to the internet or the app and retry.")
         params.put("UpdaterState", "checking...", block=True)
         init_overlay()
         if not updater.check_for_update():
-          params.put("UpdaterState", "waiting for internet", block=True)
-          continue
-        if request == UserRequest.FETCH and updater.update_available:
-          updater.fetch_update()
-          write_time_to_param(params, "UpdaterLastFetchTime")
-        update_failed_count = 0
+          exception = NO_INTERNET
+        else:
+          if request == UserRequest.FETCH and updater.update_available:
+            updater.fetch_update()
+            write_time_to_param(params, "UpdaterLastFetchTime")
+          update_failed_count = 0
       except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         OVERLAY_INIT.unlink(missing_ok=True)
         if network_unavailable(error):
           updater._has_internet = False
-          params.put("UpdaterState", "waiting for internet", block=True)
-          continue
-        update_failed_count += 1
-        cloudlog.event("update process failed", cmd=error.cmd, output=error.output,
-                       returncode=getattr(error, "returncode", None))
-        exception = f"command failed: {error.cmd}\n{error.output}"
+          exception = NO_INTERNET
+        else:
+          update_failed_count += 1
+          cloudlog.event("update process failed", cmd=error.cmd, output=error.output,
+                         returncode=getattr(error, "returncode", None))
+          exception = f"command failed: {error.cmd}\n{error.output}"
       except Exception as error:
         update_failed_count += 1
         cloudlog.exception("manual update failed")

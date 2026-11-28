@@ -1,4 +1,5 @@
 import os
+from importlib.util import find_spec
 from typing import cast
 
 from openpilot.common.hardware.base import HardwareBase
@@ -10,7 +11,8 @@ AGNOS = os.path.isfile('/AGNOS')
 COMMA_HARDWARE = AGNOS
 ASIUS_HARDWARE = os.path.isfile('/ASIUS')
 PC = not (COMMA_HARDWARE or ASIUS_HARDWARE)
-BLUETOOTH_AVAILABLE = ASIUS_HARDWARE or (COMMA_HARDWARE and os.path.isdir('/sys/class/bluetooth'))
+# AGNOS is not changed for Asius. Bluetooth needs a kernel adapter class and the D-Bus client package there.
+BLUETOOTH_AVAILABLE = ASIUS_HARDWARE or (COMMA_HARDWARE and os.path.isdir('/sys/class/bluetooth') and find_spec('dbus_fast') is not None)
 
 if ASIUS_HARDWARE:
   HARDWARE = cast(HardwareBase, HardwareAsius())

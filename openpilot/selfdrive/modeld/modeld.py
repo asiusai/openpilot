@@ -169,6 +169,10 @@ class ModelState:
     self.run_model = jits['run']
     self.run_model.captured._linear = lower_and_compile(self.run_model.captured._linear)
     self.outputs = {name: Tensor(np.zeros(shape, dtype=dtype), device=device).realize() for name, (shape, dtype, device) in jits['output_specs'].items()}
+    if not ASIUS_HARDWARE:
+      for name, next_name in self.state_pairs.items():
+        state = self.input_queues[name]
+        self.outputs[next_name] = input_view(state._buffer(), state.shape, state.dtype, 0)
     self.copy_outputs = compile_copy(self.outputs['outputs'].to('CPU'))
     self.parser = Parser()
 
@@ -220,9 +224,10 @@ class ModelState:
     model_output = self.copy_outputs().numpy()[0]
     if self.chestnut and not np.all(np.isfinite(model_output)):
       raise RuntimeError("model output not finite")
-    # The compiled model needs the old state until all kernels finish. Swap buffers instead of overwriting its inputs.
-    for name, next_name in self.state_pairs.items():
-      self.input_queues[name], self.outputs[next_name] = self.outputs[next_name], self.input_queues[name]
+    if ASIUS_HARDWARE:
+      # The compiled model needs the old state until all kernels finish. Swap buffers instead of overwriting its inputs.
+      for name, next_name in self.state_pairs.items():
+        self.input_queues[name], self.outputs[next_name] = self.outputs[next_name], self.input_queues[name]
     outputs_dict = self.parser.parse_outputs(self.slice_outputs(model_output, self.output_slices))
 
     if SEND_RAW_PRED:
