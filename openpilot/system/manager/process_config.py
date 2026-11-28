@@ -92,7 +92,7 @@ def and_(*fns):
 
 procs = [
   DaemonProcess("manage_athenad", "openpilot.system.athena.manage_athenad", "AthenadPid", enabled=False),
-  DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelaydPid"),
+  DaemonProcess("manage_relayd", "openpilot.system.asius.manage_relayd", "RelayPid"),
   DaemonProcess("manage_bluetoothd", "openpilot.system.asius.manage_bluetoothd", "BluetoothdPid", enabled=BLUETOOTH_AVAILABLE),
 
   NativeProcess("loggerd", "openpilot/system/loggerd", ["./loggerd"], logging),

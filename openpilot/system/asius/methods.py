@@ -29,7 +29,7 @@ from openpilot.system.asius.device_name import device_hostname
 from openpilot.common.params import Params, ParamKeyType
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.version import terms_version, training_version
+from openpilot.common.version import get_build_metadata, terms_version, training_version
 from openpilot.system.athena import athenad as upstream_athena
 from openpilot.system.athena.rpc import Dispatcher, boolean, dict_of, either, handle, integer, list_of, number, one_of, regex
 from openpilot.system.webrtc.in_car import gpu_status, offroad_alerts
@@ -74,7 +74,7 @@ SAVE_PARAMS_BLOCKED_KEYS = {
   "SecOCKey",
   "AthenadPid",
   "BluetoothdPid",
-  "RelaydPid",
+  "RelayPid",
   "SoundVolumePreview",
 }
 LIVE_STATE_SERVICES = [
@@ -990,6 +990,13 @@ def _saved_calibration(params: Params) -> dict[str, Any] | None:
     return None
 
 
+def _live_version() -> dict[str, str]:
+  # The live state must not stop when the commit date is unreadable, so it does not use getVersion().
+  build_metadata = get_build_metadata()
+  return {"fork": FORK, "version": build_metadata.openpilot.version, "remote": build_metadata.openpilot.git_normalized_origin,
+          "branch": build_metadata.channel, "commit": build_metadata.openpilot.git_commit}
+
+
 def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, Any]:
   services = _live_services(sm)
   param_values = {}
@@ -1008,7 +1015,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, A
     "dongleId": params.get("DongleId"),
     "deviceName": getDeviceName(),
     "serial": params.get("HardwareSerial"),
-    "version": {"fork": FORK, **upstream_athena.getVersion()},
+    "version": _live_version(),
     "params": param_values,
     "onboarding": onboarding_status(params),
     "software": _software_update_state(params),

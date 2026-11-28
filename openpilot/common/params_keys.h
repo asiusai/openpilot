@@ -19,7 +19,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BluetoothdPid", {PERSISTENT, INT}},
     {"RelayEnabled", {PERSISTENT, BOOL, "1"}},
     {"RelayHost", {PERSISTENT, STRING, "wss://relay.asius.ai"}},
-    {"RelaydPid", {PERSISTENT, INT}},
+    {"RelayPid", {PERSISTENT, INT}},
     {"AppTerminalEnabled", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     {"AppAuthorizedKeys", {PERSISTENT, JSON}},
     {"BluetoothPairingUntil", {CLEAR_ON_MANAGER_START, INT}},

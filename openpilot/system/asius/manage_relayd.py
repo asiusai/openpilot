@@ -3,7 +3,7 @@ from openpilot.system.athena.manage_athenad import manage
 
 
 def main() -> None:
-  manage("openpilot.system.asius.relayd", "relayd", "RelaydPid")
+  manage("openpilot.system.asius.relayd", "relayd", "RelayPid")
 
 
 if __name__ == "__main__":
