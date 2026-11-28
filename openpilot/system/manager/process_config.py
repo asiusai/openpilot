@@ -67,9 +67,13 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
 
 def navigation(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and params.get_bool("NavigationEnabled")
+
+def navd(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Asius v0 has no screen. navd also serves the app there, on every drive and offroad when navigation is on.
   if ASIUS_HARDWARE:
     return started or params.get_bool("NavigationEnabled")
-  return started and params.get_bool("NavigationEnabled")
+  return navigation(started, params, CP)
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
@@ -107,7 +111,7 @@ procs = [
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
-  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navigation),
+  PythonProcess("navd", "openpilot.selfdrive.navigation.navd", navd),
   PythonProcess("mapsd", "openpilot.selfdrive.navigation.mapsd", navigation),
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
 
