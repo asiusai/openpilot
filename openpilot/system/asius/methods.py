@@ -59,7 +59,6 @@ VAMOS_UPDATE_STATE_FILE = Path("/data/vamos-update/state.json")
 VAMOS_WIFI_COMMAND = Path("/usr/bin/vamos-wifi")
 SAVE_PARAMS_BLOCKED_KEYS = {
   "AccessToken",
-  "ApiCache_Device",
   "AppAuthorizedKeys",
   "AppTerminalEnabled",
   "HasAcceptedTerms",
@@ -126,18 +125,6 @@ LIVE_STATE_PARAM_KEYS = [
   "GsmMetered",
   "GsmRoaming",
   "GsmApn",
-  "UpdaterState",
-  "UpdaterProgress",
-  "UpdateAvailable",
-  "UpdateFailedCount",
-  "UpdaterFetchAvailable",
-  "UpdaterCurrentDescription",
-  "UpdaterNewDescription",
-  "UpdaterTargetBranch",
-  "UpdaterAvailableBranches",
-  "UpdaterLastFetchTime",
-  "LastUpdateTime",
-  "LastUpdateException",
 ]
 
 
@@ -712,16 +699,15 @@ def _read_vamos_update_state() -> dict[str, Any] | None:
 
 
 def _software_update_state(params: ParamsReader | None = None) -> dict[str, Any]:
+  # Status notifications share the link with RPC replies. Release notes and the
+  # branch list are large, so they are not part of the live state.
   params = params or Params()
   keys = [
     "UpdaterCurrentDescription",
-    "UpdaterCurrentReleaseNotes",
     "UpdaterNewDescription",
-    "UpdaterNewReleaseNotes",
     "UpdaterState",
     "UpdaterProgress",
     "UpdaterTargetBranch",
-    "UpdaterAvailableBranches",
     "UpdaterLastFetchTime",
     "LastUpdateTime",
     "LastUpdateException",
@@ -731,10 +717,9 @@ def _software_update_state(params: ParamsReader | None = None) -> dict[str, Any]
   ]
   state: dict[str, Any] = {}
   for key in keys:
-    value = params.get(key)
-    if isinstance(value, bytes):
-      value = value.decode("utf-8", "replace")
-    state[key] = _json_safe(value)
+    state[key] = _json_safe(params.get(key))
+  if isinstance(state["LastUpdateException"], str):
+    state["LastUpdateException"] = state["LastUpdateException"][-4096:]
   vamos_state = _read_vamos_update_state()
   if vamos_state is not None:
     state["VamosUpdate"] = vamos_state
@@ -1008,7 +993,7 @@ def _saved_calibration(params: Params) -> dict[str, Any] | None:
     return None
 
 
-def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bool = False) -> dict[str, Any]:
+def _live_state_snapshot(sm: messaging.SubMaster, params: Params) -> dict[str, Any]:
   build_metadata = get_build_metadata()
   services = _live_services(sm)
   param_values = {}
@@ -1025,7 +1010,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
       offroad_alerts.append({"key": key, "text": alert["text"].replace("%1", str(alert.get("extra", ""))),
                              "severity": alert.get("severity", 0)})
 
-  snapshot = {
+  return {
     "navigation": getNavigationState(),
     "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
     "sampledAt": time.monotonic(),
@@ -1048,22 +1033,7 @@ def _live_state_snapshot(sm: messaging.SubMaster, params: Params, *, compact: bo
     "savedCalibration": _saved_calibration(params) if "extrinsicsCalibration" not in services else None,
     "gpu": gpu_status(sm, params),
     "offroadAlerts": offroad_alerts,
-    "authorizedPeers": list(load_authorized_peers().keys()),
   }
-  if compact:
-    # GATT notifications share the link with RPC replies. Release notes, branch
-    # inventories and per-process profiling can otherwise occupy it for seconds.
-    # Full software/access details remain available through their explicit RPCs.
-    snapshot.pop("authorizedPeers")
-    for key in ("UpdaterCurrentReleaseNotes", "UpdaterNewReleaseNotes", "UpdaterAvailableBranches"):
-      snapshot["software"].pop(key, None)
-    for key in snapshot["software"]:
-      param_values.pop(key, None)
-    param_values.pop("UpdaterAvailableBranches", None)
-    failure = snapshot["software"].get("LastUpdateException")
-    if isinstance(failure, str):
-      snapshot["software"]["LastUpdateException"] = failure[-4096:]
-  return snapshot
 
 
 def send_peer_payload(to: str, body: dict) -> None:
@@ -1084,7 +1054,7 @@ class LiveStateSampler:
     now = time.monotonic()
     self.sm.update(0)
     if self.snapshot is None or now - self.updated_at >= 1:
-      self.snapshot = _live_state_snapshot(self.sm, self.params, compact=True)
+      self.snapshot = _live_state_snapshot(self.sm, self.params)
       self.updated_at = now
     navigation = getNavigationState()
     services = _live_services(self.sm)

@@ -144,7 +144,7 @@ class AsiusUploader(Uploader):
     return True
 
   def next_file_to_upload(self, metered: bool) -> tuple[str, str, str] | None:
-    if getattr(self, "policy_retry_after", 0) > time.monotonic():
+    if self.policy_retry_after > time.monotonic():
       return None
     automatic = None
     for item in self.list_upload_files(metered):
@@ -152,7 +152,7 @@ class AsiusUploader(Uploader):
       if not summary_path(self.root, route_id).exists():
         continue
       failure = upload_failure(item[2])
-      if failure and (failure.get("permanent") or getattr(self, "retry_after", {}).get(item[2], 0) > time.monotonic()):
+      if failure and (failure.get("permanent") or self.retry_after.get(item[2], 0) > time.monotonic()):
         continue
       try:
         if attribute_set(item[2], REQUEST_ATTR_NAME):
@@ -209,8 +209,6 @@ class AsiusUploader(Uploader):
         route_id = key.split("/", 1)[0].rsplit("--", 1)[0]
         summary_path(self.root, route_id).with_suffix(".deleted").touch()
       record_failure(fn, isinstance(error, ValueError))
-      if not hasattr(self, "retry_after"):
-        self.retry_after = {}
       self.retry_after[fn] = time.monotonic() + 60
       raise
 
@@ -241,8 +239,7 @@ class AsiusUploader(Uploader):
       object_path = "routes/" + key.rsplit("--", 1)[0] + "/" + key.rsplit("--", 1)[1]
       for file in files:
         if file.get("path") == object_path and file.get("uploadedAt") and file.get("sourceSha256") == source_checksum:
-          return self.client.request("POST", f"/v1/{self.owner}/uploads/complete",
-                                     {"path": object_path, "checksumSha256": file["checksumSha256"]})
+          return self.client.complete_upload(object_path, file["checksumSha256"])
       raise
 
   def _upload_recording(self, key: str, fn: str, *, replace_checksum: str | None = None) -> requests.Response:

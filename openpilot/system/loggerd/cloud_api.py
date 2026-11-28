@@ -198,8 +198,8 @@ class CloudApiClient:
     }
     return self.request("POST", request_path, body).json()
 
-  def complete_upload(self, path: str, checksum: str) -> None:
-    self.request("POST", f"/v1/{self.owner}/uploads/complete", {"path": path, "checksumSha256": checksum})
+  def complete_upload(self, path: str, checksum: str) -> requests.Response:
+    return self.request("POST", f"/v1/{self.owner}/uploads/complete", {"path": path, "checksumSha256": checksum})
 
   def upload(self, path: str, encrypted: bytes, *, plaintext_length: int, source_checksum: str | None = None,
              replace_checksum: str | None = None) -> requests.Response:
